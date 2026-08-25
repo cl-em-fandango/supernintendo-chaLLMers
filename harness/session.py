@@ -1,7 +1,12 @@
-"""Run one fresh, token-budgeted pi session and record stats."""
+"""Run one fresh, token-budgeted pi session and record stats.
+
+Uses `pi --mode json --no-session` so we can stream usage events and compute
+peak context tokens without persisting a session file.
+"""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -19,7 +24,6 @@ class SessionResult:
     duration_s: float
     output: str
     out_file: Path
-    session_file: str | None = None
 
 
 class SessionRunner:
@@ -27,32 +31,6 @@ class SessionRunner:
         self.cfg = cfg
         self.store = store
         self.log = log
-        cfg.sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    def _existing_sessions(self) -> set[str]:
-        out = set()
-        for sub in self.cfg.sessions_dir.iterdir():
-            if sub.is_dir():
-                out.update(str(p) for p in sub.glob("*.jsonl"))
-        return out
-
-    def _peak_tokens(self, session_file: str | None) -> int:
-        if not session_file:
-            return 0
-        peak = 0
-        try:
-            for line in Path(session_file).read_text().splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    e = json.loads(line)
-                    u = (e.get("message") or {}).get("usage") or {}
-                    peak = max(peak, int(u.get("totalTokens", 0)))
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    pass
-        except OSError:
-            pass
-        return peak
 
     def run(
         self,
@@ -68,40 +46,68 @@ class SessionRunner:
     ) -> SessionResult:
         workdir = Path(workdir)
         out_file = workdir / f".pi-session-{stage}-{int(time.time())}.out"
-        before = self._existing_sessions()
 
         self.log(f"  ▶ {stage} model={model} iter={iteration} budget={self.cfg.token_budget}k")
         t0 = time.monotonic()
+        peak = 0
+        text_parts: list[str] = []
+        rc = 0
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [
                     "pi", "--provider", "llama-swap", "--model", model,
-                    "--session-dir", str(self.cfg.sessions_dir),
-                    "--no-session", "-p", prompt,
+                    "--no-session", "--mode", "json", "-p", prompt,
                 ],
                 cwd=workdir,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=3600,
             )
-            rc, output = proc.returncode, proc.stdout + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = e.get("type")
+                if t == "message_end":
+                    u = (e.get("message") or {}).get("usage") or {}
+                    peak = max(peak, int(u.get("totalTokens", 0)))
+                    msg = e.get("message") or {}
+                    if msg.get("role") == "assistant":
+                        for c in msg.get("content", []):
+                            if isinstance(c, dict) and c.get("type") == "text":
+                                text_parts.append(c.get("text", ""))
+                elif t == "agent_end":
+                    for m in e.get("messages", []):
+                        u = (m or {}).get("usage") or {}
+                        peak = max(peak, int(u.get("totalTokens", 0)))
+            proc.wait(timeout=60)
+            rc = proc.returncode
+            err = proc.stderr.read() if proc.stderr else ""
         except subprocess.TimeoutExpired:
-            rc, output = 124, "session timed out after 3600s"
+            rc = 124
+            err = "session timed out"
+            try:
+                proc.kill()
+            except Exception:
+                pass
         except FileNotFoundError as e:
-            rc, output = 127, f"failed to spawn pi: {e}"
+            rc = 127
+            err = f"failed to spawn pi: {e}"
+        else:
+            err = ""
         duration = time.monotonic() - t0
 
+        output = "\n".join(text_parts)
+        if err:
+            output += f"\n[stderr]\n{err}"
         out_file.write_text(output)
 
-        # locate the session file this run created
-        session_file = None
-        new = set(self._existing_sessions()) - before
-        if new:
-            session_file = max(new, key=lambda p: Path(p).stat().st_mtime)
-
-        peak = self._peak_tokens(session_file)
         verdict = _extract_verdict(output)
-
         self.store.record(SessionRecord(
             ts=_now(),
             task_id=task_id,
@@ -115,7 +121,6 @@ class SessionRunner:
             prompt_chars=len(prompt),
             slice=slice_id,
             iteration=iteration,
-            session_file=session_file,
             notes=notes,
         ))
         self.log(f"  ◀ {stage} rc={rc} tokens={peak} verdict={verdict} ({duration:.0f}s)")
@@ -127,7 +132,6 @@ class SessionRunner:
             duration_s=duration,
             output=output,
             out_file=out_file,
-            session_file=session_file,
         )
 
 
@@ -136,7 +140,6 @@ def _now() -> str:
 
 
 def _extract_verdict(output: str) -> str:
-    import re
     matches = re.findall(r"VERDICT:\s*([a-z_]+)", output)
     if matches:
         return matches[-1]
