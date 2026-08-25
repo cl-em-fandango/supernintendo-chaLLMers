@@ -80,12 +80,12 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
     supervisor: a failed import, or a CLI that won't execute.
     """
     workdir = Path(workdir)
-    # 1. the package must import
+    # 1. the package must import (current module layout after the workflow/ + core/ split)
     r = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path.insert(0, '.'); "
-         "import harness, harness.pipeline, harness.session, "
-         "harness.providers, harness.autonomous, harness.gitops, harness.stats"],
+         "import harness, harness.workflow.pipeline, harness.workflow.autonomous, "
+         "harness.core.session, harness.core.providers, harness.core.gitops, harness.core.stats"],
         cwd=workdir, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         return False, f"import failed: {r.stderr.strip()[-300:]}"

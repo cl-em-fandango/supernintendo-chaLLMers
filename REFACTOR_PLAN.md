@@ -127,6 +127,15 @@ Moves come before behavior changes so each step is small and reviewable.
 - Confirm: a session runs, verdicts parse, stats record, git branch works.
 - This is the gate before automation is allowed to run.
 
+## Context budget (aim for 25k max before compacting)
+- **Target: keep the working context at 25k tokens or fewer before compacting**, so
+  we can do the compacting ourselves (rather than being forced to compact at a
+  higher, less-controlled threshold).
+- As of the Chunk 7 verification turn, the context had grown to **32k** — that is
+  over the 25k target. Treat 25k as the soft ceiling: when the running context
+  approaches it, compact proactively.
+- This applies to every chunk/supervisor turn, not just the refactor.
+
 ## Out of scope (separate tasks)
 - The `007-sandbox` worktree isolation (different concern).
 - Adding new features.

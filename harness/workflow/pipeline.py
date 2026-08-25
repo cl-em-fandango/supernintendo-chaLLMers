@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
+from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionRunner
 from .params import StageContext
