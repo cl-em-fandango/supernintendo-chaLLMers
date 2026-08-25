@@ -10,6 +10,12 @@ IMPORTANT OUTPUT PROTOCOL:
   VERDICT: <value>
 - <value> must be one of the values listed in the VERDICT OPTIONS below.
 - Before the VERDICT line, include a section headed "## Summary" with a concise summary of what you did or found. This is read by a human and by the next session.
+
+REDUCED-CONTEXT MODE (in effect for every session):
+- Keep your working context at 25k tokens or fewer before you need to compact, so
+  the harness can compact proactively rather than being forced to at a higher
+  threshold. Read only what you need, keep notes tight, and if you are running
+  low on context, STOP cleanly and write a progress note rather than pushing on.
 """
 
 # Injected into every session that writes or modifies code, so all agents
