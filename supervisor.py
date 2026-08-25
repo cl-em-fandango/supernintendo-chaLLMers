@@ -30,8 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness.config import load            # noqa: E402
-from harness.providers import create_provider  # noqa: E402
+from harness.core.config import load            # noqa: E402
+from harness.core.providers import create_provider  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = HARNESS_DIR / "config.json"

@@ -6,11 +6,11 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import prompts
-from .config import Config
-from .gitops import ensure_branch, merge_to_trunk
-from .providers import Task
-from .session import SessionRunner
+from .core import prompts
+from .core.config import Config
+from .core.gitops import ensure_branch, merge_to_trunk
+from .core.providers import Task
+from .core.session import SessionRunner
 
 
 class Pipeline:
