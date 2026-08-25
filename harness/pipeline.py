@@ -14,10 +14,11 @@ from .session import SessionRunner
 
 
 class Pipeline:
-    def __init__(self, cfg: Config, runner: SessionRunner, log=print):
+    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
+        self.provider = provider
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
 
     def _run(self, model, workdir, prompt, *, task_id, stage, **kw):
@@ -120,6 +121,10 @@ class Pipeline:
     # ------------------------------------------------------------------
     def process(self, task: Task) -> str:
         td = self.intake(task)
+        # Body is now persisted in the task dir; drop the pending/claim staging file
+        # so this task cannot be re-claimed while it is in flight or terminal.
+        if self.provider is not None and hasattr(self.provider, "release_claim"):
+            self.provider.release_claim(task)
         self.log(f"═══ task {task.id} ═══")
         workdir = self.resolve_workdir(td)
         self.log(f"  workdir: {workdir}")

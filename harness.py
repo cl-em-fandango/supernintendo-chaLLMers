@@ -10,6 +10,7 @@ Usage:
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def build(cfg_path: Path = CONFIG_PATH):
     store = StatsStore(cfg.stats_path)
     runner = SessionRunner(cfg, store, log=_log)
     provider = create_provider(cfg)
-    pipeline = Pipeline(cfg, runner, log=_log)
+    pipeline = Pipeline(cfg, runner, log=_log, provider=provider)
     return cfg, store, runner, provider, pipeline
 
 
@@ -51,7 +52,7 @@ def cmd_run_task(file: str) -> int:
 
 def cmd_run() -> int:
     cfg, store, runner, provider, pipeline = build()
-    tasks = provider.fetch_pending()
+    tasks = provider.fetch_pending(claim=True)
     if not tasks:
         _log("no pending tasks")
     for task in tasks:
@@ -74,7 +75,7 @@ def cmd_run_task_loop() -> int:
     """
     cfg, store, runner, provider, pipeline = build()
     while True:
-        tasks = provider.fetch_pending()
+        tasks = provider.fetch_pending(claim=True)
         if not tasks:
             _log("pending queue empty")
             return 0
@@ -107,6 +108,35 @@ def cmd_report() -> int:
     return 0
 
 
+def cmd_unpark(task_id: str) -> int:
+    """Move a parked (or failed) task back to pending so it is re-processed.
+
+    The task's artifacts (spec, slices, progress) are preserved, so the next
+    run continues from where it got to rather than starting over.
+    """
+    cfg, *_ = build()
+    moved = False
+    for src_folder in ("parked", "failed"):
+        src = cfg.queue_dir / src_folder / task_id
+        if src.exists():
+            dst = cfg.queue_dir / "pending" / f"{task_id}.md"
+            original = src / "original.md"
+            if original.exists():
+                dst.write_text(original.read_text())
+            else:
+                dst.write_text(f"# {task_id}\n\n(requeued from {src_folder}; original requirement missing)\n")
+            # remove the old terminal dir so it starts fresh in active/
+            shutil.rmtree(src)
+            # drop any stale exec summary
+            (cfg.queue_dir / "review" / f"{task_id}.md").unlink(missing_ok=True)
+            _log(f"unparked {task_id}: {src_folder} -> pending/{task_id}.md")
+            moved = True
+    if not moved:
+        _log(f"{task_id} not found in parked/ or failed/")
+        return 1
+    return 0
+
+
 def _slug(name: str) -> str:
     import re
     return (re.sub(r"[^a-zA-Z0-9-]+", "_", name).strip("_")[:60] or "task")
@@ -130,6 +160,8 @@ def main() -> int:
         return cmd_status()
     if cmd == "report":
         return cmd_report()
+    if cmd in ("unpark", "requeue") and rest:
+        return cmd_unpark(rest[0])
     print(__doc__)
     return 1
 
