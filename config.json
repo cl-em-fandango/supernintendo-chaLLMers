@@ -1,0 +1,42 @@
+{
+  "workDir": "/home/donald/work",
+  "tokenBudget": 100000,
+  "maxSpecKickbacks": 3,
+  "maxSliceImplement": 5,
+  "maxSliceTechReview": 5,
+  "maxSliceFuncReview": 5,
+  "maxSliceCheckLoops": 3,
+  "autonomousQueueTarget": 5,
+  "trunkBranch": "pi/trunk",
+  "taskProvider": "directory",
+  "directoryProvider": {
+    "pendingDir": "/home/donald/work/queue/pending"
+  },
+  "models": {
+    "technicalWriter": "Qwen3.8-DFLASH2-TechnicalWriter",
+    "implementer": "Qwen3.8-DFLASH2-Implementer",
+    "assessor": "Ornith-1.5-35B-Q6_K.gguf",
+    "randomPool": [
+      "DeepSeek-V4-Flash-0731-Abliterated-ROCMFPx-Strix-Lean-2.58bpw",
+      "gemma-4-26B-A4B-it-UD-Q8_K_XL",
+      "GLM4.5-AIR_Q4_K_M",
+      "gpt-oss-120b-q5-k-m",
+      "Huihui-Qwen3.5-35B-A3B-Claude-4.6-Opus-abliterated-Q4_K_M",
+      "Ornith-1.5-35B-Q6_K.gguf",
+      "Qwen3-Coder-MoE-Implementer",
+      "Qwen3-Coder-MoE-TechnicalWriter",
+      "Qwen3-Next-80B-A3B-Instruct-IQ4_XS",
+      "Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q8_0",
+      "Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P",
+      "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M",
+      "Qwen3.8-27B-BF16",
+      "Qwen3.8-27B-IU4-Kairic-Edge",
+      "Qwen3.8-27B-Q4_K_M",
+      "Qwen3.8-27B-UD-Q8_K_XL",
+      "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
+      "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P",
+      "Qwen3.8-DFLASH2-Implementer",
+      "Qwen3.8-DFLASH2-TechnicalWriter"
+    ]
+  }
+}

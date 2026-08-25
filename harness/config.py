@@ -1,0 +1,77 @@
+"""Configuration loading."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class Config:
+    work_dir: Path
+    token_budget: int
+    max_spec_kickbacks: int
+    max_slice_implement: int
+    max_slice_tech_review: int
+    max_slice_func_review: int
+    max_slice_check_loops: int
+    autonomous_queue_target: int
+    trunk_branch: str
+    task_provider: str
+    directory_provider: dict
+    models: dict
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @property
+    def queue_dir(self) -> Path:
+        return self.work_dir / "queue"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.work_dir / "logs"
+
+    @property
+    def sessions_dir(self) -> Path:
+        return self.work_dir / "sessions"
+
+    @property
+    def stats_path(self) -> Path:
+        return self.work_dir / "stats" / "sessions.jsonl"
+
+    @property
+    def model(self) -> str:
+        return self.models["technicalWriter"]
+
+    @property
+    def implementer(self) -> str:
+        return self.models["implementer"]
+
+    @property
+    def assessor(self) -> str:
+        return self.models["assessor"]
+
+    @property
+    def random_pool(self) -> list[str]:
+        return list(self.models.get("randomPool", []))
+
+
+def load(path: str | Path) -> Config:
+    p = Path(path)
+    raw: dict[str, Any] = json.loads(p.read_text())
+    work_dir = Path(raw["workDir"]).expanduser()
+    return Config(
+        work_dir=work_dir,
+        token_budget=int(raw.get("tokenBudget", 100_000)),
+        max_spec_kickbacks=int(raw.get("maxSpecKickbacks", 3)),
+        max_slice_implement=int(raw.get("maxSliceImplement", 5)),
+        max_slice_tech_review=int(raw.get("maxSliceTechReview", 5)),
+        max_slice_func_review=int(raw.get("maxSliceFuncReview", 5)),
+        max_slice_check_loops=int(raw.get("maxSliceCheckLoops", 3)),
+        autonomous_queue_target=int(raw.get("autonomousQueueTarget", 5)),
+        trunk_branch=raw.get("trunkBranch", "pi/trunk"),
+        task_provider=raw.get("taskProvider", "directory"),
+        directory_provider=raw.get("directoryProvider", {}),
+        models=raw.get("models", {}),
+        raw=raw,
+    )
