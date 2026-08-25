@@ -85,6 +85,13 @@ class SessionRunner:
         self.log(f"  ◀ {stage} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
 
+        # Diagnostic: when the session came back empty or unparseable, log the
+        # raw output tail so we can see what pi actually returned.
+        if verdict == "unknown" or result.peak_tokens == 0:
+            tail = result.output.strip()[-300:]
+            self.log(f"  … {stage} DIAG: verdict={verdict} tokens={result.peak_tokens} "
+                     f"output_len={len(result.output)} tail={tail!r}")
+
         return SessionResult(
             ok=result.rc == 0 and not result.crashed,
             verdict=verdict,

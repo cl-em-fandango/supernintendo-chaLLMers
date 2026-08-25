@@ -140,6 +140,16 @@ def run_pi_session(
         output += f"\n[stderr]\n{err}"
     out_file.write_text(output)
 
+    # Diagnostic: log the raw event tally + output size so an empty/zero-token
+    # session is visible (peak=0 + verdict=unknown means no message_end/agent_end
+    # events and no text came back from pi).
+    log(f"  … pi raw: events={hb['events']} peak={peak} tok "
+        f"output={len(output)} chars rc={rc} crashed={crashed} "
+        f"stderr={len(err)} chars")
+    if peak == 0 and not output.strip():
+        log(f"  … pi EMPTY: no tokens and no text returned "
+            f"(rc={rc}, crashed={crashed}, stderr={err[:200]!r})")
+
     return PiSessionResult(
         rc=rc,
         crashed=crashed,
