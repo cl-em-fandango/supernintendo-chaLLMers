@@ -12,6 +12,30 @@ IMPORTANT OUTPUT PROTOCOL:
 - Before the VERDICT line, include a section headed "## Summary" with a concise summary of what you did or found. This is read by a human and by the next session.
 """
 
+# Injected into every session that writes or modifies code, so all agents
+# follow the same standards from the get-go. Kept short on purpose: the full
+# document is CODING_STANDARDS.md in the repo root, which the session can read
+# for detail.
+CODING_STANDARDS_PREAMBLE = """
+CODING STANDARDS (binding — read CODING_STANDARDS.md in the repo root for the
+full version before writing code):
+- One responsibility per file, named after that responsibility. No grab-bag modules.
+- Split state from behavior: a @dataclass holds the shape of data; a separate
+  module holds the functions that act on it. No tuples or bare dicts for
+  meaningful state — every piece of state is a named class with typed fields.
+- Enums instead of magic strings for discrete state (task status, verdicts).
+  Strings only at the very edges (model output, git refs).
+- Clear modular boundaries: all subprocess calls live in external/ behind small
+  function signatures (external/pi_cli.py, external/git_cli.py). cli/ only
+  parses and dispatches. workflow/ composes modules and takes an explicit
+  parameters object. The top-level entry point is the single composition root
+  with no business logic. Dependencies point one direction and never cycle.
+- Explicit parameters objects, not long argument lists or module-level globals.
+- Small, readable, boring functions. The next agent reads your code cold.
+- snake_case functions/vars/modules, PascalCase classes, UPPER_SNAKE_CASE
+  constants and enum members. Names say what a thing is, not its type.
+"""
+
 
 def spec_author(td: Path) -> str:
     return f"""You are a technical writer. A new task has been submitted.
@@ -121,6 +145,7 @@ Read the spec: {td}/artifacts/spec.md
 Read the slice plan: {td}/artifacts/slices.md
 Your slice: {sid}
 {progress}
+{CODING_STANDARDS_PREAMBLE}
 Implement slice {sid} completely, including its tests, per its "Done when" criteria.
 Work in the current repository on the current branch. Run the tests. Commit your work with a clear message when the slice is complete.
 
@@ -139,6 +164,7 @@ def fix_slice(td: Path, sid: str, feedback_file: Path, kind: str) -> str:
 
 Read the review feedback at: {feedback_file}
 Read the spec: {td}/artifacts/spec.md
+{CODING_STANDARDS_PREAMBLE}
 Fix the listed issues{extra}, run tests, and commit.
 
 VERDICT OPTIONS:
@@ -199,7 +225,7 @@ VERDICT OPTIONS:
 def autonomous_suggest() -> str:
     return """You are analyzing this codebase to propose a new feature.
 
-Explore the repository (read the code, README, tests, git history). Identify a genuinely useful feature or improvement that is missing. It should be:
+Explore the repository (read the code, README, tests, git history). Read CODING_STANDARDS.md in the repo root — proposals must be work that fits those standards. Identify a genuinely useful feature or improvement that is missing. It should be:
 - Meaningful (not a trivial tweak)
 - Appropriate to this codebase's purpose
 - Implementable in a series of small sessions

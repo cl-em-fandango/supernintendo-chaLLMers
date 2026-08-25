@@ -67,11 +67,46 @@ def cmd_run() -> int:
     return 0
 
 
+def cmd_run_one() -> int:
+    """Claim and process exactly ONE pending task, then exit.
+
+    The supervisor calls this once per cycle. Claiming a single task (not the
+    whole queue) means the claimed/ staging dir never accumulates unprocessed
+    tasks — each is claimed, processed, and released within one invocation.
+    """
+    cfg, store, runner, provider, pipeline = build()
+    tasks = provider.fetch_pending(claim=True)
+    if not tasks:
+        _log("no pending tasks to claim")
+        return 0
+    task = tasks[0]
+    _log(f"processing {task.id} ({len(tasks)} claimed this cycle)")
+    pipeline.process(task)
+    # release any other claims made this cycle that we did not process,
+    # returning them to pending so a future cycle picks them up.
+    for other in tasks[1:]:
+        _requeue_claimed(provider, other)
+    return 0
+
+
+def _requeue_claimed(provider, task) -> None:
+    """Move a claimed-but-unprocessed task back to pending."""
+    claimed = getattr(provider, "claimed_dir", None)
+    pending = getattr(provider, "pending_dir", None)
+    if not claimed or not pending:
+        return
+    for f in claimed.glob("*.md"):
+        if _slug(f.stem) == task.id:
+            f.rename(pending / f.name)
+            _log(f"  requeued unprocessed claim: {task.id}")
+            break
+
+
 def cmd_run_task_loop() -> int:
     """Process pending tasks one at a time until the queue is empty.
 
-    Used by the supervisor: it only calls this when pending > 0, and re-invokes
-    each cycle, so a parked/failed task cannot wedge the loop.
+    Kept for manual use (`harness.py run-task-loop`). The supervisor uses
+    `run-one` instead, one task per cycle.
     """
     cfg, store, runner, provider, pipeline = build()
     while True:
@@ -82,6 +117,8 @@ def cmd_run_task_loop() -> int:
         task = tasks[0]
         _log(f"processing {task.id} ({len(tasks)} pending)")
         pipeline.process(task)
+        for other in tasks[1:]:
+            _requeue_claimed(provider, other)
 
 
 def cmd_autonomous() -> int:
@@ -152,6 +189,8 @@ def main() -> int:
         return cmd_run()
     if cmd == "run-task" and rest:
         return cmd_run_task(rest[0])
+    if cmd == "run-one":
+        return cmd_run_one()
     if cmd == "run-task-loop":
         return cmd_run_task_loop()
     if cmd == "autonomous":
