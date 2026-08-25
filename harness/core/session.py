@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import prompts
 from .config import Config
 from .stats import SessionRecord, StatsStore
 from external.pi_cli import run_pi_session, _extract_verdict, _now
@@ -53,13 +54,22 @@ class SessionRunner:
         workdir = Path(workdir)
         out_file = workdir / f".pi-session-{stage}-{int(time.time())}.out"
 
-        self.log(f"  ▶ {stage} model={model} iter={iteration} budget={self.cfg.token_budget}k")
-        
+        # Per-model budget: the smaller of the global tokenBudget and the model's
+        # real context window (minus output headroom). This is the ceiling the
+        # model is told to stay under, so it never overflows the window.
+        budget = self.cfg.model_budget(model)
+        self.log(f"  ▶ {stage} model={model} iter={iteration} "
+                 f"budget={budget}k ctx={self.cfg.model_context(model)}k")
+
+        # Prepend the per-model context-budget note so the model knows its own
+        # ceiling (smaller for 32k/64k models, ~100k for 128k models).
+        full_prompt = prompts.CONTEXT_BUDGET_NOTE.format(budget_k=budget // 1000) + prompt
+
         # Run the pi subprocess using the external module
         result = run_pi_session(
             model=model,
             workdir=workdir,
-            prompt=prompt,
+            prompt=full_prompt,
             out_file=out_file,
             log=self.log,
         )

@@ -10,12 +10,18 @@ IMPORTANT OUTPUT PROTOCOL:
   VERDICT: <value>
 - <value> must be one of the values listed in the VERDICT OPTIONS below.
 - Before the VERDICT line, include a section headed "## Summary" with a concise summary of what you did or found. This is read by a human and by the next session.
+"""
 
-REDUCED-CONTEXT MODE (in effect for every session):
-- Keep your working context at 25k tokens or fewer before you need to compact, so
-  the harness can compact proactively rather than being forced to at a higher
-  threshold. Read only what you need, keep notes tight, and if you are running
-  low on context, STOP cleanly and write a progress note rather than pushing on.
+# Injected by SessionRunner with the model's real per-session budget, so every
+# model knows its own context ceiling (smaller for 32k/64k models, ~100k for
+# 128k models). {budget_k} is filled at run time.
+CONTEXT_BUDGET_NOTE = """
+CONTEXT BUDGET (hard ceiling for this session): {budget_k}k tokens.
+- Your model's context window is larger, but you MUST keep your working context
+  at or under {budget_k}k tokens. Read only what you need, keep notes tight, and
+  avoid re-reading files you have already seen.
+- If you are approaching the budget or cannot finish within it, STOP cleanly and
+  write a progress note rather than pushing on and overflowing the window.
 """
 
 # Injected into every session that writes or modifies code, so all agents

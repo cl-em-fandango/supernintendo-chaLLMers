@@ -8,6 +8,20 @@
   "maxSliceCheckLoops": 3,
   "autonomousQueueTarget": 5,
   "trunkBranch": "pi/trunk",
+  "modelContext": {
+    "QwenOptimised32k": 32768,
+    "QwenOptimised64k": 65536,
+    "OrinthOptimised32k": 32768,
+    "QwenOptimised128k": 131072,
+    "Ornith-1.5-35B-Q6_K.gguf": 131072,
+    "Qwen3.8-27B-Q4_K_M": 131072,
+    "Qwen3.8-27B-UD-Q4_K_XL": 131072,
+    "Qwen3.8-27B-UD-Q8_K_XL": 131072,
+    "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2": 131072,
+    "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P": 131072,
+    "Qwen3.8-DFLASH2-Implementer": 131072,
+    "Qwen3.8-DFLASH2-TechnicalWriter": 131072
+  },
   "taskProvider": "directory",
   "directoryProvider": {
     "pendingDir": "/home/donald/work/queue/pending"
