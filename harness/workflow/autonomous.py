@@ -13,10 +13,10 @@ import re
 import shutil
 from pathlib import Path
 
-from .core import prompts
-from .core.config import Config
-from .core.providers import Task
-from .core.session import SessionRunner
+from ..core import prompts
+from ..core.config import Config
+from ..core.providers import Task
+from ..core.session import SessionRunner
 
 
 class AutonomousGenerator:

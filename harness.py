@@ -16,9 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness.autonomous import AutonomousGenerator          # noqa: E402
+from harness.workflow.autonomous import AutonomousGenerator          # noqa: E402
 from harness.core.config import load                             # noqa: E402
-from harness.pipeline import Pipeline                       # noqa: E402
+from harness.workflow.pipeline import Pipeline                       # noqa: E402
 from harness.core.providers import Task, create_provider         # noqa: E402
 from harness.core.session import SessionRunner                   # noqa: E402
 from harness.core.stats import StatsStore, render_report         # noqa: E402
