@@ -55,6 +55,19 @@ class Config:
     def random_pool(self) -> list[str]:
         return list(self.models.get("randomPool", []))
 
+    @property
+    def fast_pool(self) -> list[str]:
+        """Fast (MOE / A3B-class) models for high-volume, low-stakes stages."""
+        pool = self.models.get("fastPool")
+        if pool:
+            return list(pool)
+        # fallback: auto-detect MOE/A3B-class names from the random pool
+        return [m for m in self.random_pool
+                if any(k in m for k in ("A3B", "MOE", "MoE", "moe", "Gemma", "oss"))]
+
+    def get(self, key: str, default=None):
+        return self.raw.get(key, default)
+
 
 def load(path: str | Path) -> Config:
     p = Path(path)

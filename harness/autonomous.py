@@ -27,7 +27,10 @@ class AutonomousGenerator:
         self.log = log
 
     def _random_model(self, exclude: str | None = None) -> str:
-        pool = [m for m in self.cfg.random_pool if m != exclude]
+        # Autonomous suggest/review is high-volume and low-stakes -> use fast models.
+        pool = [m for m in self.cfg.fast_pool if m != exclude]
+        if not pool:
+            pool = [m for m in self.cfg.random_pool if m != exclude]
         return random.choice(pool) if pool else self.cfg.random_pool[0]
 
     def run(self, workdir: Path) -> int:

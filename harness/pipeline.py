@@ -18,6 +18,20 @@ class Pipeline:
         self.cfg = cfg
         self.runner = runner
         self.log = log
+        self.max_crash_retries = cfg.get("maxCrashRetries", 2)
+
+    def _run(self, model, workdir, prompt, *, task_id, stage, **kw):
+        """Run a session, retrying on crash. Artifacts persist on disk, so a
+        retry continues from what the model already wrote rather than restarting."""
+        for attempt in range(self.max_crash_retries + 1):
+            r = self.runner.run(model, workdir, prompt, task_id=task_id,
+                                stage=stage, **kw)
+            if not r.crashed:
+                return r
+            if attempt < self.max_crash_retries:
+                self.log(f"  ⚠ {stage} crashed (rc/timeout); retrying "
+                         f"({attempt+1}/{self.max_crash_retries}) — artifacts preserved")
+        return r
 
     # ------------------------------------------------------------------
     # task lifecycle
@@ -131,19 +145,19 @@ class Pipeline:
     def stage_spec(self, tid: str, td: Path, workdir: Path) -> bool:
         kickbacks = 0
         while True:
-            r = self.runner.run(
+            r = self._run(
                 self.cfg.model, workdir, prompts.spec_author(td),
                 task_id=tid, stage="spec_author")
             self.log(f"  spec author verdict: {r.verdict}")
             if r.verdict != "done":
-                r = self.runner.run(
+                r = self._run(
                     self.cfg.model, workdir, prompts.spec_author(td),
                     task_id=tid, stage="spec_author", notes="retry")
                 if r.verdict != "done":
                     self.park(tid, "spec author failed twice")
                     return False
 
-            r = self.runner.run(
+            r = self._run(
                 self.cfg.assessor, workdir, prompts.spec_assess(td, "ornith"),
                 task_id=tid, stage="spec_assess_ornith")
             self.log(f"  ornith assessment verdict: {r.verdict}")
@@ -156,7 +170,7 @@ class Pipeline:
                 self.log(f"  kickback to spec author (#{kickbacks})")
                 continue
 
-            r = self.runner.run(
+            r = self._run(
                 self.cfg.model, workdir, prompts.spec_assess(td, "tw"),
                 task_id=tid, stage="spec_assess_tw")
             self.log(f"  TW requirement-check verdict: {r.verdict}")
@@ -176,7 +190,7 @@ class Pipeline:
     # stage 2: feasibility
     # ------------------------------------------------------------------
     def stage_feasibility(self, tid: str, td: Path, workdir: Path) -> bool:
-        r = self.runner.run(
+        r = self._run(
             self.cfg.implementer, workdir, prompts.feasibility(td),
             task_id=tid, stage="feasibility")
         self.log(f"  feasibility verdict: {r.verdict}")
@@ -190,7 +204,7 @@ class Pipeline:
             self.log("  feasibility kickback -> back to spec stage")
             if not self.stage_spec(tid, td, workdir):
                 return False
-            r = self.runner.run(
+            r = self._run(
                 self.cfg.implementer, workdir, prompts.feasibility(td),
                 task_id=tid, stage="feasibility", notes="recheck")
             if r.verdict == "pass":
@@ -204,7 +218,7 @@ class Pipeline:
     # stage 3: slicing
     # ------------------------------------------------------------------
     def stage_slicing(self, tid: str, td: Path, workdir: Path) -> bool:
-        r = self.runner.run(
+        r = self._run(
             self.cfg.implementer, workdir, prompts.slice(td),
             task_id=tid, stage="slicing")
         self.log(f"  slicing verdict: {r.verdict}")
@@ -212,9 +226,10 @@ class Pipeline:
             self.park(tid, f"slicing failed (verdict={r.verdict})")
             return False
 
+        fast = self.cfg.fast_pool[0] if self.cfg.fast_pool else self.cfg.implementer
         for check in range(1, self.cfg.max_slice_check_loops + 1):
-            r = self.runner.run(
-                self.cfg.implementer, workdir, prompts.slice_check(td),
+            r = self._run(
+                fast, workdir, prompts.slice_check(td),
                 task_id=tid, stage="slice_check", iteration=check)
             self.log(f"  slice check #{check} verdict: {r.verdict}")
             if r.verdict == "pass":
@@ -247,7 +262,7 @@ class Pipeline:
 
     def _implement(self, tid: str, td: Path, workdir: Path, sid: str) -> bool:
         for it in range(1, self.cfg.max_slice_implement + 1):
-            r = self.runner.run(
+            r = self._run(
                 self.cfg.implementer, workdir,
                 prompts.implement_slice(td, sid, it, self.cfg.max_slice_implement),
                 task_id=tid, stage="slice_implement", slice_id=sid, iteration=it)
@@ -268,7 +283,7 @@ class Pipeline:
         stage = f"{kind}_review"
 
         for it in range(1, max_iter + 1):
-            r = self.runner.run(
+            r = self._run(
                 model, workdir, prompt_fn(td, sid),
                 task_id=tid, stage=stage, slice_id=sid, iteration=it)
             self.log(f"    {kind} review iter {it} verdict: {r.verdict}")
@@ -277,7 +292,7 @@ class Pipeline:
             if it < max_iter:
                 feedback = td / "artifacts" / "progress" / f"slice-{sid}.md"
                 shutil.copy(r.out_file, feedback)
-                self.runner.run(
+                self._run(
                     model, workdir, prompts.fix_slice(td, sid, feedback, kind),
                     task_id=tid, stage="slice_fix", slice_id=sid, iteration=it,
                     notes=f"fix after {kind} review")
@@ -288,7 +303,7 @@ class Pipeline:
     # stage 5: holistic review + merge
     # ------------------------------------------------------------------
     def stage_holistic(self, tid: str, td: Path, workdir: Path) -> str:
-        r = self.runner.run(
+        r = self._run(
             self.cfg.model, workdir, prompts.holistic_review(td),
             task_id=tid, stage="holistic")
         self.log(f"  holistic review verdict: {r.verdict}")

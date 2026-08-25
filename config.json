@@ -16,6 +16,15 @@
     "technicalWriter": "Qwen3.8-DFLASH2-TechnicalWriter",
     "implementer": "Qwen3.8-DFLASH2-Implementer",
     "assessor": "Ornith-1.5-35B-Q6_K.gguf",
+    "fastPool": [
+      "Gemma4-31B-A3B-Q8_DFLASH2",
+      "Gemma4-E4B-it-AWQ-INT4",
+      "GPT-OSS-120B",
+      "Ornith-1.5-35B-Q6_K.gguf",
+      "Qwen3.5-35B-A3B-DFLASH2",
+      "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M",
+      "Qwen3-Coder-MoE-Implementer"
+    ],
     "randomPool": [
       "DeepSeek-V4-Flash-0731-Abliterated-ROCMFPx-Strix-Lean-2.58bpw",
       "gemma-4-26B-A4B-it-UD-Q8_K_XL",
