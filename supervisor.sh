@@ -21,6 +21,8 @@ PIDFILE="$WORK_DIR/logs/supervisor.pid"
 STOPFILE="$WORK_DIR/STOP"
 SLEEP_S="${SLEEP_S:-60}"
 MAX_CYCLES="${MAX_CYCLES:-0}"   # 0 = unlimited
+FAIL_LIMIT="${FAIL_LIMIT:-3}"   # consecutive harness launch failures before auto-revert
+FAILCOUNT=0
 
 mkdir -p "$WORK_DIR/logs"
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG"; }
@@ -61,6 +63,24 @@ while true; do
     log "reached MAX_CYCLES=$MAX_CYCLES; halting"
     break
   fi
+
+  # --- circuit breaker: is the harness even launchable? ---
+  if ! ( cd "$HARNESS_DIR" && python3 harness.py status ) >> "$LOG" 2>&1; then
+    FAILCOUNT=$((FAILCOUNT+1))
+    log "  ⚠ harness failed to launch ($FAILCOUNT/$FAIL_LIMIT)"
+    if [[ "$FAILCOUNT" -ge "$FAIL_LIMIT" ]]; then
+      log "  ⛔ CIRCUIT BREAKER: reverting trunk to pi/last-good"
+      ( cd "$HARNESS_DIR" && git reset --hard pi/last-good ) >> "$LOG" 2>&1 \
+        && log "  reverted to $(cd "$HARNESS_DIR" && git rev-parse --short pi/last-good)" \
+        || log "  ⚠ revert failed — manual intervention needed"
+      FAILCOUNT=0
+      sleep "$SLEEP_S"
+      continue
+    fi
+    sleep "$SLEEP_S"
+    continue
+  fi
+  FAILCOUNT=0   # harness launched fine; reset the failure counter
 
   pending=$(ls "$WORK_DIR/queue/pending"/*.md 2>/dev/null | wc -l)
   log "── cycle $cycle: pending=$pending ──"

@@ -1,8 +1,16 @@
-"""Git helpers for the harness: feature branches + squash merge to trunk."""
+"""Git helpers for the harness: feature branches + squash merge to trunk.
+
+Safety: every merge to trunk is followed by a verification gate. If the gate
+fails (broken import, CLI won't run), trunk is reset back to the last known-good
+tag so a bad self-improvement can never wedge the running harness.
+"""
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+LAST_GOOD_TAG = "pi/last-good"
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> str:
@@ -39,6 +47,12 @@ def ensure_branch(workdir: Path, task_id: str, trunk: str) -> str:
 
 
 def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str) -> None:
+    """Squash-merge a feature branch to trunk, then verify the result.
+
+    If the verification gate fails, trunk is reset to the last known-good tag
+    and the feature branch is left intact (for inspection) and a RuntimeError
+    is raised so the pipeline parks the task.
+    """
     workdir = Path(workdir)
     branch = f"pi/{task_id}"
     _git(workdir, "checkout", trunk)
@@ -46,4 +60,52 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str) -> None:
     _git(workdir, "-c", "user.email=pi@harness.local",
          "-c", "user.name=pi-harness",
          "commit", "-m", f"feat({task_id}): {title}\n\nSquash-merged from {branch}.")
+
+    # --- verification gate ---
+    ok, detail = verify_harness(workdir)
+    if not ok:
+        # revert trunk to last known-good; keep the feature branch for inspection
+        _revert_to_last_good(workdir, trunk)
+        raise RuntimeError(
+            f"verification gate FAILED for {task_id}: {detail}. "
+            f"trunk reverted to {LAST_GOOD_TAG}; feature branch {branch} kept.")
+
+    # gate passed: advance the last-good tag and drop the feature branch
+    _git(workdir, "tag", "-f", LAST_GOOD_TAG, trunk)
     _git(workdir, "branch", "-d", branch, check=False)
+
+
+def verify_harness(workdir: Path) -> tuple[bool, str]:
+    """Smoke-test the harness at workdir: imports cleanly and the CLI runs.
+
+    Returns (ok, detail). These are the two things that, if broken, wedge the
+    supervisor: a failed import, or a CLI that won't execute.
+    """
+    workdir = Path(workdir)
+    # 1. the package must import
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, '.'); "
+         "import harness, harness.pipeline, harness.session, "
+         "harness.providers, harness.autonomous, harness.gitops, harness.stats"],
+        cwd=workdir, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        return False, f"import failed: {r.stderr.strip()[-300:]}"
+    # 2. the CLI must actually run (status touches config + stats + queue)
+    r = subprocess.run(
+        [sys.executable, "harness.py", "status"],
+        cwd=workdir, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return False, f"harness.py status failed rc={r.returncode}: {r.stderr.strip()[-300:]}"
+    return True, "ok"
+
+
+def _revert_to_last_good(workdir: Path, trunk: str) -> None:
+    """Reset trunk to the last known-good tag. If no tag exists yet, reset to
+    trunk's parent (undo the single bad merge commit)."""
+    workdir = Path(workdir)
+    if _has(workdir, LAST_GOOD_TAG):
+        _git(workdir, "reset", "--hard", LAST_GOOD_TAG)
+    else:
+        # no last-good tag: undo the merge commit we just made
+        _git(workdir, "reset", "--hard", "HEAD~1")
