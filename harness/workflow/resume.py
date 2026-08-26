@@ -12,6 +12,7 @@ from pathlib import Path
 from ..core.config import Config
 from ..core.enums import CheckpointStage
 from ..core.providers import Task
+from .continue_fresh import task_from_dir
 from .pipeline import STAGE_SEQUENCE
 from .task_lifecycle import QUEUE_LOCATIONS, TaskLifecycle
 
@@ -23,20 +24,6 @@ def _plan_stages() -> tuple:
     """The stages a resume may run: the four checkpointable stages plus
     `holistic` (terminal, never checkpointed)."""
     return STAGE_SEQUENCE + (HOLISTIC,)
-
-
-def _task_from_dir(task_dir: Path, lifecycle: TaskLifecycle, where: str) -> Task:
-    """Reconstruct a `Task` from a queue dir (F3.5): id = dir name,
-    body = original.md contents (absent -> ""), source = task.json source
-    (absent -> "resume")."""
-    original = task_dir / "original.md"
-    body = original.read_text() if original.exists() else ""
-    source = "resume"
-    task_json = task_dir / "task.json"
-    if task_json.exists():
-        state = lifecycle.load_state(task_dir.name, where=where)
-        source = state.source or "resume"
-    return Task(id=task_dir.name, body=body, source=source)
 
 
 def _reason_from_review(review_file: Path) -> str:
@@ -99,7 +86,7 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
 
     if where == "active":
         # F3.3: resume immediately, no prompt.
-        pipeline.process(_task_from_dir(task_dir, lifecycle, where))
+        pipeline.process(task_from_dir(task_dir, lifecycle))
         return 0
 
     # parked/ or failed/: show reason, confirm, move back to active/, resume.
@@ -113,5 +100,5 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
     shutil.move(str(task_dir), str(active_dir))
     (cfg.queue_dir / "review" / f"{task_id}.md").unlink(missing_ok=True)
     log(f"  moved {where}/{task_id} -> active/{task_id}")
-    pipeline.process(_task_from_dir(active_dir, lifecycle, "active"))
+    pipeline.process(task_from_dir(active_dir, lifecycle))
     return 0

@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from ..workflow.autonomous import AutonomousGenerator
+from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..core.providers import Task
 from ..core.stats import render_report
@@ -33,16 +34,22 @@ def _requeue_claimed(provider, task) -> None:
             break
 
 
-def cmd_run_task(file: str) -> int:
+def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int:
     cfg, store, runner, provider, pipeline = build()
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
                 source=f"cli:{file}")
+    if fresh:
+        fresh_restart(task.id, cfg, log=_log)
+    if continue_:
+        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
     pipeline.process(task)
     return 0
 
 
-def cmd_run() -> int:
+def cmd_run(continue_: bool = False) -> int:
     cfg, store, runner, provider, pipeline = build()
+    if continue_:
+        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
     tasks = provider.fetch_pending(claim=True)
     if not tasks:
         _log("no pending tasks")
@@ -61,9 +68,8 @@ def cmd_run() -> int:
 def cmd_run_one() -> int:
     """Claim and process exactly ONE pending task, then exit.
 
-    The supervisor calls this once per cycle. Claiming a single task (not the
-    whole queue) means the claimed/ staging dir never accumulates unprocessed
-    tasks — each is claimed, processed, and released within one invocation.
+    Kept for manual use. The supervisor uses `run-task-loop --continue`
+    instead, which also resumes in-flight tasks left in active/.
     """
     cfg, store, runner, provider, pipeline = build()
     tasks = provider.fetch_pending(claim=True)
@@ -80,13 +86,15 @@ def cmd_run_one() -> int:
     return 0
 
 
-def cmd_run_task_loop() -> int:
+def cmd_run_task_loop(continue_: bool = False) -> int:
     """Process pending tasks one at a time until the queue is empty.
 
-    Kept for manual use (`harness.py run-task-loop`). The supervisor uses
-    `run-one` instead, one task per cycle.
+    The supervisor calls this each cycle (with `--continue`, which first
+    resumes in-flight tasks left in active/ from a previous run or crash).
     """
     cfg, store, runner, provider, pipeline = build()
+    if continue_:
+        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
     while True:
         tasks = provider.fetch_pending(claim=True)
         if not tasks:

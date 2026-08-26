@@ -15,17 +15,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
     # run
-    subparsers.add_parser("run", help="Process all pending tasks, then autonomous mode")
+    run_parser = subparsers.add_parser("run", help="Process all pending tasks, then autonomous mode")
+    run_parser.add_argument("--continue", dest="continue_", action="store_true",
+                           default=False, help="Also resume in-flight tasks in active/")
     
     # run-task
     run_task_parser = subparsers.add_parser("run-task", help="Process a single task file")
     run_task_parser.add_argument("file", help="Path to the task file")
+    run_task_parser.add_argument("--continue", dest="continue_", action="store_true",
+                                default=False, help="Also resume in-flight tasks in active/")
+    run_task_parser.add_argument("--fresh", dest="fresh", action="store_true",
+                                default=False, help="Delete any existing active/ dir and restart from scratch")
     
     # run-one
     subparsers.add_parser("run-one", help="Claim and process exactly one pending task")
     
     # run-task-loop
-    subparsers.add_parser("run-task-loop", help="Process pending tasks one at a time until queue is empty")
+    run_task_loop_parser = subparsers.add_parser("run-task-loop", help="Process pending tasks one at a time until queue is empty")
+    run_task_loop_parser.add_argument("--continue", dest="continue_", action="store_true",
+                                     default=False, help="Also resume in-flight tasks in active/")
     
     # autonomous
     subparsers.add_parser("autonomous", help="Generate tasks until queue has N")

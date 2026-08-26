@@ -3,11 +3,12 @@
 
 Usage:
   harness.py run                 Process all pending tasks, then autonomous mode
-  harness.py run-task <file>     Process a single task file
+  harness.py run-task <file>     Process a single task file (--fresh, --continue)
+  harness.py run-task-loop       Process pending tasks until queue is empty (--continue)
+  harness.py resume <task_id>    Resume a task from its last checkpoint
   harness.py autonomous          Generate tasks until queue has N
   harness.py status              Show queue + stats
   harness.py report              Print the stats report
-  harness.py resume <task_id>    Resume a task from its last checkpoint
 """
 from __future__ import annotations
 
@@ -31,13 +32,14 @@ def main() -> int:
         return 1
     
     if args.command == "run":
-        return handlers.cmd_run()
+        return handlers.cmd_run(continue_=args.continue_)
     elif args.command == "run-task":
-        return handlers.cmd_run_task(args.file)
+        return handlers.cmd_run_task(args.file, fresh=args.fresh,
+                                     continue_=args.continue_)
     elif args.command == "run-one":
         return handlers.cmd_run_one()
     elif args.command == "run-task-loop":
-        return handlers.cmd_run_task_loop()
+        return handlers.cmd_run_task_loop(continue_=args.continue_)
     elif args.command == "autonomous":
         return handlers.cmd_autonomous()
     elif args.command == "status":

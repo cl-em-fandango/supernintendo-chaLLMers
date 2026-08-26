@@ -22,6 +22,7 @@ STOPFILE="$WORK_DIR/STOP"
 SLEEP_S="${SLEEP_S:-60}"
 MAX_CYCLES="${MAX_CYCLES:-0}"   # 0 = unlimited
 FAIL_LIMIT="${FAIL_LIMIT:-3}"   # consecutive harness launch failures before auto-revert
+CONTINUE="${CONTINUE:-1}"       # 1 = pass --continue to run-task-loop (resume in-flight tasks)
 FAILCOUNT=0
 
 mkdir -p "$WORK_DIR/logs"
@@ -83,12 +84,19 @@ while true; do
   FAILCOUNT=0   # harness launched fine; reset the failure counter
 
   pending=$(ls "$WORK_DIR/queue/pending"/*.md 2>/dev/null | wc -l)
-  log "── cycle $cycle: pending=$pending ──"
+  inflight=$(find "$WORK_DIR/queue/active" -mindepth 2 -maxdepth 2 -name task.json 2>/dev/null | wc -l)
+  log "── cycle $cycle: pending=$pending, in-flight=$inflight ──"
 
-  if [[ "$pending" -gt 0 ]]; then
-    log "processing pending tasks"
-    ( cd "$HARNESS_DIR" && python3 harness.py run-task-loop ) >> "$LOG" 2>&1 \
-      || log "  run-task-loop exited rc=$?"
+  if [[ "$pending" -gt 0 || "$inflight" -gt 0 ]]; then
+    if [[ "$CONTINUE" == "1" ]]; then
+      log "processing pending tasks (resuming in-flight)"
+      ( cd "$HARNESS_DIR" && python3 harness.py run-task-loop --continue ) >> "$LOG" 2>&1 \
+        || log "  run-task-loop exited rc=$?"
+    else
+      log "processing pending tasks"
+      ( cd "$HARNESS_DIR" && python3 harness.py run-task-loop ) >> "$LOG" 2>&1 \
+        || log "  run-task-loop exited rc=$?"
+    fi
   else
     log "queue empty -> autonomous generation"
     ( cd "$HARNESS_DIR" && python3 harness.py autonomous ) >> "$LOG" 2>&1 \
