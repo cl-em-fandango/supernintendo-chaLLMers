@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from ..workflow.autonomous import AutonomousGenerator
+from ..workflow.resume import resume_task
 from ..core.providers import Task
 from ..core.stats import render_report
 from ..composition import build
@@ -120,6 +121,13 @@ def cmd_report() -> int:
     _, store, *_ = build()
     print(render_report(store.all()))
     return 0
+
+
+def cmd_resume(task_id: str, yes: bool = False) -> int:
+    """Resume a task from its last checkpoint (spec FR3)."""
+    cfg, store, runner, provider, pipeline = build()
+    return resume_task(task_id, yes, cfg, pipeline,
+                       lifecycle=pipeline.lifecycle, log=_log)
 
 
 def cmd_unpark(task_id: str) -> int:

@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     # report
     subparsers.add_parser("report", help="Print the stats report")
     
+    # resume
+    resume_parser = subparsers.add_parser("resume", help="Resume a task from its last checkpoint")
+    resume_parser.add_argument("task_id", help="Task ID to resume")
+    resume_parser.add_argument("--yes", "-y", dest="yes", action="store_true",
+                              default=False, help="Skip the confirmation prompt")
+
     # unpark (with requeue alias)
     unpark_parser = subparsers.add_parser("unpark", help="Move a parked/failed task back to pending")
     unpark_parser.add_argument("task_id", help="Task ID to unpark")

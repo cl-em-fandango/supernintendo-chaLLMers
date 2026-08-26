@@ -7,6 +7,7 @@ Usage:
   harness.py autonomous          Generate tasks until queue has N
   harness.py status              Show queue + stats
   harness.py report              Print the stats report
+  harness.py resume <task_id>    Resume a task from its last checkpoint
 """
 from __future__ import annotations
 
@@ -43,6 +44,8 @@ def main() -> int:
         return handlers.cmd_status()
     elif args.command == "report":
         return handlers.cmd_report()
+    elif args.command == "resume":
+        return handlers.cmd_resume(args.task_id, args.yes)
     elif args.command in ("unpark", "requeue"):
         return handlers.cmd_unpark(args.task_id)
     
