@@ -33,7 +33,7 @@ until the queue has 5 tasks.
 
 - **Fresh context every session.** No session resume. Continuity lives in
   explicit artifacts (spec.md, slices.md, progress notes), never in model memory.
-- **Token budget** (default 100k) keeps every session safely under the 128k window.
+- **Token budget** (default 60k) keeps every session safely under the 128k window.
 - **Verdict protocol.** Every session ends with `VERDICT: <value>`; the harness
   routes on it. No NLP guessing.
 - **Adapter pattern** for task sources (`harness/providers.py`). The pipeline
