@@ -7,11 +7,27 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
+from ..core.enums import CheckpointStage
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionRunner
 from .params import StageContext
 from .task_lifecycle import TaskLifecycle
+
+# The four checkpointable stages, in pipeline order (F2.1).
+STAGE_SEQUENCE: tuple[CheckpointStage, ...] = (
+    CheckpointStage.SPEC,
+    CheckpointStage.FEASIBILITY,
+    CheckpointStage.SLICING,
+    CheckpointStage.SLICES,
+)
+
+_STAGE_FUNCTIONS = {
+    CheckpointStage.SPEC: "stage_spec",
+    CheckpointStage.FEASIBILITY: "stage_feasibility",
+    CheckpointStage.SLICING: "stage_slicing",
+    CheckpointStage.SLICES: "stage_slices",
+}
 
 
 class Pipeline:
@@ -40,13 +56,28 @@ class Pipeline:
     # top level
     # ------------------------------------------------------------------
     def process(self, task: Task) -> str:
-        td = self.lifecycle.intake(task)
+        """Run (or resume) a task through the stage waterfall.
+
+        Resume is inherent (F2.1): if `active/<id>/task.json` already exists,
+        the task resumes from its checkpointed prefix instead of re-running
+        completed stages. A fresh task (no task.json) is intaken as before.
+        """
+        task_dir = self.lifecycle.task_dir(task.id)
+        if self.lifecycle.task_json_path(task.id).exists():
+            state = self.lifecycle.load_state(task.id)
+            skipped = [s.value for s in state.checkpointed_stages]
+            self.log(f"═══ task {task.id} ═══")
+            self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
+                     else f"  resuming (no checkpoints yet)")
+        else:
+            task_dir = self.lifecycle.intake(task)
+            state = self.lifecycle.load_state(task.id)
+            self.log(f"═══ task {task.id} ═══")
         # Body is now persisted in the task dir; drop the pending/claim staging file
         # so this task cannot be re-claimed while it is in flight or terminal.
         if self.provider is not None and hasattr(self.provider, "release_claim"):
             self.provider.release_claim(task)
-        self.log(f"═══ task {task.id} ═══")
-        workdir = self.lifecycle.resolve_workdir(td)
+        workdir = self.lifecycle.resolve_workdir(task_dir)
         self.log(f"  workdir: {workdir}")
         try:
             ensure_branch(workdir, task.id, self.cfg.trunk_branch)
@@ -54,16 +85,25 @@ class Pipeline:
             self.lifecycle.park(task.id, f"git setup failed: {e}")
             return "parked"
 
-        ctx = StageContext(task.id, td, workdir)
-        if not self.stage_spec(ctx):
-            return "parked"
-        if not self.stage_feasibility(ctx):
-            return "failed" if not td.exists() else "parked"
-        if not self.stage_slicing(ctx):
-            return "parked"
-        if not self.stage_slices(ctx):
-            return "parked"
+        ctx = StageContext(task.id, task_dir, workdir)
+        for stage in STAGE_SEQUENCE:
+            if stage in state.checkpointed_stages:
+                self.log(f"  ⏭ skipping {stage.value} (checkpointed)")
+                continue
+            self.lifecycle.set_stage(task.id, stage)
+            self.log(f"  ▶ {stage.value}")
+            if not getattr(self, _STAGE_FUNCTIONS[stage])(ctx):
+                return self._stage_failed(task.id, stage, task_dir)
+            self.lifecycle.checkpoint(task.id, stage)
         return self.stage_holistic(ctx)
+
+    def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
+        """Per-stage terminal return contract (F2.1): feasibility failure is
+        `failed` only when the dir has already been moved out of active/ by
+        `fail()`; every other stage failure parks."""
+        if stage == CheckpointStage.FEASIBILITY:
+            return "failed" if not task_dir.exists() else "parked"
+        return "parked"
 
     # ------------------------------------------------------------------
     # stage 1: specification
@@ -235,7 +275,9 @@ class Pipeline:
         self.log(f"  holistic review verdict: {r.verdict}")
         if r.verdict == "pass":
             try:
-                title = (ctx.task_dir / "original.md").read_text().strip().splitlines()[0][:70]
+                original = ctx.task_dir / "original.md"
+                title = (original.read_text().strip().splitlines()[0][:70]
+                         if original.exists() else ctx.task_id)
                 from ..core.gitops import merge_to_trunk
                 merge_to_trunk(ctx.workdir, ctx.task_id, self.cfg.trunk_branch, title)
             except Exception as e:

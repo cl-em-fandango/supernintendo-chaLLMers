@@ -24,6 +24,26 @@ class Verdict(str, Enum):
     REJECTED = "rejected"
 
 
+class CheckpointStage(str, Enum):
+    """The four non-terminal pipeline stages, in pipeline order.
+
+    `holistic` is deliberately absent: it is terminal (success -> done/, failure
+    -> parked/), so it is never recorded in `checkpointed_stages`.
+    """
+    SPEC = "spec"
+    FEASIBILITY = "feasibility"
+    SLICING = "slicing"
+    SLICES = "slices"
+
+
+CHECKPOINT_ORDER: tuple[CheckpointStage, ...] = (
+    CheckpointStage.SPEC,
+    CheckpointStage.FEASIBILITY,
+    CheckpointStage.SLICING,
+    CheckpointStage.SLICES,
+)
+
+
 class Stage(str, Enum):
     """Pipeline stage names, used in stats and logs."""
     SPEC = "spec_author"
