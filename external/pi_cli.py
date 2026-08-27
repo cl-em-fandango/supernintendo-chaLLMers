@@ -6,6 +6,7 @@ handle logging, stats, or policy - just the raw interaction.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -70,10 +71,13 @@ def run_pi_session(
     hb_thread = threading.Thread(target=heartbeat, daemon=True)
     hb_thread.start()
 
+    # Provider is overridable for tests / alternative backends (e.g. openrouter);
+    # production default stays llama-swap.
+    provider = os.environ.get("HARNESS_PI_PROVIDER", "llama-swap")
     try:
         proc = subprocess.Popen(
             [
-                "pi", "--provider", "llama-swap", "--model", model,
+                "pi", "--provider", provider, "--model", model,
                 "--no-session", "--mode", "json", "-p", prompt,
             ],
             cwd=workdir,

@@ -42,6 +42,17 @@ else
     )
 fi
 
+# Pass through pi backend selection (e.g. openrouter for integration tests).
+# Stage a writable copy of host pi agent config (auth.json etc.) so `pi` is
+# authenticated in-container (user harnessuser, uid 1000) without mutating the
+# host's ~/.pi (pi insists on writing an auth.json.lock next to auth.json).
+EXTRA_FLAGS+=("-e" "HARNESS_PI_PROVIDER=${HARNESS_PI_PROVIDER:-llama-swap}")
+if [ -f "${HOME}/.pi/agent/auth.json" ]; then
+    PI_AGENT_STAGE="$(mktemp -d /tmp/harness-pi-agent.XXXXXX)"
+    cp -r "${HOME}/.pi/agent/". "$PI_AGENT_STAGE"/ 2>/dev/null || true
+    EXTRA_FLAGS+=("-v" "${PI_AGENT_STAGE}:/home/harnessuser/.pi/agent:z")
+fi
+
 DEFAULT_CMD=(python3 /opt/harness-frozen/harness.py status)
 RUN_CMD=("${@:-${DEFAULT_CMD[@]}}")
 
@@ -54,3 +65,6 @@ ${ENGINE_CMD} run --rm -i \
     "${EXTRA_FLAGS[@]}" \
     "${IMAGE_TAG}" \
     "${RUN_CMD[@]}"
+_rc=$?
+[ -n "${PI_AGENT_STAGE:-}" ] && rm -rf "$PI_AGENT_STAGE"
+exit $_rc

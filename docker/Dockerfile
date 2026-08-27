@@ -1,8 +1,10 @@
 FROM registry.fedoraproject.org/fedora-minimal:latest
 
-# Install python, git, iptables, iproute, ca-certificates via microdnf
-RUN microdnf install -y python3 git iptables iproute shadow-utils ca-certificates && \
-    microdnf clean all
+# Install python, git, node+pi (the model CLI the harness drives), iptables, iproute, ca-certificates via microdnf
+RUN microdnf install -y python3 git nodejs npm iptables iproute shadow-utils ca-certificates && \
+    microdnf clean all && \
+    npm install -g --silent @earendil-works/pi-coding-agent && \
+    npm cache clean --force
 
 # Create unprivileged runtime user
 RUN useradd -m -u 1000 -s /bin/bash harnessuser
