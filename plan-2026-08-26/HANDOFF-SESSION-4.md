@@ -144,14 +144,17 @@ Inputs read: `AUDIT-2026-08-26.md`, `PLAN-2026-08-26.md`, `AGENTS.MD`, all 42 ca
   T02 (truncates `supervisor.log`). I resolved it with the append/new-file exception in PLAN §Rules and
   made the truncation operator-only. If you prefer the strict reading, T07/T25 must move their
   acceptance target to a temp dir and lose the end-to-end proof.
+  > Human input: AGENTS md updated to reflect rules not applying in cases where given direct instruction.
 - **D4 vs the loop.** A stale `claimed/` is now a *block* on autonomous generation (T13 counts claims
   as work) while the guard that would clear it is off by default (T12). That is the deliberate,
   human-respecting reading of D4 — but it means the first unattended cycle after wave 3 will log
   `action=work` and do nothing, forever, at the T15 backoff interval. The review pass D4 promises is
   what unblocks it; consider doing that pass immediately after T11+T12 land rather than at the end.
+  > Human input: We are not executing the tasks yet. I will deal with this. Ignore it. Just focus on the tasks
 - **Two test deliverables have no wave-9 owner.** `workflow/pipeline` (per-slice checkpoint, merge
   checkpoint, queue-git guard) is named in Done-when lines of T23/T26/T27 but no test card covers it;
   T36 disclaims it as "already tested there". I assigned the tests to the behaviour cards themselves
   (T23, T27). **T26's Done-when still claims "asserted by a unit test with a stub runner counting
   sessions" with no owner** — give it the same treatment (a `tests/test_slice_checkpoint.py`
   deliverable inside T26) when you next touch that card.
+  > Human input - not important, leave it. Finish the tasks

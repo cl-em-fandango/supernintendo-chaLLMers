@@ -48,8 +48,10 @@ python3 - <<'PY'
 import sys, unittest, pathlib; sys.path.insert(0,'.')
 p = pathlib.Path('tests/test_stats.py'); assert p.exists()
 src = p.read_text()
-assert 'stats/sessions.jsonl' not in src or 'work/stats' in src.split('def ')[0] is False \
-       or '/home/donald/work/stats/sessions.jsonl' not in src, "test reads the live JSONL path"
+# one assertion that can actually fail: the test file must not name the live store at all
+# (the line this replaced was an `or` chain with a chained `is False` inside it, so it held
+#  whatever the test file contained — see PLAN §Rules on un-failable assertions)
+assert '/home/donald/work/stats' not in src, "test reads the live JSONL path"
 assert 'open(' not in src or 'tempfile' in src or 'mkdtemp' in src
 suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_stats')
 assert suite.countTestCases() >= 7, f"only {suite.countTestCases()} cases"

@@ -1,5 +1,6 @@
 ## Rules
 
+UNLESS EXPLICITLY STATED:
 Never launch `pi` from inside this repo's session; never run the supervisor; never
 `git reset --hard`; never write to `/home/donald/work/{queue,stats,logs}`. Tests use temp dirs, temp
 git repos and fake `pi` scripts on `PATH` (patterns are in the T10, T12, T35, T36 verify blocks).

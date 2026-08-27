@@ -27,6 +27,11 @@ stop burning sessions.
 2. In `Pipeline._run`, immediately after a session returns: if `result.peak_tokens >
    cfg.over_budget_limit` → stop. **Do not retry** (a retry re-reads the same context and is the
    exact cost D2 is trying to avoid) and do not look at the verdict.
+   **Shape note for later:** **T41** (wave 10, lands *after* this card) raises a sibling
+   `AllAttemptsCrashed(task_id, stage, attempts)` from this same `_run` and handles it in `process()`.
+   Define `OverContextBudget` so that second exception is additive — same module, one `except` chain in
+   `process()`, one park-with-reason helper shared by both. Do not build a handling pattern T41 would
+   have to duplicate; T41's Do 4 says the same thing from its side.
 3. Signal it with a named value, not a bool: return/raise `OverContextBudget(peak_tokens, limit,
    stage, task_id)` (a small exception class in `harness/workflow/params.py` or `pipeline.py` — pick
    one, say which in the commit message). Every stage caller treats it the same way, so handle it in
@@ -50,14 +55,56 @@ python3 - <<'PY'
 import sys, tempfile, pathlib, json; sys.path.insert(0,'.')
 from harness.core.config import Config
 from harness.workflow import pipeline as PL
+from harness.workflow import params          # the other place Do 3 allows the class to live
 cfg = Config({"workDir": "/tmp/x", "maxPromptTokens": 60000}, pathlib.Path("/tmp/x/queue"))
 assert cfg.over_budget_limit == 60000
-assert hasattr(PL, "OverContextBudget") or hasattr(PL, "OverContextBudget")
+# Do 3 allows either module, so the two *different* candidates are the disjunction. (The line this
+# replaced repeated `hasattr(PL, ...)` twice and could therefore never fail — PLAN §Rules.)
+assert hasattr(PL, "OverContextBudget") or hasattr(params, "OverContextBudget"), \
+    "OverContextBudget is in neither pipeline.py nor params.py"
+OCB = getattr(PL, "OverContextBudget", None) or getattr(params, "OverContextBudget", None)
+assert issubclass(OCB, Exception), "Do 3 asked for a named exception, not a bool or a field"
 src = pathlib.Path('harness/workflow/pipeline.py').read_text()
 assert 'over_budget_limit' in src and 'peak_tokens' in src, "no cap check in _run"
 # the check must sit before the retry loop's next attempt
 run = src.split('def _run')[1].split('\n    def ')[0]
 assert run.index('over_budget_limit') < run.index('attempt') if 'attempt' in run else True
+
+# --- D2's boundary and D2's "no questions asked" no-retry, both of which Done-when promises and
+#     this block used not to test. Three things must hold, all of them able to fail:
+#       peak 60001 -> OverContextBudget, and exactly ONE runner call (a retry is the cost D2 bans)
+#       peak 60000 -> no exception, exactly ONE runner call (the rule is > cap, never >= cap)
+#       the exception carries the measured peak and the cap, because the park reason is built from them
+# The setup is scaffolding: build the pipeline the way composition.build() does and call the same
+# per-session path _run uses. Adapt the two ADAPT lines to the real signatures — as written they are
+# Ellipsis placeholders and the block fails loudly rather than passing vacuously. If driving _run from
+# a snippet proves awkward, ship these same assertions as tests/test_over_cap_trip.py inside this
+# card (the T23/T27 pattern for behaviour no wave-9 card owns) and say so in the commit message.
+class Rec:
+    def __init__(self, peak):
+        self.peak_tokens, self.verdict, self.out_file = peak, "pass", "/tmp/no-such.out"
+class Runner:
+    def __init__(self, peak): self.peak, self.calls = peak, 0
+    def __call__(self, *a, **k):
+        self.calls += 1
+        return Rec(self.peak)
+def trip(peak):
+    r = Runner(peak)
+    pipe = ...            # ADAPT: composition-shaped Pipeline, runner=r, cfg with maxPromptTokens 60000
+    err = None
+    try:
+        pipe._run(...)    # ADAPT: the smallest real per-session call (stage / slice / iteration)
+    except OCB as e:
+        err = e
+    return err, r.calls
+over, n_over = trip(60001)
+assert over is not None, "60001 tokens did not trip the cap"
+assert n_over == 1, f"retry happened ({n_over} runner calls) — D2 forbids one over the cap"
+at, n_at = trip(60000)
+assert at is None, "exactly 60000 tripped: D2's line is 'goes over', not 'reaches'"
+assert n_at == 1, f"an in-budget session was run {n_at} times"
+assert "60001" in str(over) and "60000" in str(over), \
+    "the exception must carry peak and limit — park()'s reason string is built from them"
 # handoff text appears in the exec summary for an over-cap park
 from harness.workflow.task_lifecycle import TaskLifecycle
 root = pathlib.Path(tempfile.mkdtemp())
@@ -82,4 +129,6 @@ them, this card only writes the note), and anything that resumes or un-parks the
 ## Done when
 A synthetic result with `peak_tokens = 60001` parks the task with the numbers in the reason and writes
 the `## Handoff` + `## Next agent should` sections into `queue/review/<id>.md`; no retry is attempted
-(assert with a stub runner counting calls); a result at exactly 60000 does **not** trip.
+(stub runner counting calls); a result at exactly 60000 does **not** trip. The Verify block now carries
+all three of those itself — they used to be claimed only here — plus the `>` -not-`>=` boundary and the
+requirement that `OverContextBudget` is one exception class in one of the two modules Do 3 names.
