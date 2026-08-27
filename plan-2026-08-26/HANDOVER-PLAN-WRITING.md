@@ -382,11 +382,49 @@ recommended default in **Do**, and "if the human's answer differs, STOP and hand
 - [x] Session 1 — `PLAN-2026-08-26.md` index (waves, deps, decisions, gate, rules).
 - [x] Session 1 — cards `T01`–`T12` (waves 0–2) written.
 - [x] Session 1 — this handover.
-- [ ] Session 2 pass 1 — cards `T13`–`T20`.
-- [ ] Session 2 pass 2 — cards `T21`–`T31`.
-- [ ] Session 2 pass 3 — cards `T32`–`T41`.
-- [ ] After all cards exist: tick the index lines in `PLAN-2026-08-26.md` that changed name, and
-      delete this file **only** once every card file exists and no implementation has started.
+- [x] Session 2 — cards `T13`–`T17` written (session 2 ended abnormally at this point; see
+      `HANDOFF-CONTINUATION.md`, which is **not** a reliable account of it).
+- [x] Session 3 — cards `T18`–`T42` written (`T42` added, see below).
+- [x] Session 3 — `PLAN-2026-08-26.md` index updated: 42 cards, three index lines renamed
+      (`T24-refuse-merge-without-gate.md`, `T25-queue-audit-readonly.md`,
+      `T40-pyproject-and-gate-script.md`), `T32 ──> T42` added to the dependency graph.
+- [x] Session 3 — **all 42 card files exist. Card writing is complete.** No source file was read for
+      editing or modified; nothing was executed.
+
+### Deviations from §6, all caused by the human answers now recorded in `PLAN-2026-08-26.md`
+
+§6 was written before D2–D5 were answered. Where they disagree, **the answers in the PLAN file win**;
+the cards were written to the answers, not to §6.
+
+- **T24** — §6 says "config-declared `verifyCommands` per repo". **D3 deferred the per-repo gate
+  design.** T24 now refuses to merge (before any git write) when the harness gate does not apply, and
+  adds no config key and no toolchain detection.
+- **T25** — §6 says "queue surgery … requeue the real 7, normalize 002, remove the scratch `.git`".
+  **D4 says leave everything where it is.** T25 is now `queue-audit`: read-only inventory + anomaly
+  report + operator suggestions, with an explicit "if you reach for `shutil`, stop" rule.
+- **T40** — §6 says "CI job = unittest + Gate … or `scripts/gate.sh` + pre-push hook". **D5: no
+  remote, no CI.** T40 ships `pyproject.toml` + advisory ruff + `scripts/gate.sh`; no `.github/`, no
+  hook (a pre-push hook cannot fire without a remote).
+- **T42 (new)** — **D2** added a hard requirement with no owning card: *"the second context usage goes
+  over 60k tokens I want an immediate park and handoff for next agent via markdown, no questions
+  asked."* T42 enforces it on `peak_tokens` > `maxPromptTokens` (60000): no retry, park, and extend
+  `queue/review/<id>.md` with `## Handoff` / `## Next agent should`. T32 supplies the cap.
+- **T28** — §6 said the ground truth is the `stage` values in `sessions.jsonl`; those values are now
+  written into the card itself (verified read-only 2026-08-27): `autonomous_suggest` 12,
+  `spec_author` 10, `slice_implement` 6, `spec_assess_tw` 4, `spec_assess_ornith` 4, `slice_check` 4,
+  `autonomous_review` 4, `feasibility` 3, `tech_review` 2, `smoke` 2, `slicing` 2, `func_review` 2,
+  `smoke32k` 1. Verdicts: `unknown` 21, `pass` 15, `done` 14, `error` 3, **`reject` 2** (not
+  `rejected` — the enum is wrong on the wire value), `kickback` 1. Two additions to §6's list:
+  `smoke`/`smoke32k` are ad-hoc manual runs and must **not** become enum members, and `holistic` /
+  `slice_fix` exist in code but have **no** historical rows.
+
+### Remaining bookkeeping (deliberately not done)
+
+- This file is kept rather than deleted: it is the only place the verified code intelligence in §5 and
+  the §6→card reconciliation are written down. Delete it once the cards have been *executed*, not now.
+- `T13`–`T42` are untracked. Committing is an action, so it was not taken here; the operator's call.
+- Nothing in `/home/donald/work/queue`, `/home/donald/work/stats` or `/home/donald/work/logs` was
+  modified.
 
 ## 9. Sanity checks available to you (cheap, read-only)
 
