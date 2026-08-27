@@ -13,6 +13,15 @@ version:
     trunk to pi/last-good and continue.
   - Graceful stop via `supervisor.py stop` (SIGTERM) or a STOP file.
 
+Log handling:
+  supervisor.log is capped at MAX_LOG_BYTES (default 5000000, override with the
+  SUPERVISOR_MAX_LOG_BYTES env var). When the next record would push the file
+  past the cap, the log is renamed to supervisor.log.1 (replacing whatever
+  generation was there before) and appending continues into a fresh
+  supervisor.log. Exactly one generation is kept — no date-suffixed pile-up —
+  so supervisor.log + supervisor.log.1 are bounded at 2 * MAX_LOG_BYTES.
+  A rotation that fails is warned about once and never aborts the loop.
+
 Usage:
   supervisor.py run          # run the loop (foreground)
   supervisor.py start        # daemonize and run
@@ -44,13 +53,52 @@ SLEEP_S = int(os.environ.get("SLEEP_S", "60"))
 MAX_CYCLES = int(os.environ.get("MAX_CYCLES", "0"))   # 0 = unlimited
 FAIL_LIMIT = int(os.environ.get("FAIL_LIMIT", "3"))
 
+LOG_ENCODING = "utf-8"
+MAX_LOG_BYTES = int(os.environ.get("SUPERVISOR_MAX_LOG_BYTES", "5_000_000"))
+
+_rotation_warned = False   # warn once per process, not once per failed write
+
+
+def _log_size() -> int:
+    """Size of the current log in bytes; 0 when it does not exist yet."""
+    try:
+        return LOG.stat().st_size
+    except OSError:
+        return 0
+
+
+def _rotate_log() -> None:
+    """Move LOG aside as LOG.1, replacing the previous generation.
+
+    Never raises: if the rename fails we keep appending to the same file and
+    say so once, because a wedged or full disk must not kill the supervisor.
+    """
+    global _rotation_warned
+    try:
+        os.replace(LOG, LOG.with_name(LOG.name + ".1"))
+    except OSError as exc:
+        if not _rotation_warned:
+            _rotation_warned = True
+            print(f"supervisor: WARNING log rotation failed ({exc}); "
+                  "appending un-rotated (warning shown once)",
+                  file=sys.stderr, flush=True)
+
 
 def log(msg: str) -> None:
+    """Append one record to supervisor.log, rotating first if it would overflow.
+
+    The record is formatted and encoded before the size check, so the bytes we
+    measure are exactly the bytes we write (multibyte characters count as their
+    UTF-8 length).
+    """
     line = f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] {msg}"
     print(line, flush=True)
+    record = (line + "\n").encode(LOG_ENCODING)
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    with LOG.open("a") as f:
-        f.write(line + "\n")
+    if _log_size() + len(record) > MAX_LOG_BYTES:
+        _rotate_log()
+    with LOG.open("ab") as f:
+        f.write(record)
 
 
 # ---------------------------------------------------------------------------
