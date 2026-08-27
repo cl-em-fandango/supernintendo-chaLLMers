@@ -19,10 +19,15 @@ the self-driving loop. T13 supplies the pure decision; this card wires it in.
 1. In `run_loop()`, before `while not stop["flag"]`, build once: `cfg = load(CONFIG_PATH)`,
    `provider = create_provider(cfg)`, `lifecycle = TaskLifecycle(cfg, log=log)`. Today they are
    rebuilt inside the work block every cycle, which is why only one count is cheap enough to log.
-2. Replace the work block (197-209) with: read-only counts `pending = len(provider.fetch_pending())`,
+2. Replace the work block (197-209) with: read-only counts `pending = len(provider.fetch_pending(claim=False))`,
    `in_flight = len(in_flight_task_dirs(lifecycle))`, `claims = len(provider.list_claims())`;
    `action = decide_cycle_action(pending, in_flight, claims)`; and a single log line
    `f"── cycle {cycle}: {cycle_summary(pending, in_flight, claims, action)} ──"`.
+   Pass `claim=False` **explicitly** — a counting call must not be one default-flip away from moving
+   the queue (the same lesson as `AutonomousGenerator._pending_count`, F14/T41; `count_pending()`
+   replaces it once T41 lands). On `claims`: pass the total, and if the D4 state is what the
+   `WORK` branch is chasing (nothing pending, nothing in flight, only stale claims) log one extra
+   line naming it, so the block is visible instead of mysterious.
 3. Spawn mapping: `RESUME` and `WORK` both spawn
    `[sys.executable, "harness.py", "run-task-loop", "--continue"]` (that command resumes `active/`
    first, then drains `pending/` one task at a time); `GENERATE` spawns

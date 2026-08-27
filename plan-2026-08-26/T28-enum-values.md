@@ -1,6 +1,7 @@
 # T28 — Correct `Verdict` and `Stage` to the strings actually in use
 
-**Wave 7** · depends: none (after T20's needs) · finding: F9
+**Wave 7 (PULLED FORWARD — run it immediately after T19, before T20)** · depends: none · blocks: T20,
+T29 · finding: F9
 
 ## Context
 `core/enums.py` has zero call sites and is actively wrong. Ground truth is
@@ -42,8 +43,11 @@ run, so the wire strings are load-bearing history.
    **add** `KICKOUT="kickout"`, `UNKNOWN="unknown"`, `ERROR="error"`; rename `REJECTED` →
    `REJECT="reject"` **if and only if** `grep -rn "rejected" harness/ external/` shows no consumer
    (check first and paste the grep output in the commit message).
-4. Add `NO_VERDICT="no_verdict"` only if T20 has landed (it consumes it). If T20 has not landed,
-   write the other members and say so in the commit message.
+4. Add `NO_VERDICT = "no_verdict"` **unconditionally**. T20's `_map_verdict` returns it for "the
+   process finished and said nothing decidable", so a card scheduled after T20 cannot be the one that
+   decides whether it exists — that is why this card runs first. `no_verdict` is a new wire value:
+   it appears in stats rows from now on and in none of the 56 historical ones, so nothing re-renders
+   differently. Note that in the class docstring.
 5. Give both enums a `@classmethod parse(cls, raw: str)` helper returning `cls | None` — T20's
    `_map_verdict` and T29's comparisons use it. Keep the classes pure: `enum` import only.
 
@@ -61,8 +65,8 @@ assert not missing, f"stage values in real data with no enum member: {sorted(mis
 assert {"implement", "slice_fit", "holistic_review"} & stage_vals == set(), "stale enum values kept"
 assert {"slice_implement","slice_check","holistic","tech_review","func_review","slice_fix"} <= stage_vals
 verdict_vals = {m.value for m in Verdict}
-for v in {"unknown","pass","done","error","reject","kickback","kickout"}:
-    assert v in verdict_vals, f"verdict {v!r} missing"
+for v in {"unknown","pass","done","error","reject","kickback","kickout","no_verdict"}:
+    assert v in verdict_vals, f"verdict {v!r} missing"   # no_verdict: T20 returns it, T28 owns it
 assert Verdict.parse("pass") is Verdict.PASS and Verdict.parse("nope") is None
 assert Stage.parse("slice_implement") is Stage.SLICE_IMPLEMENT
 print("enums match reality:", len(hist_stage), "historical stages covered")

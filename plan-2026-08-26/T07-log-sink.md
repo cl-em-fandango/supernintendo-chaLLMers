@@ -22,17 +22,26 @@ lost when stdout is redirected or discarded (which the supervisor does — see T
    - `close()` for tests.
 2. `composition.build()` constructs the sink (`cfg.logs_dir / "harness.log"`) and passes it as
    the `log=` argument everywhere it currently passes `_log` (runner, pipeline).
-3. `harness/cli/handlers.py`: delete its `_log` and use the sink from `build()` — add a module
-   private `_set_log(sink)` / or return the sink from `build()` as a 6th tuple element. Choose
-   the tuple change (explicit, no global) and update all `build()` unpackers
-   (`grep -rn "build()" harness/ *.py`).
+3. `harness/cli/handlers.py`: delete its `_log` and use the sink from `build()` — return the sink
+   from `build()` as a **6th tuple element** (explicit, no global) and update all `build()`
+   unpackers (`grep -rn "build()" harness/ *.py`). This changes `build()`'s return arity from 5 to 6:
+   write **`build() now returns 6`** in the commit message, because the later cards that stub
+   `build()` (T10, T11, T12 verify blocks and T37's `stub_build`) were written against the 5-tuple
+   and each must extend its stub — a 5-element stub against a 6-way unpack is a `ValueError` in
+   someone else's card.
 4. Do not change any log *text*, only where it goes.
 
 ## Verify
+Writing this file is the narrow `AGENTS.MD` exception recorded in `PLAN-2026-08-26.md` §Rules: the
+append *is* the acceptance criterion. Delete nothing — if `harness.log` already exists, note its size
+first and assert growth instead.
+
 ```bash
 cd /home/donald/work/harness
-rm -f /home/donald/work/logs/harness.log
+before=$(stat -c %s /home/donald/work/logs/harness.log 2>/dev/null || echo 0)
 python3 harness.py status >/dev/null; echo rc=$?
+after=$(stat -c %s /home/donald/work/logs/harness.log)
+test "$after" -gt "$before" && echo "harness.log grew ✓"
 test -s /home/donald/work/logs/harness.log && echo "harness.log written ✓"
 grep -c "^\[" /home/donald/work/logs/harness.log            # >= 1 timestamped line
 ! grep -rn "def _log" harness/ | grep -q . && echo "no duplicate _log ✓"

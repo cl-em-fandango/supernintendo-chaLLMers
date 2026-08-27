@@ -48,11 +48,12 @@ lc = TaskLifecycle(cfg, log=lambda *a: None)
 tid = "t99-demo"
 lc.intake(tid, "body", "test-source")                  # -> active/<tid>
 src = cfg.queue_dir/"active"/tid
-for verb, want in (("park","parked"), ("fail","failed")):
-    d = cfg.queue_dir/"active"/tid
-    if not d.exists():                                  # re-create after the previous move
-        (d).mkdir(parents=True); lc.intake(tid, "body", "test-source")
-    getattr(lc, verb)(tid) if verb != "park" else lc.park(tid)
+for verb, want in (("park","parked"), ("fail","failed"), ("complete","done")):
+    d = cfg.queue_dir/"active"/tid                      # put the task back in active/ each round
+    if not d.exists():
+        d.mkdir(parents=True)
+        lc.intake(tid, "body", "test-source")
+    getattr(lc, verb)(tid)                              # all three are writers under test
     js = json.loads((cfg.queue_dir/want/tid/"task.json").read_text())
     assert js["status"] == want, (verb, js)
 # a move with NO task.json must still leave a valid file, not raise

@@ -22,7 +22,10 @@ but not `claimed`, so the dir is created only as a side effect of constructing a
    than repeating the list — put `QUEUE_LOCATIONS_ALL` next to `QUEUE_LOCATIONS` in
    `harness/workflow/task_lifecycle.py` and import it in both places).
 4. If `claimed/` is non-empty, print one extra warning line under the table:
-   `⚠ N claimed tasks: nothing will process them until 'harness.py requeue-claims' (see PLAN T12).`
+   `⚠ N claimed tasks: nothing will process them until they are requeued (plan card T12,
+   'requeue-claims').` Name the card, **not** the command as a runnable thing: T12 lands after this
+   card, and a message that tells an operator to type a subcommand which does not exist yet is the
+   same lie T16 exists to remove. T12 updates this line to name the command when it ships it.
 
 ## Verify
 ```bash
@@ -42,12 +45,13 @@ for sub in ("pending","active","done","failed","parked","review","claimed"): (q/
 (q/"claimed"/"009-stuck.md").write_text("x")
 import types
 cfg = types.SimpleNamespace(queue_dir=q, logs_dir=q/"logs", stats_path=q/"s.jsonl")
-H.build = lambda *a, **k: (cfg, __import__("harness.core.stats", fromlist=["StatsStore"]).StatsStore(cfg.stats_path), None, DirectoryTaskProvider(q/"pending", q/"claimed"), None)
+# 6-tuple: build() gained the log sink in T07 — match the real unpack in handlers.py
+H.build = lambda *a, **k: (cfg, __import__("harness.core.stats", fromlist=["StatsStore"]).StatsStore(cfg.stats_path), None, DirectoryTaskProvider(q/"pending", q/"claimed"), None, lambda line="": None)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf): H.cmd_status()
 out = buf.getvalue()
 assert "claimed" in out and "009-stuck" in out, out
-assert "requeue-claims" in out, "warning line missing"
+assert "T12" in out, "warning line missing (must name plan card T12, not an unlanded command)"
 print("status claims row ok")
 PY
 ```

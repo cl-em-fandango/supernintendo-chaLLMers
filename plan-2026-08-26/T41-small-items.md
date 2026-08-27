@@ -1,6 +1,7 @@
 # T41 — Five small F14 fixes, each verified on its own
 
-**Wave 10** · depends: T29, T30, T31 · finding: F14
+**Wave 10** · depends: T29, T30, T31 · **blocks: T33** (the README re-sync documents `resume --fresh`,
+which only exists after item 1 — run this card first, or T33 omits that flag) · finding: F14
 
 ## Context
 Five independent low-severity defects, each one or two lines wide, each with a distinct owner-less
@@ -20,6 +21,8 @@ isolates to one change.
    `resume_task(..., fresh=False)` to the existing `fresh_restart(task_id, cfg, log)`. Do not
    reimplement: `run-task --fresh` already works, and `cmd_unpark` must keep its current
    checkpoint-preserving behaviour (EC12: `resume --fresh` drops checkpoints, `unpark` does not).
+1b. If T33 has already landed, add the `resume --fresh` line to README yourself (one line, EC12: it
+    drops checkpoints, `unpark` does not). If T33 has not landed, do nothing — T33 will document it.
 2. **Functional fixes run on the implementer model** — `_review_loop` picks
    `self.cfg.implementer if kind == "tech" else self.cfg.model`, so a *functional-review fix* is
    written by the technical writer. Both fix paths are code edits, so both take
@@ -33,7 +36,10 @@ isolates to one change.
    crashed attempts it returns the last result and callers only look at `verdict`. **Choose the
    exception, not a field**: raise `AllAttemptsCrashed(task_id, stage, attempts)` from `_run` and
    handle it in `process()` as a park with the attempt count in the reason. Record the choice and why
-   (a field is forgettable at a future call site; an exception is not) in the commit message.
+   (a field is forgettable at a future call site; an exception is not) in the commit message. T42 (wave 8) lands **before** this card and has
+already added `OverContextBudget` raised from `_run` with a handler in `process()`: follow that shape
+— sibling exception class in the same module, one handler, park-with-reason — do not invent a second
+pattern for the same job.
 5. **`_pending_count` must not be able to claim** — replace
    `AutonomousGenerator._pending_count()`'s `provider.fetch_pending()` with a read-only
    `provider.count_pending()` on `TaskProvider`/`DirectoryTaskProvider` that lists and returns an

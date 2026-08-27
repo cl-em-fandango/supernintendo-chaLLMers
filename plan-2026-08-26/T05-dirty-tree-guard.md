@@ -1,6 +1,6 @@
 # T05 — Refuse destructive git ops on a dirty tree
 
-**Wave 0** · depends: T04 · `[tag]` · finding: F6c
+**Wave 0** · depends: T03 · **blocks: T04** (its `abort_merge` cleanup is only safe under this guard) · `[tag]` · finding: F6c
 
 ## Context
 Two paths destroy uncommitted human work today: `_revert_to_last_good` runs
@@ -20,7 +20,10 @@ when the tree is clean *of third-party changes*.
    `def _require_clean(workdir, what: str) -> None: paths = dirty_paths(workdir); if paths: raise RuntimeError(f"refusing {what}: {len(paths)} uncommitted paths, e.g. {paths[:5]}")`
 3. Call it before: `git reset --hard` in `_revert_to_last_good`, and before the
    `git checkout <trunk>` in `merge_to_trunk` (a checkout over local changes is where git
-   starts silently carrying them across branches).
+   starts silently carrying them across branches). T04 lands **after** this card and its
+   `abort_merge` runs `git reset -q` + `git checkout -q -- .` to clean a failed `--squash`; that
+   cleanup is defensible only because this guard already proved the tree clean. Leave the guard
+   reachable as a helper T04 can call, and do not narrow it to `reset --hard` alone.
 4. Escape hatch: both `merge_to_trunk` and `_revert_to_last_good` take
    `allow_dirty: bool = False`. Default False. Nothing in the repo passes True — it exists for
    the human recovery path only. Say that in the docstring.

@@ -55,9 +55,10 @@ grep -n "_sleep(stop" supervisor.py        # every sleep in the loop goes throug
 Must pass, plus the Gate. Do not start the supervisor to verify.
 
 ## Out of scope
-Rotating/capping `supervisor.log` (T2), the breaker's reset and its sleep (T6), marking a task
+Rotating/capping `supervisor.log` (T02), the breaker's reset and its sleep (T06), marking a task
 failed after N idle cycles (needs a human policy decision — hand over instead), `harness.log`
-rotation (T7), any change to `_sleep`'s own implementation.
+rotation (T07), any change to `_sleep`'s own implementation. A cycle blocked by stale claims under
+D4 is *idle*, not an error: back off, do not fail the task.
 
 ## Done when
 `backoff_seconds` passes the table above; a cycle with unchanged queue counts sleeps twice the

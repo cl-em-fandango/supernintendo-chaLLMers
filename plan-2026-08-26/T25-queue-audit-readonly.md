@@ -68,8 +68,13 @@ assert any(".git" in l for l in lines) and any("task.json" in l for l in lines)
 assert any("claimed" in l for l in lines) and any("SUGGESTED OPERATOR ACTIONS" in l for l in lines)
 print("queue audit ok, lines:", len(lines))
 PY
+before=$(find /home/donald/work/queue -printf '%p %s\n' | sort | sha256sum)
 python3 harness.py queue-audit >/dev/null; echo "rc=$?"       # rc=0, and it must not move anything
+after=$(find /home/donald/work/queue -printf '%p %s\n' | sort | sha256sum)
+[ "$before" = "$after" ] && echo "real queue byte-identical ✓" || echo "AUDIT MUTATED THE QUEUE"
 ```
+Writing the dated report into `cfg.logs_dir` is the PLAN §Rules exception to `AGENTS.MD`: a **new**
+report file, nothing pre-existing touched. Nothing in this card writes under `queue_dir` at all.
 Must pass, plus the Gate.
 
 ## Out of scope

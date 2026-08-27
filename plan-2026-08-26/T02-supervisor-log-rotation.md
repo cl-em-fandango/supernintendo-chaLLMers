@@ -1,9 +1,9 @@
-# T02 — Bound `supervisor.log` (179 MB today, no rotation)
+# T02 — Bound `supervisor.log` (186 MB today, no rotation)
 
 **Wave 0** · depends: T01 · `[tag]` · finding: F13
 
 ## Context
-`/home/donald/work/logs/supervisor.log` is 179 MB / ~6 M lines, unbounded, and its tail is
+`/home/donald/work/logs/supervisor.log` is 186 MB / ~6 M lines (audit §F13), unbounded, and its tail is
 a `[DRY] run-task-loop --continue` spin storm. `supervisor.py log()` appends forever. Disk
 full = the supervisor and every pi session die at once. (The spin itself is T15; here we
 only bound the log.)
@@ -20,9 +20,14 @@ only bound the log.)
 2. Rotation must never crash the supervisor: wrap in `try/(OSError, OSError-subclasses)` and,
    on failure, keep appending un-rotated and print a warning line once per process.
 3. Add a `--help`-visible note in the module docstring naming the cap and the env var.
-4. One-time ops: truncate the existing 179 MB file in place
-   (`: > /home/donald/work/logs/supervisor.log` is fine — nothing holds it open; verify with
-   `fuser` / `lsof` first, and if a process holds it, STOP and report instead of truncating).
+4. One-time ops: the existing 186 MB file needs truncating in place. **`AGENTS.MD` forbids writing to
+   `/home/donald/work/logs`, and a truncation is not an append — so this is an operator step, not a
+   card step.** Print the exact command and the pre-check in the commit message and hand it to the
+   human:
+   `lsof /home/donald/work/logs/supervisor.log` (must be empty), then
+   `: > /home/donald/work/logs/supervisor.log`.
+   Do not run it. If the human is not present, the card still completes: the rotation code is the
+   deliverable, the truncation is a logged follow-up.
 
 ## Verify
 ```bash
@@ -38,7 +43,8 @@ assert log.exists() and (d / "supervisor.log.1").exists(), "no rotation happened
 assert log.stat().st_size <= 400, f"current log too big: {log.stat().st_size}"
 print("rotation ok")
 PY
-ls -l /home/donald/work/logs/supervisor.log     # small
+# the rotation code is proven by the repro above; the real file is the human's step (see Do 4)
+ls -l /home/donald/work/logs/supervisor.log
 ```
 Gate must pass.
 
@@ -47,5 +53,6 @@ Rotating `harness.log` (T07 owns that file — do not touch its writer), the no-
 (T15), log format changes, adding `logging` module machinery.
 
 ## Done when
-The repro above prints `rotation ok`; at most one `.1` generation exists; the 179 MB file is
-gone or < 1 MB; a rotation failure cannot kill the loop.
+The repro above prints `rotation ok`; at most one `.1` generation exists; a rotation failure cannot
+kill the loop; the truncation command is recorded in the commit message as a human step (it is not
+run by this card).

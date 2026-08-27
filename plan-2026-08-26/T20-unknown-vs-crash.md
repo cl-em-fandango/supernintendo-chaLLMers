@@ -20,7 +20,10 @@ model that just rambled) gets retried and parked. We need three honest outcomes 
 
 ## Do
 1. Depends on **T28** having added `Verdict.UNKNOWN = "unknown"`, `Verdict.ERROR = "error"`,
-   `Verdict.NO_VERDICT = "no_verdict"`. If they are absent, STOP — T28 has not landed.
+   `Verdict.NO_VERDICT = "no_verdict"`. If they are absent, STOP — T28 has not landed; do not add them
+   here. This is why T28 is **pulled forward** out of wave 7 and scheduled immediately before this
+   card (see `PLAN-2026-08-26.md` §Dependency graph): a wave-4 card cannot depend on a wave-7 card and
+   still be runnable in wave order.
 2. Mapping, applied in this order and written as a small named helper `_map_verdict(crashed: bool,
    parsed: str) -> Verdict` so it is testable without a subprocess:
    - `crashed` → `Verdict.ERROR` (a crash is a crash even if the child printed `VERDICT: pass`

@@ -21,8 +21,10 @@ in the queue are the root of half of wave 5.
 
 ## Do
 1. Add a pure predicate to `external/git_cli.py`:
-   `def is_under_queue(workdir: Path, queue_dir: Path) -> bool` — resolve both, return
-   `queue_dir in workdir.parents or workdir == queue_dir`. No config import, no logging.
+   `def is_under_queue(workdir: Path | str, queue_dir: Path | str) -> bool` — resolve both, return
+   `queue_dir in workdir.parents or workdir == queue_dir`. Accept `str` as well as `Path` (call sites
+   and the verify block below pass strings; a `TypeError` in a guard is how a guard gets removed).
+   No config import, no logging.
 2. The guard belongs in `workflow/pipeline.process()` — it is the only caller that knows both the
    workdir and `cfg.queue_dir`, and keeping it there means `git_cli` stays a dumb git wrapper
    (CODING_STANDARDS: `external/` owns subprocess, `workflow/` composes). **State this choice in the
@@ -53,14 +55,21 @@ for d in ("pending","active","parked","failed","done","claimed","review"): (root
 t = root/"queue"/"active"/"t1"; t.mkdir(); (t/"original.md").write_text("no repo named here at all\n")
 from harness.core.config import Config
 from harness.workflow.task_lifecycle import TaskLifecycle
-cfg = Config({"workDir": str(root)}, root/"queue")
+cfg = Config({"workDir": str(root)}, root/"queue")   # adapt to Config's real ctor signature
 lc = TaskLifecycle(cfg, log=lambda *a: None); lc.intake("t1","no repo named here at all","test")
 git_dirs = list(root.rglob(".git"))
 assert not git_dirs, f"a .git appeared in the queue: {git_dirs}"
-print("queue git guard ok")
+print("queue git guard ok (predicate + intake only)")
 PY
 ```
 Must pass, plus the Gate. Then `git tag -f pi/last-good pi/trunk`.
+
+**That block is not the guard.** It proves the predicate and that `intake` creates no repo; it never
+reaches `process()`. Add a second deliverable: `tests/test_queue_git_guard.py` with one case that
+drives `Pipeline.process()` on a task whose resolved workdir is under the queue (stub runner, no
+subprocess) and asserts (a) the task ends in `parked/`, (b) the park reason names both paths,
+(c) no `.git` exists anywhere under the temp root. No wave-9 test card owns `workflow/pipeline`, so if
+this card does not write it, nothing does.
 
 ## Out of scope
 What the verification gate should *be* for a non-harness repo (T24, and per decision **D3** that
@@ -70,6 +79,7 @@ existing scratch `.git` from `queue/active/002…` (operator action, **deferred 
 owns it yet — mention it in the commit message and stop), and any change to `merge_to_trunk`.
 
 ## Done when
-`is_under_queue` exists and the four assertions above pass; a task with no repo path in its body gets
-parked with a reason naming both paths; no code path can `git init` under `cfg.queue_dir`; the live
+`is_under_queue` exists and the assertions above pass (including with `str` arguments);
+`tests/test_queue_git_guard.py` proves a queue-resolved task is parked with a reason naming both
+paths; no code path can `git init` under `cfg.queue_dir`; the live
 queue is unmodified (`git status` in the *harness* repo shows only this card's files).

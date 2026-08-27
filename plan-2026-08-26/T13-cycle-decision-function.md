@@ -29,6 +29,11 @@ at import time (l.38), so importing it from a test reads real config and touches
 5. In `decide_cycle_action`'s docstring: the precedence table, and the reason claims count as
    *work* — stale claims are requeued by `cmd_run_task_loop` before the decision (T12), so what
    is left in `claimed/` is a task someone started and must finish.
+6. Record the **D4 caveat** in that same docstring, as a known blocked state and not a bug here:
+   T12's loop-start requeue ships **off by default**, so with the 7 live claims sitting put,
+   `claims > 0` returns `WORK` forever and generation is blocked (T15's backoff bounds the cost).
+   Two consequences: this function stays pure — three ints in, one action out, no policy, no
+   thresholds — and it is the **caller** (T14) that decides which number to pass as `claims`.
 
 ## Verify
 ```bash

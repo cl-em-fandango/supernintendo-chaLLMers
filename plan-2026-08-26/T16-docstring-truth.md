@@ -56,7 +56,8 @@ PY
 Must pass, plus the Gate.
 
 ## Out of scope
-README (T43 owns the operator-facing docs), `parser.py` help strings, the supervisor's own
+README (T33 owns the operator-facing docs — there is no T43; card ids stop at T42), `parser.py` help
+strings, the supervisor's own
 docstring (T14 touched it), adding `requeue-claims` if T12 is not landed, and any behavior change —
 this card may not alter a single executable line.
 

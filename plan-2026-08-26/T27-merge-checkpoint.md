@@ -32,6 +32,12 @@ half, and it is unrecoverable by hand without reading git reflog.
    name it `cleanup_branch(workdir, task_id, trunk)` in `external/git_cli.py`, and keep the deletion
    best-effort: a failed delete logs and does not raise).
 5. Keep `tag -f pi/last-good trunk` exactly where it is (in `merge_to_trunk`, after the gate passes).
+6. Add `tests/test_merge_checkpoint.py`: one case driving `stage_holistic`/`process()` with a stub
+   runner and a stubbed git layer, asserting that a task whose `checkpointed_stages` already contains
+   `"merge"` does **not** call `merge_to_trunk` again and goes straight to `complete()`. T36 explicitly
+   puts "pipeline's checkpoint bookkeeping around a merge" out of its own scope on the grounds that it
+   is "already tested there" — that is only true if this card writes it. No wave-9 card owns
+   `workflow/pipeline`.
 
 ## Verify
 ```bash
@@ -48,7 +54,13 @@ assert 'def cleanup_branch' in src, "no explicit post-complete cleanup"
 # end-to-end on a temp repo: merge leaves the branch alive; cleanup removes it
 r = pathlib.Path(tempfile.mkdtemp())
 subprocess.run(["git","init","-q","-b","trunk",str(r)], check=True)
-(r/"harness.py").write_text("print('ok')\n"); (r/"harness").mkdir()
+# T24 is landed by now: merge_to_trunk refuses anything that is not recognisably the harness repo,
+# and verify_harness would run `import harness...` + `harness.py status` in this scratch repo and
+# fail. Satisfy gate_applies, then stub the gate itself — T36 case (d) covers the real gate.
+(r/"harness.py").write_text("print('ok')\n")
+(r/"harness").mkdir(); (r/"harness"/"__init__.py").write_text("")
+(r/"harness"/"composition.py").write_text("")
+import external.git_cli as _g0; _g0.verify_harness = lambda *a, **k: True
 subprocess.run(["git","-C",str(r),"add","-A"], check=True)
 subprocess.run(["git","-C",str(r),"-c","user.email=t@t","-c","user.name=t","commit","-qm","init"], check=True)
 subprocess.run(["git","-C",str(r),"checkout","-qb","pi/t1"], check=True)
@@ -76,5 +88,6 @@ Per-slice checkpoints (T26, already landed), what a per-repo verification gate s
 
 ## Done when
 `merge_to_trunk` leaves `pi/<id>` alive; `checkpointed_stages` contains `"merge"` after a successful
-merge; a resume with `"merge"` present does not run `merge --squash` again; branch deletion happens
+merge; a resume with `"merge"` present does not run `merge --squash` again (proven by
+`tests/test_merge_checkpoint.py`, a deliverable of this card); branch deletion happens
 only after `complete()` and cannot fail the task.
