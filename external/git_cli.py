@@ -21,12 +21,15 @@ def _git(cwd: Path, *args: str, check: bool = True) -> str:
 
 
 def has_branch(cwd: Path, ref: str) -> bool:
+    """True when `refs/heads/<ref>` exists. Branches only — never a tag."""
     return subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{ref}"],
         cwd=cwd).returncode == 0
 
 
 def has_tag(cwd: Path, ref: str) -> bool:
+    """True when `refs/tags/<ref>` exists (F6a: `pi/last-good` is a tag, so the
+    one probe that used to check both namespaces under `refs/heads/` never saw it)."""
     return subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{ref}"],
         cwd=cwd).returncode == 0
@@ -229,11 +232,14 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
     # --- verification gate ---
     ok, detail = verify_harness(workdir)
     if not ok:
-        # revert trunk to last known-good; keep the feature branch for inspection
-        _revert_to_last_good(workdir, trunk)
+        # revert trunk to last known-good; keep the feature branch for inspection.
+        # `reverted_to` names the ref that was *actually* rolled back to: the tag
+        # when one exists, `HEAD~1` when there is none (T03 — reporting the tag
+        # unconditionally hid the fact that the fallback had run).
+        reverted_to = _revert_to_last_good(workdir, trunk)
         raise RuntimeError(
             f"verification gate FAILED for {task_id}: {detail}. "
-            f"trunk reverted to {LAST_GOOD_TAG}; feature branch {branch} kept.")
+            f"trunk reverted to {reverted_to}; feature branch {branch} kept.")
 
     # gate passed: advance the last-good tag and drop the feature branch
     _git(workdir, "tag", "-f", LAST_GOOD_TAG, trunk)
@@ -267,7 +273,11 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
 
 def _revert_to_last_good(workdir: Path, trunk: str) -> str:
     """Reset trunk to the last known-good tag. If no tag exists yet, reset to
-    trunk's parent (undo the single bad merge commit). Returns the target reverted to."""
+    trunk's parent (undo the single bad merge commit).
+
+    Returns the target actually reverted to — `"tag:<ref>"` or `"HEAD~1"` — so the
+    caller can log which path was taken instead of assuming the tag was there.
+    """
     workdir = Path(workdir)
     if has_tag(workdir, LAST_GOOD_TAG):
         _git(workdir, "reset", "--hard", LAST_GOOD_TAG)
