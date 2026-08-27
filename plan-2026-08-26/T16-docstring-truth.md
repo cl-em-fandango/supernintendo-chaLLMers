@@ -22,8 +22,9 @@ contract, name the card whose test proves it, and list the commands the entrypoi
    "Not used by the supervisor."
 2. `cmd_run_task_loop` docstring: state the contract as three lines — (a) `--continue` resumes every
    `active/` task that has a `task.json` before touching `pending/`; (b) tasks are claimed one at a
-   time and the loop exits when `pending/` is empty; (c) this is the subcommand the supervisor spawns
-   each cycle, contract proven by card T38's cycle test. Keep it under 8 lines.
+   time and the loop exits when `pending/` is empty; (c) this is the subcommand selected by T14's
+   pure `command_for_action`, whose exact mapping and supervisor call site are checked by T38. Keep
+   it under 8 lines.
 3. `cmd_run` docstring (new, one sentence): processes pending tasks one at a time and then enters
    autonomous mode — the difference from `run-task-loop`.
 4. `harness.py` module docstring: rewrite the usage list from `parser.py` only — every subcommand

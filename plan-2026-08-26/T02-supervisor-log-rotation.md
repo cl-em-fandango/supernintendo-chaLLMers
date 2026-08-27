@@ -13,8 +13,10 @@ only bound the log.)
 - `harness/core/config.py` — `logs_dir`
 
 ## Do
-1. In `supervisor.py`, rotate before appending: if `LOG.stat().st_size + len(line) > MAX_LOG_BYTES`
-   (module constant, default `5_000_000`, env-overridable `SUPERVISOR_MAX_LOG_BYTES`),
+1. In `supervisor.py`, format the complete record first (prefix, line, newline), encode it with the
+   file's UTF-8 encoding, and rotate before appending when
+   `LOG.stat().st_size + len(encoded_record) > MAX_LOG_BYTES` (module constant, default `5_000_000`,
+   env-overridable `SUPERVISOR_MAX_LOG_BYTES`),
    rename `LOG` -> `LOG.1` (replacing any existing `LOG.1`), then continue appending to a
    fresh `LOG`. Exactly one generation — no date-suffixed pile-up.
 2. Rotation must never crash the supervisor: wrap in `try/(OSError, OSError-subclasses)` and,

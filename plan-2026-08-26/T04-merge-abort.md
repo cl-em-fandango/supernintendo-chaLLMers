@@ -1,4 +1,7 @@
-# T04 — A failed `merge --squash` must not leave the repo half-merged
+# T04 — Squash failure-cleanup epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T72 then T73. This file is retained as the parent
+> contract and conflict reproduction.
 
 **Wave 0** · depends: T03, **T05 (its `_require_clean` guard is what makes this card's cleanup safe)** · `[tag]` · finding: F6b
 
@@ -30,9 +33,12 @@ the squash staged, including files the branch *added* that survive as untracked.
      worktree. **Neither is allowed to run unless T05's `_require_clean(workdir, ...)` proved the
      tree clean before the merge started** — that precondition is the only reason a worktree
      `checkout` cannot destroy someone's edits. Say so in the docstring.
-   - finally remove untracked paths that appeared during the merge (`git status --porcelain` `??`
-     entries). None of them can have existed beforehand, because the tree was proven clean; these
-     are exactly the files the squash added.
+   - before starting the merge, record the branch-added paths with
+     `git diff --name-only --diff-filter=A <trunk>...<branch>`. During cleanup remove only those
+     recorded paths that are now untracked. Never delete every `git status --porcelain` `??` entry:
+     a concurrent tool may have created an unrelated file after the cleanliness check. Reject any
+     recorded path that resolves outside `workdir`; handle files, symlinks, and now-empty parent
+     directories without following symlinks.
 3. Apply the same treatment to the `commit` step that follows the squash: on failure call
    `abort_merge`, and if anything is still dirty afterwards, raise with the stderr tail and leave it
    for a human. `git reset --hard` is never used here (T05's guard owns that).

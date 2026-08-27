@@ -21,9 +21,10 @@ no fixtures, no fakes and no subprocess — that is T35's job.
    exact-lowercase (`VERDICT: done`), all-caps (`VERDICT: DONE`), mixed (`Verdict: Pass`), trailing
    prose (`VERDICT: pass — all good`), JSON fallback (`{"verdict": "kickback"}`), JSON-in-prose,
    multiple verdict lines (last wins), no verdict → `unknown`, `VERDICT:` with nothing after it →
-   `unknown`, verdict with digits/underscore (`VERDICT: kick_out` → `unknown` at the parse layer if
-   `kick_out` is outside the vocabulary — assert whatever the code does, do not change the code),
-   empty string, and a 10 KB text with the verdict on the last line.
+   `unknown`, lexical extraction of an unsupported token (`VERDICT: kick_out` → `kick_out`), empty
+   string, and a 10 KB text with the verdict on the last line. Separately test T20's semantic mapping:
+   `_map_verdict(False, "kick_out")` → `Verdict.UNKNOWN`. Do not conflate lexical extraction with
+   vocabulary validation.
 3. Add `_outcome` cases for every verdict value present in the historical data
    (`pass done unknown error reject kickback`) asserting the outcome string is unchanged — that is
    the report-compatibility test, and it belongs here because it is pure.

@@ -28,9 +28,11 @@ the *window* is a separate, true number. The over-cap **park + markdown handoff*
    (`QwenOptimised32k: 32768`, `QwenOptimised64k: 65536`, the 128k entries: `131072`), and a new key
    `maxPromptTokens` is the **working cap** — set it to `60000` (the value D2 fixed) and give
    `load()` a default of `60_000`, not `100_000`.
-2. `model_context(m)` keeps its name (call sites and the README both use it) and becomes truthful:
-   map hit → that window; name-suffix heuristic → as today; otherwise `131072` **and** log a warning
-   `unknown context window for <m>, assuming 131072`. Rename nothing.
+2. `model_context(m)` keeps its name and remains a pure lookup: map hit → that window; name-suffix
+   heuristic → as today; otherwise `131072`. Add `has_known_context(m) -> bool` using the same map
+   and suffix rules. `SessionRunner.run()`, which already owns logging, emits
+   `unknown context window for <m>, assuming 131072` before using the fallback. Do not add printing
+   or a logger dependency to `Config`.
 3. `model_budget(m) = max(4096, min(max_prompt_tokens, model_context(m) - reserve))` where `reserve`
    stays 8192. With the D2 config this yields 60000 for a 128k model and 57344 for the 64k model —
    write those two numbers in the docstring so the next reader can check the arithmetic by hand.

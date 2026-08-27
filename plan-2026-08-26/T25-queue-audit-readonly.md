@@ -1,4 +1,7 @@
-# T25 — Read-only queue audit: inventory the real state, change nothing
+# T25 — Queue-audit epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Pure inventory/anomaly behavior is T60; CLI and report
+> persistence are T61. This file is retained only as the parent contract.
 
 **Wave 5** · depends: T21, T22, T23 · finding: F13 · **[decision D4 — recorded, see Context]**
 
@@ -28,10 +31,12 @@ cancelled. Its output is the input to the human's later review pass.
 2. The report must contain, in this order: per-directory counts for `pending, active, claimed, done,
    parked, failed, review`; then for every task dir, one row — `id`, directory, `status` from
    `task.json`, `checkpointed_stages`, `workdir` (T22 field, `—` when absent), and whether the dir
-   contains a `.git`; then a `ANOMALY` line for each of: `status` disagrees with directory (T21
+   contains a `.git`; then an `ANOMALY` line for each of: `status` disagrees with directory (T21
    check, retro-finds `parked/001` saying `active`), `task.json` missing/old-format, `.git` under the
-   queue, `.pi-session-*.out` under the queue or in `logs_dir`, a `claimed/` file whose slug matches
-   no `pending`/`active` task, and a task body shorter than 200 characters (the `auto-*` smell).
+   queue, `.pi-session-*.out` under the queue or in `logs_dir`, the same slug appearing in more than
+   one lifecycle location, a claim with missing/corrupt ownership metadata after T46, and a task body
+   shorter than 200 characters (the `auto-*` smell). A claimed-only file is normal claim state and
+   must not be called orphaned merely because no pending copy exists.
 3. Wire `harness.py queue-audit` (parser subcommand → `cli/handlers.cmd_queue_audit`) printing the
    report to stdout and writing it to `cfg.logs_dir / f"queue-audit-{date}.md"`. No `--yes`, no
    mutation flags, no backup logic — delete that from your mental model of the card.

@@ -1,4 +1,7 @@
-# T27 — Checkpoint the merge and stop deleting the branch too early
+# T27 — Merge checkpoint/branch lifecycle epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T70 then T71. This file is retained as the parent
+> contract.
 
 **Wave 6** · depends: T26 · finding: F8 · `[tag]`
 
@@ -27,10 +30,11 @@ half, and it is unrecoverable by hand without reading git reflog.
    `complete()` — losing a checkpoint is better than leaving a merged task in `active/`.
 3. At the top of `stage_holistic`: if `CheckpointStage.MERGE in state.checkpointed_stages`, skip the
    merge entirely, log `already merged, completing`, and go straight to `complete()`.
-4. Remove `branch -d pi/<id>` from `merge_to_trunk`. Move branch deletion into `complete()` (or into
-   a new `TaskLifecycle`-adjacent helper the pipeline calls after `complete()` succeeds — pick one,
-   name it `cleanup_branch(workdir, task_id, trunk)` in `external/git_cli.py`, and keep the deletion
-   best-effort: a failed delete logs and does not raise).
+4. Remove `branch -d pi/<id>` from `merge_to_trunk`. Add
+   `cleanup_branch(workdir, task_id, trunk)` in `external/git_cli.py`. In `stage_holistic`, retain the
+   already-resolved `ctx.workdir`, call `complete()` first, and only after that move succeeds call
+   `cleanup_branch`. Catch cleanup failure locally, log it, and do not fail or re-park the completed
+   task. Do not put git behavior inside `TaskLifecycle.complete()`.
 5. Keep `tag -f pi/last-good trunk` exactly where it is (in `merge_to_trunk`, after the gate passes).
 6. Add `tests/test_merge_checkpoint.py`: one case driving `stage_holistic`/`process()` with a stub
    runner and a stubbed git layer, asserting that a task whose `checkpointed_stages` already contains

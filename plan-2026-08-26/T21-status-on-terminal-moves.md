@@ -23,10 +23,11 @@ running. Fix the writers, not the readers.
    `_exec_summary`, load the state, set `status` to `TaskStatus.PARKED.value` / `FAILED.value` /
    `DONE.value` respectively, and `save_state` at the *new* path. Getting the order wrong writes a
    correct file into a directory that no longer exists.
-2. Tolerate a missing or corrupt `task.json`: `load_state` is already tolerant — if it returns
-   nothing usable, construct a minimal `TaskState` with `id = <directory name>`, the correct
-   `status`, `source = "unknown"`, `created = _now()` and write it. A terminal move must never
-   raise because of bookkeeping.
+2. Tolerate a missing or corrupt `task.json`: `load_state` tolerates corrupt content but raises
+   `FileNotFoundError` for a missing file, so catch that case explicitly. Construct a minimal
+   `TaskState` with `id = <directory name>`, the correct `status`, `source = "unknown"`, and
+   `created = _now()`, then write it. T45 separately defines behavior for an actual post-move I/O
+   failure; do not swallow move failures in this card.
 3. Keep `last_updated` semantics (`_now()`, UTC iso, seconds) — `save_state` should already do it;
    if the minimal-`TaskState` path bypasses it, set it explicitly.
 4. Do **not** change any reader. `cmd_status` counts directories; `in_flight_task_dirs` looks for

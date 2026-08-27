@@ -18,7 +18,8 @@ lost when stdout is redirected or discarded (which the supervisor does — see T
    - `class LogSink: def __init__(self, path: Path | None, echo: bool = True, max_bytes: int = 5_000_000)`
    - `__call__(self, line: str = "") -> None` — echo to stdout (if `echo`) and append to `path`
      with a `[ISO8601] ` prefix. Never raises: any `OSError` degrades to echo-only, warned once.
-   - rotate at `max_bytes` to `<path>.1`, one generation (same shape as T02's supervisor rule).
+   - format and UTF-8 encode the complete timestamped record before testing its byte length; rotate
+     at `max_bytes` to `<path>.1`, one generation (same shape as T02's supervisor rule).
    - `close()` for tests.
 2. `composition.build()` constructs the sink (`cfg.logs_dir / "harness.log"`) and passes it as
    the `log=` argument everywhere it currently passes `_log` (runner, pipeline).

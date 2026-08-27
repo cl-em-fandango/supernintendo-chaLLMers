@@ -24,14 +24,16 @@ non-deterministic across runs: the regex takes the first path-looking token in p
    positional construction elsewhere keeps working.
 2. `load_state` must default a missing `workdir` to `""` — the old-format `task.json` files (the live
    `002` is one) have to keep loading, that is an existing tested behaviour.
-3. `intake(...)` records the resolved workdir it was given. If `intake`'s signature does not already
-   take a workdir, add a keyword argument `workdir: str = ""` and have `pipeline.process()` pass the
-   value it resolved. Name it `workdir` everywhere — do not alternate with `repo`/`path`.
-4. In `pipeline.process()`: `workdir = state.workdir or resolve_workdir(task_dir)`; when it falls
-   back, `log` a warning line `workdir not recorded for <id>, re-derived from original.md`. After a
-   successful resolution, if `state.workdir` was empty, save it so the next run is deterministic.
-5. Do not delete `resolve_workdir` — T23 puts a guard around it; it stays as the intake-time
-   derivation, and only intake-time.
+3. Remove the intake/resolution circularity explicitly. A fresh task is intaken first so
+   `original.md` and `task.json` exist; immediately afterwards call `resolve_workdir(task_dir)`, set
+   `state.workdir`, and save it **before** `ensure_branch` or any session starts. Do not add a
+   pre-resolved workdir argument to `intake()`.
+4. On resume, use `state.workdir` directly. For an old-format state whose value is empty, call
+   `resolve_workdir(task_dir)` once, log `workdir not recorded for <id>, re-derived from original.md`,
+   persist the result, then continue. Thus both fresh intake and legacy migration use the same
+   persisted `original.md` input and every later run is deterministic.
+5. Do not delete `resolve_workdir` — T23 guards its result. It is called only immediately after fresh
+   intake or once while migrating an old-format task, never on every resume.
 
 ## Verify
 ```bash
@@ -53,8 +55,11 @@ lc = TaskLifecycle.__new__(TaskLifecycle)          # no cfg needed for a pure lo
 st = TaskLifecycle.load_state(lc, tj) if TaskLifecycle.load_state.__qualname__.count('.')==1 else None
 assert st is None or st.workdir == ""
 src = pathlib.Path('harness/workflow/pipeline.py').read_text()
-assert 'state.workdir or resolve_workdir' in src or '.workdir or' in src, "process() still always re-derives"
-print("workdir record ok")
+assert 'state.workdir' in src and 'resolve_workdir' in src
+# Permanent behavior test added by this card proves a fresh intake saves workdir before ensure_branch,
+# and a second process() call does not invoke resolve_workdir again.
+assert pathlib.Path('tests/test_workdir_persistence.py').exists()
+print("workdir record shape ok")
 PY
 ```
 Must pass, plus the Gate.
@@ -66,6 +71,6 @@ workdir to test), the verification gate (T24), cleaning the live scratch `.git` 
 *dumber*, not cleverer: it is being demoted, not improved), and per-slice checkpoints (T26).
 
 ## Done when
-`task.json` contains `workdir` for a newly intaken task; a resumed task logs the same workdir twice
-in a row; an old-format `task.json` still loads with `workdir == ""` and the existing resume tests
-still pass; the fallback path emits a warning line.
+`task.json` contains `workdir` before git/session work starts; `tests/test_workdir_persistence.py`
+proves a fresh intake resolves once and a resume reuses the saved value; an old-format `task.json`
+loads with `workdir == ""`, is migrated once with a warning, and is deterministic thereafter.

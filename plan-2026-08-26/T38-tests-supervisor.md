@@ -21,19 +21,24 @@ the pure module and the breaker *arithmetic*, never the loop, never a spawn, nev
    never import `supervisor`"** — and add a test that asserts it: run a `subprocess` that imports
    `harness.workflow.cycle` and asserts `'supervisor' not in sys.modules` and
    `'harness.core.config' not in sys.modules` (the T13 guard, promoted to CI).
-2. Cases for `decide_cycle_action`: in-flight beats claims and pending (both orders); claims beat
-   pending; all-zero → `GENERATE`; negatives → `ValueError`; a large-count sanity case; and
-   `cycle_summary`'s exact string (T14 greps it in the log, so it is a contract).
-3. Replicate the **breaker arithmetic** as a pure helper test: if T14/T15 left the counting inside
+2. Cases for `decide_cycle_action`: in-flight beats pending; pending produces `WORK`; after T44,
+   claimed-only produces `BLOCKED`; all-zero → `GENERATE`; negatives → `ValueError`; a large-count
+   sanity case; and `cycle_summary`'s exact string.
+3. Test T14's pure `command_for_action`: `RESUME` and `WORK` map exactly to
+   `harness.py run-task-loop --continue`, `GENERATE` maps exactly to `harness.py autonomous`, and
+   `BLOCKED` maps to no command after T44. Also parse `supervisor.py` with `ast` and assert its spawn
+   argument is obtained from `command_for_action`, not from duplicated command literals. This proves
+   the decision-to-command wiring without importing or executing the supervisor.
+4. Replicate the **breaker arithmetic** as a pure helper test: if T14/T15 left the counting inside
    `run_loop`, do not copy the loop into the test — instead assert the *contract* by reading the
    source (`ast`) for: `FAIL_LIMIT` compared before the reset happens, and `_sleep` on every failure
    path. If the arithmetic is not extractable without changing `supervisor.py`, add a small pure
    function `next_fail_state(failcount, rc, limit) -> (new_count, should_reset)` to
    `harness/workflow/cycle.py` (that module is allowed to grow) and test it — do **not** edit
    `supervisor.py` in this card.
-4. Cases for `next_fail_state` if you add it: rc 0 resets to 0; rc≠0 increments; the increment that
+5. Cases for `next_fail_state` if you add it: rc 0 resets to 0; rc≠0 increments; the increment that
    reaches the limit is the one that returns `should_reset True`; after a reset the count is 0.
-5. Backoff (T15): assert the *shape* — a pure `backoff_seconds(consecutive_no_progress, base, cap)`
+6. Backoff (T15): assert the *shape* — a pure `backoff_seconds(consecutive_no_progress, base, cap)`
    (in `cycle.py`) is monotonic non-decreasing, capped, and returns `base` on the first no-progress
    cycle. If T15 already has such a helper elsewhere, test that one instead of adding a duplicate.
 

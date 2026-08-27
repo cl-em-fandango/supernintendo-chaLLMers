@@ -1,4 +1,7 @@
-# T37 — Handler tests: `status` shows claims, `run-one` requeues, `requeue-claims`
+# T37 — Handler boundary-test epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Claim handlers are T66, run cleanup is T67, parser/dispatch
+> is T68, and autonomous read-only counting is tested with T58.
 
 **Wave 9** · depends: T09, T10, T11, T12 (case **h** additionally wants **T41** — see Do 2h) ·
 finding: F11

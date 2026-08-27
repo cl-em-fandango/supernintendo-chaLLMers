@@ -1,4 +1,7 @@
-# T41 — Five small F14 fixes, each verified on its own
+# T41 — F14 small-items epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Its five independent behaviors are T54, T55, T56, T57,
+> and T58. This file is retained only as the parent contract.
 
 **Wave 10** · depends: T29, T30, T31 · **blocks: T33** (the README re-sync documents `resume --fresh`,
 which only exists after item 1 — run this card first, or T33 omits that flag) · finding: F14

@@ -1,4 +1,7 @@
-# T36 — Temp-repo tests for `git_cli`: merge, gate, revert, abort, dirty refusal
+# T36 — Git boundary-test epic (superseded)
+
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T62, T63, T64, and T65. This file is retained only
+> as the parent test matrix.
 
 **Wave 9** · depends: T03, T04, T05, T23, T24, T27 · finding: F11
 

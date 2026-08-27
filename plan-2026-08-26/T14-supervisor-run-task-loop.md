@@ -28,10 +28,12 @@ the self-driving loop. T13 supplies the pure decision; this card wires it in.
    replaces it once T41 lands). On `claims`: pass the total, and if the D4 state is what the
    `WORK` branch is chasing (nothing pending, nothing in flight, only stale claims) log one extra
    line naming it, so the block is visible instead of mysterious.
-3. Spawn mapping: `RESUME` and `WORK` both spawn
-   `[sys.executable, "harness.py", "run-task-loop", "--continue"]` (that command resumes `active/`
-   first, then drains `pending/` one task at a time); `GENERATE` spawns
-   `[sys.executable, "harness.py", "autonomous"]`. Log a non-zero child rc as today.
+3. Add pure `command_for_action(action: CycleAction, python: str) -> tuple[str, ...]` to
+   `harness/workflow/cycle.py`. `RESUME` and `WORK` return
+   `(python, "harness.py", "run-task-loop", "--continue")`; `GENERATE` returns
+   `(python, "harness.py", "autonomous")`. The supervisor passes that tuple to `spawn`. T44 later
+   adds `BLOCKED`, for which the helper returns an empty tuple and no child is spawned. This pure
+   mapping is the integration seam T38 tests; do not duplicate command literals in `run_loop()`.
 4. Do **not** touch the breaker block (178-195) — T06 owns it. Keep the per-cycle
    `harness.py status` probe and `_sleep(stop, SLEEP_S)`.
 5. Module docstring: one cycle = status probe → decide → one `run-task-loop --continue` (or
