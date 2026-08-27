@@ -19,9 +19,15 @@ def _git(cwd: Path, *args: str, check: bool = True) -> str:
     return proc.stdout
 
 
-def _has(cwd: Path, ref: str) -> bool:
+def has_branch(cwd: Path, ref: str) -> bool:
     return subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{ref}"],
+        cwd=cwd).returncode == 0
+
+
+def has_tag(cwd: Path, ref: str) -> bool:
+    return subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{ref}"],
         cwd=cwd).returncode == 0
 
 
@@ -35,9 +41,9 @@ def ensure_branch(workdir: Path, task_id: str, trunk: str) -> str:
         _git(workdir, "-c", "user.email=pi@harness.local",
              "-c", "user.name=pi-harness", "commit", "-m", "harness: initial commit",
              check=False)
-    if not _has(workdir, trunk):
+    if not has_branch(workdir, trunk):
         _git(workdir, "branch", trunk)
-    if _has(workdir, branch):
+    if has_branch(workdir, branch):
         _git(workdir, "checkout", branch)
     else:
         _git(workdir, "checkout", "-b", branch, trunk)
@@ -98,12 +104,14 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _revert_to_last_good(workdir: Path, trunk: str) -> None:
+def _revert_to_last_good(workdir: Path, trunk: str) -> str:
     """Reset trunk to the last known-good tag. If no tag exists yet, reset to
-    trunk's parent (undo the single bad merge commit)."""
+    trunk's parent (undo the single bad merge commit). Returns the target reverted to."""
     workdir = Path(workdir)
-    if _has(workdir, LAST_GOOD_TAG):
+    if has_tag(workdir, LAST_GOOD_TAG):
         _git(workdir, "reset", "--hard", LAST_GOOD_TAG)
+        return f"tag:{LAST_GOOD_TAG}"
     else:
         # no last-good tag: undo the merge commit we just made
         _git(workdir, "reset", "--hard", "HEAD~1")
+        return "HEAD~1"

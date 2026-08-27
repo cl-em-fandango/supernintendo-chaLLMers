@@ -33,7 +33,14 @@ def _make_repo(root: Path) -> Path:
     _shutil.copytree(repo_root / "external", root / "external", dirs_exist_ok=True,
                      ignore=_shutil.ignore_patterns("__pycache__"))
     _shutil.copy(repo_root / "harness.py", root / "harness.py")
-    _shutil.copy(repo_root / "config.json", root / "config.json")
+    config = {
+        "workDir": str(root),
+        "logDir": str(root / "logs"),
+        "statsDir": str(root / "stats"),
+        "tokenBudget": 100000,
+        "trunkBranch": "pi/trunk"
+    }
+    (root / "config.json").write_text(json.dumps(config))
     (root / ".gitignore").write_text(".pi-session-*.out\n")
     _git(root, "init", "-b", "pi/trunk")
     _git(root, "add", "-A")
