@@ -10,7 +10,10 @@ version:
   - Tracks the child pi process and kills the whole process tree on stop,
     so a hung session can't orphan a model.
   - Circuit breaker: if the harness fails to launch N times in a row, revert
-    trunk to pi/last-good and continue.
+    trunk to pi/last-good and continue. The revert goes through
+    external.git_cli, so a worktree with uncommitted changes makes it refuse:
+    the refusal is logged and the loop keeps running (never a raw
+    `git reset --hard` from here).
   - Graceful stop via `supervisor.py stop` (SIGTERM) or a STOP file.
 
 Log handling:
@@ -41,10 +44,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.core.config import load            # noqa: E402
 from harness.core.providers import create_provider  # noqa: E402
+from external.git_cli import revert_to_last_good  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = HARNESS_DIR / "config.json"
 WORK_DIR = Path(load(CONFIG_PATH).work_dir)
+TRUNK = load(CONFIG_PATH).trunk_branch   # the branch the breaker rolls back
 LOG = WORK_DIR / "logs" / "supervisor.log"
 PIDFILE = WORK_DIR / "logs" / "supervisor.pid"
 STOPFILE = WORK_DIR / "STOP"
@@ -230,13 +235,14 @@ def run_loop() -> int:
                 log(f"  ⚠ harness failed to launch ({failcount}/{FAIL_LIMIT})")
                 if failcount >= FAIL_LIMIT:
                     log("  ⛔ CIRCUIT BREAKER: reverting trunk to pi/last-good")
-                    subprocess.run(
-                        ["git", "reset", "--hard", "pi/last-good"],
-                        cwd=HARNESS_DIR, capture_output=True)
-                    rev = subprocess.run(
-                        ["git", "rev-parse", "--short", "pi/last-good"],
-                        cwd=HARNESS_DIR, capture_output=True, text=True)
-                    log(f"  reverted to {rev.stdout.strip()}")
+                    # git_cli owns the revert (and the dirty-tree guard in front of
+                    # it). A refusal is a log line, not a reason to die: the loop
+                    # has to keep trying, and the worktree stays exactly where it is.
+                    try:
+                        reverted_to = revert_to_last_good(HARNESS_DIR, TRUNK)
+                        log(f"  reverted to {reverted_to}")
+                    except Exception as exc:
+                        log(f"  ⚠ breaker refused: {exc}")
                     failcount = 0
                 _sleep(stop, SLEEP_S)
                 continue

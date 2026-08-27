@@ -281,6 +281,22 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def revert_to_last_good(workdir: Path, trunk: str) -> str:
+    """Roll trunk back to the last known-good commit. Public entry point (F6d).
+
+    Thin wrapper over ``_revert_to_last_good`` for callers outside this module —
+    the supervisor's circuit breaker — so no other file ever builds a git
+    command line (CODING_STANDARDS §4). Same contract:
+
+    * returns the ref actually reverted to, ``"tag:<ref>"`` or ``"HEAD~1"``;
+    * raises ``RuntimeError`` on a dirty worktree — the T05 guard runs first, so
+      a breaker event can never discard uncommitted work. ``allow_dirty`` is
+      deliberately *not* exposed here: the breaker has no bypass, only the
+      human-driven ``merge_to_trunk`` recovery path does.
+    """
+    return _revert_to_last_good(Path(workdir), trunk)
+
+
 def _revert_to_last_good(workdir: Path, trunk: str,
                          allow_dirty: bool = False) -> str:
     """Reset trunk to the last known-good tag. If no tag exists yet, reset to
