@@ -192,8 +192,8 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
     is raised so the pipeline parks the task.
 
     ``allow_dirty`` bypasses the uncommitted-work guard in front of the
-    cross-branch checkout. Nothing in the repo passes True; it is the human
-    recovery path only.
+    cross-branch checkout and, on the gate-failure path, in front of the revert.
+    Nothing in the repo passes True; it is the human recovery path only.
     """
     workdir = Path(workdir)
     branch = f"pi/{task_id}"
@@ -236,7 +236,17 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
         # `reverted_to` names the ref that was *actually* rolled back to: the tag
         # when one exists, `HEAD~1` when there is none (T03 — reporting the tag
         # unconditionally hid the fact that the fallback had run).
-        reverted_to = _revert_to_last_good(workdir, trunk)
+        # The revert is itself guarded (T05): if the gate run left uncommitted
+        # paths behind, nothing is reset and the operator gets both facts — the
+        # gate failed *and* the rollback was refused — with trunk where it stands.
+        try:
+            reverted_to = _revert_to_last_good(workdir, trunk,
+                                               allow_dirty=allow_dirty)
+        except RuntimeError as refused:
+            raise RuntimeError(
+                f"verification gate FAILED for {task_id}: {detail}. "
+                f"{refused} Trunk left at its current commit; "
+                f"feature branch {branch} kept.") from refused
         raise RuntimeError(
             f"verification gate FAILED for {task_id}: {detail}. "
             f"trunk reverted to {reverted_to}; feature branch {branch} kept.")
@@ -271,14 +281,23 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _revert_to_last_good(workdir: Path, trunk: str) -> str:
+def _revert_to_last_good(workdir: Path, trunk: str,
+                         allow_dirty: bool = False) -> str:
     """Reset trunk to the last known-good tag. If no tag exists yet, reset to
     trunk's parent (undo the single bad merge commit).
+
+    Both branches run `git reset --hard`, so neither runs until `_require_clean`
+    has proved the worktree free of uncommitted work: a rollback moves commits,
+    it is never a licence to discard someone's edits. ``allow_dirty`` bypasses
+    the guard; nothing in the repo passes True — it is the human recovery path
+    only, for an operator who has read the damage and chose to roll anyway.
 
     Returns the target actually reverted to — `"tag:<ref>"` or `"HEAD~1"` — so the
     caller can log which path was taken instead of assuming the tag was there.
     """
     workdir = Path(workdir)
+    if not allow_dirty:
+        _require_clean(workdir, f"revert {trunk} to last-good")
     if has_tag(workdir, LAST_GOOD_TAG):
         _git(workdir, "reset", "--hard", LAST_GOOD_TAG)
         return f"tag:{LAST_GOOD_TAG}"
