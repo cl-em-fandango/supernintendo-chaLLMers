@@ -1,3 +1,5 @@
 .pi-session-*.out
 __pycache__/
 *.pyc
+# ephemeral state of the card-queue runner (rewritten every tick; must survive rollback)
+.chief-wiggum/

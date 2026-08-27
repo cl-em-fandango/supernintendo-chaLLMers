@@ -1,5 +1,7 @@
 # Autonomous Workflow Harness
 
+> STATUS: partly out of date — see PLAN-2026-08-26.md §Open decisions
+
 A self-driving pipeline that turns freeform task descriptions into reviewed,
 merged features — using fresh, token-budgeted pi sessions at every step.
 
