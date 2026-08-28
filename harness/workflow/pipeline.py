@@ -8,7 +8,7 @@ from pathlib import Path
 from ..core import prompts
 from ..core.config import Config
 from ..core.enums import CheckpointStage
-from external.git_cli import is_under_queue
+from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionRunner
@@ -325,6 +325,13 @@ class Pipeline:
                          if original.exists() else ctx.task_id)
                 from ..core.gitops import merge_to_trunk
                 merge_to_trunk(ctx.workdir, ctx.task_id, self.cfg.trunk_branch, title)
+            except GateNotApplicable as e:
+                # The harness gate cannot judge this repo. Nothing was mutated
+                # (the refusal precedes every git write), the branch is still
+                # there for a human (T27), and re-running would refuse again:
+                # park with the reason verbatim, never retry.
+                self.lifecycle.park(ctx.task_id, str(e))
+                return "parked"
             except Exception as e:
                 self.lifecycle.park(ctx.task_id, f"merge failed: {e}")
                 return "parked"

@@ -1,6 +1,10 @@
 """Git operations for the harness.
 
 This module contains all subprocess calls to git (CODING_STANDARDS §4).
+
+The verification gate (`verify_harness`) is harness-only today: it can only
+judge this repo. Per-repo gate design is deferred by decision D3 — not this
+module's problem; until it exists, `gate_applies` refuses the merge outright.
 """
 from __future__ import annotations
 
@@ -10,6 +14,12 @@ import sys
 from pathlib import Path
 
 LAST_GOOD_TAG = "pi/last-good"
+
+
+class GateNotApplicable(RuntimeError):
+    """Raised when `merge_to_trunk` is asked to merge into a repo the harness
+    verification gate cannot judge (no `harness.py` / `harness/composition.py`).
+    Refusing happens before any git write, so nothing is mutated."""
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> str:
@@ -48,6 +58,19 @@ def is_under_queue(workdir: Path | str, queue_dir: Path | str) -> bool:
     workdir = Path(workdir).resolve()
     queue_dir = Path(queue_dir).resolve()
     return queue_dir in workdir.parents or workdir == queue_dir
+
+
+def gate_applies(workdir: Path | str) -> bool:
+    """True only when `workdir` is the harness repo itself — the sole repo
+    `verify_harness` can honestly judge.
+
+    Pure predicate: two file checks, no config read, no subprocess. Any other
+    repo fails the check, and `merge_to_trunk` refuses it before touching git
+    rather than merging and reverting behind an undeclared gate.
+    """
+    workdir = Path(workdir)
+    return ((workdir / "harness.py").is_file()
+            and (workdir / "harness" / "composition.py").is_file())
 
 
 def ensure_branch(workdir: Path, task_id: str, trunk: str) -> str:
@@ -213,9 +236,17 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
     ``allow_dirty`` bypasses the uncommitted-work guard in front of the
     cross-branch checkout and, on the gate-failure path, in front of the revert.
     Nothing in the repo passes True; it is the human recovery path only.
+
+    Raises ``GateNotApplicable`` when ``gate_applies(workdir)`` is false. That
+    check runs first — before the checkout, before the squash-merge, before any
+    git write command at all — so when it raises, nothing has been mutated.
     """
     workdir = Path(workdir)
     branch = f"pi/{task_id}"
+    if not gate_applies(workdir):
+        raise GateNotApplicable(
+            f"refusing to merge {task_id} into {workdir}: "
+            f"no verification gate is defined for this repo")
     if not allow_dirty:
         _require_clean(workdir, f"merge_to_trunk checkout {trunk}")
     pre_head = _git(workdir, "rev-parse", trunk, check=False).strip()
