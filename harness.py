@@ -9,6 +9,12 @@ Usage:
   harness.py autonomous          Generate tasks until queue has N
   harness.py status              Show queue + stats
   harness.py report              Print the stats report
+  harness.py requeue-claims      Hand stranded claimed/ files back to pending
+                                 (--older-than HOURS, --dry-run)
+
+`run` and `run-task-loop` also take --requeue-stale: reclaim claims older than
+CLAIM_STALE_HOURS at startup (off unless flagged, or "autoRequeueStaleClaims":
+true in config.json).
 """
 from __future__ import annotations
 
@@ -32,14 +38,16 @@ def main() -> int:
         return 1
     
     if args.command == "run":
-        return handlers.cmd_run(continue_=args.continue_)
+        return handlers.cmd_run(continue_=args.continue_,
+                                requeue_stale=args.requeue_stale)
     elif args.command == "run-task":
         return handlers.cmd_run_task(args.file, fresh=args.fresh,
                                      continue_=args.continue_)
     elif args.command == "run-one":
         return handlers.cmd_run_one()
     elif args.command == "run-task-loop":
-        return handlers.cmd_run_task_loop(continue_=args.continue_)
+        return handlers.cmd_run_task_loop(continue_=args.continue_,
+                                           requeue_stale=args.requeue_stale)
     elif args.command == "autonomous":
         return handlers.cmd_autonomous()
     elif args.command == "status":
@@ -50,6 +58,9 @@ def main() -> int:
         return handlers.cmd_resume(args.task_id, args.yes)
     elif args.command in ("unpark", "requeue"):
         return handlers.cmd_unpark(args.task_id)
+    elif args.command == "requeue-claims":
+        return handlers.cmd_requeue_claims(older_than=args.older_than,
+                                           dry_run=args.dry_run)
     
     print(__doc__)
     return 1

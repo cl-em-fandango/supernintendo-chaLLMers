@@ -1,8 +1,10 @@
 """Command handlers for the harness CLI."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..workflow.autonomous import AutonomousGenerator
@@ -13,12 +15,15 @@ from ..core.providers import Task
 from ..core.stats import render_report
 from ..composition import build
 
-# Shown under the status table while claims exist. It names the plan card that
-# ships the fix, not a subcommand: `requeue-claims` does not exist yet, and
-# telling an operator to type a command that is not there is a lie. T12
-# rewrites this line to name the command once it lands.
+# Shown under the status table while claims exist. Names the command that
+# clears them (it exists now — T12), so the line is something to type.
 CLAIMS_STRANDED_WARNING = ("⚠ {count} claimed tasks: nothing will process them "
-                           "until they are requeued (plan card T12, 'requeue-claims').")
+                           "until they are requeued (harness.py requeue-claims).")
+
+# A claim older than this is stranded, not in-flight. Module constant, so both
+# entrypoints and the operator command agree on one number; env-overridable for
+# a box whose sessions legitimately run longer.
+CLAIM_STALE_HOURS = float(os.environ.get("CLAIM_STALE_HOURS", "6.0"))
 
 
 def _slug(name: str) -> str:
@@ -37,16 +42,21 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int
     return 0
 
 
-def cmd_run(continue_: bool = False) -> int:
+def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
     """Process pending tasks one claim at a time, then enter autonomous mode.
 
     Claims are taken a single file at a time (`limit=1`), so a run can never
     hold the whole queue; anything it did not work stays in pending/. Claims
     this invocation made are handed back to pending/ on the way out, so a
     park, an exception or an early return cannot strand them. Claims that were
-    already sitting in claimed/ when the run started are left untouched.
+    already sitting in claimed/ when the run started are left untouched unless
+    the stale-claim guard was switched on (`requeue_stale` /
+    `autoRequeueStaleClaims`) — see `_requeue_stale_claims` for why it is off.
     """
     cfg, store, runner, provider, pipeline, log = build()
+    _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
+                          enabled=_requeue_stale_enabled(cfg, requeue_stale),
+                          log=log)
     claimed: list[Task] = []
     try:
         if continue_:
@@ -115,13 +125,18 @@ def cmd_run_one() -> int:
     return 0
 
 
-def cmd_run_task_loop(continue_: bool = False) -> int:
+def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> int:
     """Process pending tasks one at a time until the queue is empty.
 
     The supervisor calls this each cycle (with `--continue`, which first
     resumes in-flight tasks left in active/ from a previous run or crash).
+    Stale claims are reclaimed at the start of the cycle only when the
+    operator opted in (`requeue_stale` / `autoRequeueStaleClaims`).
     """
     cfg, store, runner, provider, pipeline, log = build()
+    _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
+                          enabled=_requeue_stale_enabled(cfg, requeue_stale),
+                          log=log)
     if continue_:
         resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     while True:
@@ -135,6 +150,94 @@ def cmd_run_task_loop(continue_: bool = False) -> int:
         for other in tasks[1:]:
             if provider.requeue_claim(other):
                 log(f"  requeued unprocessed claim: {other.id}")
+
+
+@dataclass(frozen=True)
+class StaleClaim:
+    """One claim selected for requeue, with the age that selected it.
+
+    The age is read once, at selection, so the report line shows the age the
+    decision was made on rather than whatever the clock says after the move.
+    """
+    claim: Task
+    age_hours: float
+
+    @property
+    def label(self) -> str:
+        return f"{self.claim.id} ({int(self.age_hours)}h)"
+
+
+def _silent(line: str = "") -> None:
+    """No-op log sink, for calling the guard directly (tests, ad-hoc use)."""
+
+
+def _stale_claims(provider, older_hours: float) -> list[StaleClaim]:
+    """The provider's claims aged `older_hours` or more.
+
+    A claim the provider cannot age (-1.0) is skipped, never read as old.
+    """
+    stale = []
+    for claim in provider.list_claims():
+        age = provider.claim_age_hours(claim.id)
+        if age >= 0 and age >= older_hours:
+            stale.append(StaleClaim(claim=claim, age_hours=age))
+    return stale
+
+
+def _requeue_stale_enabled(cfg, requeue_stale: bool) -> bool:
+    """The automatic guard runs when the operator said so on the CLI or in
+    config.json (`autoRequeueStaleClaims`). Absent or false in both = off.
+    """
+    return bool(requeue_stale) or bool(cfg.get("autoRequeueStaleClaims", False))
+
+
+def _requeue_stale_claims(provider, older_hours: float, enabled: bool,
+                          log=None) -> int:
+    """Hand every claim aged `older_hours`+ back to pending/. Off unless enabled.
+
+    Deliberately opt-in (decision D4): the entries sitting in claimed/ are the
+    input to the human review pass, and an always-on guard would empty the
+    directory on the first loop. A claim younger than `older_hours` is left
+    alone either way — that is a concurrent run's, not garbage.
+    Returns the number of claims moved (0 when disabled).
+    """
+    if log is None:
+        log = _silent
+    if not enabled:
+        return 0
+    moved = 0
+    for item in _stale_claims(provider, older_hours):
+        if provider.requeue_claim(item.claim) is not None:
+            moved += 1
+            log(f"  reclaimed stale claim: {item.label}")
+    if moved:
+        log(f"requeued {moved} stale claim(s) (>= {older_hours:g}h)")
+    return moved
+
+
+def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False) -> int:
+    """Recover stranded claims: move claimed-but-unprocessed files back to pending/.
+
+    `--older-than` bounds the sweep (default 0.0 = every claim); `--dry-run`
+    prints the plan and touches nothing. An empty claimed/ is the healthy
+    case, not an error, so this returns 0 either way.
+    """
+    _, _, _, provider, _, log = build()
+    total = len(provider.list_claims())
+    stale = _stale_claims(provider, older_than)
+    if dry_run:
+        for item in stale:
+            log(f"would requeue {item.label}")
+        log(f"dry run: {len(stale)} of {total} claim(s) at or over "
+            f"{older_than:g}h would move to pending/")
+        return 0
+    moved = 0
+    for item in stale:
+        if provider.requeue_claim(item.claim) is not None:
+            moved += 1
+            log(f"requeued {item.label}")
+    log(f"requeued {moved} of {len(stale)}")
+    return 0
 
 
 def cmd_autonomous() -> int:

@@ -5,6 +5,20 @@ import argparse
 from typing import List, Optional
 
 
+REQUEUE_STALE_HELP = (
+    "At startup, move claims older than CLAIM_STALE_HOURS (default 6h) back to "
+    "pending/. OFF by default: what is in claimed/ now is the input to the "
+    "human review pass, and an always-on guard would empty the dir before "
+    "anyone read it. T13 may treat claimed/ as work only once an operator has "
+    "turned this on. Also settable as \"autoRequeueStaleClaims\": true in config.json.")
+
+
+def _add_requeue_stale_flag(parser: argparse.ArgumentParser) -> None:
+    """The opt-in loop-start stale-claim guard, shared by both long-running commands."""
+    parser.add_argument("--requeue-stale", dest="requeue_stale", action="store_true",
+                        default=False, help=REQUEUE_STALE_HELP)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the harness CLI."""
     parser = argparse.ArgumentParser(
@@ -18,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Process all pending tasks, then autonomous mode")
     run_parser.add_argument("--continue", dest="continue_", action="store_true",
                            default=False, help="Also resume in-flight tasks in active/")
+    _add_requeue_stale_flag(run_parser)
     
     # run-task
     run_task_parser = subparsers.add_parser("run-task", help="Process a single task file")
@@ -34,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_task_loop_parser = subparsers.add_parser("run-task-loop", help="Process pending tasks one at a time until queue is empty")
     run_task_loop_parser.add_argument("--continue", dest="continue_", action="store_true",
                                      default=False, help="Also resume in-flight tasks in active/")
+    _add_requeue_stale_flag(run_task_loop_parser)
     
     # autonomous
     subparsers.add_parser("autonomous", help="Generate tasks until queue has N")
@@ -57,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     # Add requeue as an alias
     requeue_parser = subparsers.add_parser("requeue", help=argparse.SUPPRESS)
     requeue_parser.add_argument("task_id", help=argparse.SUPPRESS)
+
+    # requeue-claims (operator command: recover stranded claims from claimed/)
+    requeue_claims_parser = subparsers.add_parser(
+        "requeue-claims", help="Move claimed-but-unprocessed tasks back to pending")
+    requeue_claims_parser.add_argument("--older-than", dest="older_than", type=float,
+                                       default=0.0, metavar="HOURS",
+                                       help="Only requeue claims at least this many hours "
+                                            "old (default 0.0 = every claim)")
+    requeue_claims_parser.add_argument("--dry-run", dest="dry_run", action="store_true",
+                                       default=False,
+                                       help="Print what would move; change nothing")
     
     return parser
 

@@ -70,6 +70,10 @@ python3 harness.py run                  # all pending, then autonomous
 python3 harness.py autonomous           # just generate tasks
 python3 harness.py status               # queue + stats
 python3 harness.py report               # stats only
+python3 harness.py requeue-claims       # hand stranded claimed/ tasks back to pending
+
+`requeue-claims` recovers tasks a dead run left in `claimed/` (`--dry-run` to preview,
+`--older-than HOURS` to bound it); `run`/`run-task-loop` do that sweep at startup only when opted in.
 
 # self-driving loop (bounded cycles, stoppable):
 nohup ./supervisor.sh >> ../logs/supervisor.log 2>&1 &
