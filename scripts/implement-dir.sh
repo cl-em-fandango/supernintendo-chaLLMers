@@ -6,7 +6,15 @@ set -euo pipefail
 #
 #   scripts/implement-dir.sh <feature_dir>
 #
-# Env: MODEL, PROVIDER, GLOB, LOG_DIR, TIMEOUT (seconds), PI_BIN
+# Env: MODEL, PROVIDER, GLOB, LOG_DIR, TIMEOUT (seconds), PI_BIN, RENDER
+#
+# pi runs in json mode; the raw event stream is kept verbatim in
+# $LOG_DIR/<card>.out and the terminal gets scripts/render-session.py, which
+# collapses the token deltas into one line per tool call plus the verdict.
+# RENDER=0 puts the raw stream on the terminal as well.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RENDER="${RENDER:-1}"
 
 FEATURE_DIR="${1:?usage: implement-dir.sh <feature_dir>}"
 [ -d "$FEATURE_DIR" ] || { echo "not a directory: $FEATURE_DIR" >&2; exit 1; }
@@ -26,7 +34,12 @@ mapfile -d '' -t FILES < <(find "$FEATURE_DIR" -maxdepth 1 -type f -name "$GLOB"
 for spec in "${FILES[@]}"; do
     name="$(basename "$spec")"
     log="$LOG_DIR/$name.out"
-    echo "=== $name"
+    if [ "$RENDER" = "1" ]; then
+        render=(python3 "$SCRIPT_DIR/render-session.py")
+    else
+        render=(cat)
+    fi
+    echo "=== $name  (raw: $log)"
 
     # </dev/null is mandatory: pi's print mode reads stdin and merges it into
     # the prompt, so an inherited pipe/TTY with no EOF stalls the session with
@@ -38,7 +51,7 @@ for spec in "${FILES[@]}"; do
             ${MODEL:+--model "$MODEL"} \
             --no-session --mode json -p \
             "Implement exactly one feature in this repository: read the file $spec and do what it asks. Do not start any other feature. Follow CODING_STANDARDS.md if present, run the tests, commit your work, and end your final message with a line 'VERDICT: done' (or 'VERDICT: failed' with the reason)." \
-            </dev/null 2>&1 | tee "$log"
+            </dev/null 2>&1 | tee "$log" | "${render[@]}"
     then
         echo "--- $name ok"
     else
