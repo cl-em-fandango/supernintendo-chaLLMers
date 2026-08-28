@@ -1,9 +1,12 @@
 # T25 — Queue-audit epic (superseded)
 
-> **DO NOT EXECUTE THIS FILE AS A CARD.** Pure inventory/anomaly behavior is T60; CLI and report
-> persistence are T61. This file is retained only as the parent contract.
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T76 → T77 → T61. This file is retained only as the
+> parent contract.
 
 **Wave 5** · depends: T21, T22, T23 · finding: F13 · **[decision D4 — recorded, see Context]**
+
+The original inventory leaf exceeded the five-criterion ceiling and was re-sliced on 2026-08-26 into
+the two leaves that now open this slice; see `SLICING-MAP.md`.
 
 ## Context
 The live queue is in a state the code cannot describe: `active/002-pipeline-checkpoint-and-resume`

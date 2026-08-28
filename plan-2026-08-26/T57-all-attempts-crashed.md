@@ -1,6 +1,6 @@
 # T57 — Park when every crash retry is exhausted
 
-**Depends:** T20, T50 · **Leaf ticket**
+**Depends:** T20, T74 · **Leaf ticket**
 
 ## Context
 This ticket is one recursively-sliced leaf. It owns only the behavior below.

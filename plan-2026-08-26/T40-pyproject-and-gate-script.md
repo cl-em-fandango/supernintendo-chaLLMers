@@ -6,11 +6,15 @@
 The repository has no project metadata or lint policy. This card declares current reality only; it does not add CI or enforce lint.
 
 ## Read first
-- Python imports under `harness/`, `external/`, `harness.py`, `supervisor.py`, and `tests/`
 - `CODING_STANDARDS.md`
 
+No module sweep: the runtime import set is discovered by the command in `Do` step 1, so this card's
+read set stays inside the hard limit instead of reading every Python file.
+
 ## Do
-1. Confirm whether runtime code has third-party imports.
+1. Discover the runtime import set with
+   `grep -rhoE --include='*.py' '^[[:space:]]*(import|from) [a-zA-Z0-9_.]+' harness external harness.py supervisor.py | sort -u`
+   and treat anything that is neither the standard library nor a local module as a runtime dependency.
 2. Add `pyproject.toml` with project name `harness`, `requires-python = ">=3.10"`, and the observed dependency list.
 3. Add optional dev dependency `ruff` and narrow advisory Ruff `F` rules.
 4. Do not change source to satisfy Ruff; record residual findings in the commit message.

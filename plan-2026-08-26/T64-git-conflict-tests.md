@@ -10,7 +10,8 @@ This ticket is one recursively-sliced leaf. It owns only the behavior below.
 - tests/test_checkpoint_state.py
 
 ## Do
-Create the new file: `tests/test_git_conflict.py`.
+Add a fixture class to the existing `tests/test_git_conflict.py` — T72 landed that module with the
+conflict-cleanup tests, so extend it and leave its tests intact.
 
 Temp-repo tests for unmerged-index cleanup, known merge-added path removal, no conflict markers, unchanged HEAD, and dirty revert refusal.
 

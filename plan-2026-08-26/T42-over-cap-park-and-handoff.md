@@ -1,9 +1,13 @@
 # T42 — Over-cap hardening epic (superseded)
 
 > **DO NOT EXECUTE THIS FILE AS A CARD.** It is retained as the complete contract and is recursively
-> sliced into executable leaves T48 → T49 → T50. Those three leaves jointly own every criterion below.
+> sliced into executable leaves T48 → T49 → T74 → T75. Those four leaves jointly own every criterion
+> below.
 
 **Wave 8** · depends: T17, T18, T20, T26, T32 · finding: F10 + decision D2
+
+The original third leaf was re-sliced on 2026-08-26 into the two leaves that now close this slice;
+see `SLICING-MAP.md` for the audit that forced it.
 
 ## Context
 D2 requires an immediate stop when context usage goes over 60,000 tokens. Checking `peak_tokens` after `run_pi_session()` returns is too late: the model may continue consuming context for the rest of the session. Enforcement must occur while JSON usage events are read. The same structured result must carry enough data for stats and the handoff.
@@ -36,8 +40,8 @@ D2 requires an immediate stop when context usage goes over 60,000 tokens. Checki
 ## Verify
 ```bash
 cd /home/donald/work/harness
-python3 -m unittest tests.test_over_cap_trip -v
-python3 -m unittest tests.test_pi_subprocess -v
+python3 -m unittest tests.test_pi_over_cap_stream tests.test_over_cap_session \
+    tests.test_over_cap_park tests.test_over_cap_handoff -v
 ```
 Gate must pass.
 

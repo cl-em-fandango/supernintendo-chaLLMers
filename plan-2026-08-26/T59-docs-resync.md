@@ -1,6 +1,6 @@
 # T59 — Resynchronize operator and historical documentation
 
-**Depends:** T12, T33, T50, T54, T61, T69 · **Leaf ticket**
+**Depends:** T12, T33, T75, T54, T61, T69 · **Leaf ticket**
 
 ## Context
 This ticket is one recursively-sliced leaf. It owns only the behavior below.

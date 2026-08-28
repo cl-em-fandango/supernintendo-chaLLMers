@@ -3,20 +3,22 @@
 **Depends:** T10, T51 · **Leaf ticket**
 
 ## Context
-This ticket is one recursively-sliced leaf. It owns only the behavior below.
+This ticket is one recursively-sliced leaf. It owns only the behavior below. Its suite is named for
+the behavior (`tests/test_run_owner_id.py`) so no sibling leaf shares a file with it — T61 also
+claimed `tests/test_handlers.py`, which made the two leaves un-revertible apart.
 
 ## Read first
 - harness/cli/handlers.py
 
 ## Do
-Create the new file: `tests/test_handlers.py`.
+Create the new file: `tests/test_run_owner_id.py`.
 
 Generate one owner id per command invocation; pass it to claim and finally-cleanup calls; prove one invocation cannot clean another owner’s claim.
 
 ## Verify
 ```bash
 cd /home/donald/work/harness
-python3 -m unittest tests.test_handlers -v
+python3 -m unittest tests.test_run_owner_id -v
 ```
 Global Gate must pass.
 

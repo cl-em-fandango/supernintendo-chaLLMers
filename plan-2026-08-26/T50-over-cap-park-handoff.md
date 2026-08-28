@@ -1,9 +1,15 @@
-# T50 — Park an over-cap session with structured handoff
+# T50 — Park an over-cap session with structured handoff (superseded)
 
-**Depends:** T26, T49 · **Leaf ticket**
+> **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T74 then T75. This file is retained only as the
+> parent contract.
+
+**Depends:** T26, T49 · **Re-sliced into T74 → T75**
 
 ## Context
-This ticket is one recursively-sliced leaf. It owns only the behavior below.
+Re-sliced on 2026-08-26 (see `SLICING-MAP.md`): this leaf crossed workflow routing and markdown
+persistence/rendering in one ticket (`fits()` Q1) and touched two production modules plus a test
+module, so `RECURSIVE-SLICING-ALGORITHM.md` forces another split. T74 owns the routing and the park,
+T75 owns the handoff rendering; together they own every criterion below exactly once.
 
 ## Read first
 - harness/workflow/pipeline.py
