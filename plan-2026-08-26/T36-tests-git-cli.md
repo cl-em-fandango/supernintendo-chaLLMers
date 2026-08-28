@@ -18,7 +18,8 @@ to this file can silently un-fix them. All of it is testable with throwaway repo
   (T23), `gate_applies` / `GateNotApplicable` (T24), `cleanup_branch` (T27).
   **`_has` is gone** — T03 deletes it and replaces it with the two explicit predicates, so this file
   must neither call it nor name it (the audit's `_has` is history, not API).
-- `plan-2026-08-26/T03-git-tag-lookup.md`, `T04-merge-abort.md`, `T05-dirty-tree-guard.md`,
+- `plan-2026-08-26/T03-git-tag-lookup.md`, `plan-2026-08-26-done/T04-merge-abort.md`,
+  `plan-2026-08-26-done/T05-dirty-tree-guard.md`,
   `T24-refuse-merge-without-gate.md`, `T27-merge-checkpoint.md` — each names the bug to pin
 - `tests/test_checkpoint_state.py` — house style
 

@@ -1,8 +1,9 @@
 # plan-2026-08-26 — DONE
 
 Executable cards from `plan-2026-08-26/` that have been actioned (code landed on
-`pi/trunk` and the global Gate is green). Cards still open, and the non-executable
-parent/epic archives (T04, T25, T27, T33, T36, T37, T40, T41, T42, T46), remain in
+`pi/trunk` and the global Gate is green), plus the archived parent/epic contracts
+whose leaves have all landed (T04). Cards still open, and the parent/epic archives
+with leaves still open (T25, T27, T33, T36, T37, T40, T41, T42, T46), remain in
 `plan-2026-08-26/`.
 
 ## Verified actioned (17)
@@ -36,10 +37,14 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   T17's session was killed at its 3600s timeout. T17 still owns that behaviour and
   its own Verify block has never passed (its boundary tests are T35, not yet
   written). Left in `plan-2026-08-26/`.
-- **T04 EPIC — left in place.** Parent/DO-NOT-EXECUTE archive. Its leaves (T72, T73)
-  are both done so the epic's `[tag]` condition is met, but the parent file itself is
-  a requirement archive per `plan-2026-08-26-done/SLICING-MAP.md` and was never executed, so it stays with
-  the other parent contracts.
+- **T04 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract. Its
+  leaves (T72, T73) both landed, so the epic's `[tag]` condition is met; the parent's
+  own Verify block was re-run against current `external/git_cli.py` at move time and
+  prints `merge abort ok`. It was moved out of `plan-2026-08-26/` so the directory
+  driver stops handing a superseded parent to a fresh session — `implement-dir.sh`
+  globs `*.md`. Prose path references in `T24` and `T36` were re-pointed at this path.
+  The file content is unmodified: it stays the requirement archive and conflict
+  reproduction.
 
 ## Archived references
 

@@ -18,7 +18,7 @@ touching git, instead of merging and reverting.
 - `external/git_cli.py` — `merge_to_trunk` (checkout trunk → `merge --squash` → commit →
   `verify_harness` → `_revert_to_last_good`) and `verify_harness`
 - `harness/workflow/pipeline.py` — `stage_holistic`: `merge_to_trunk(...)` in try/except → park
-- `plan-2026-08-26/T04-merge-abort.md`, `T05-dirty-tree-guard.md` — already-landed merge safety, this
+- `plan-2026-08-26-done/T04-merge-abort.md`, `plan-2026-08-26-done/T05-dirty-tree-guard.md` — already-landed merge safety, this
   card sits in front of both
 - `plan-2026-08-26/T23-no-git-init-in-queue.md` — `is_under_queue`, the predicate to reuse
 
