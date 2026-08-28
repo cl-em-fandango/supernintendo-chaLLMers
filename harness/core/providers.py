@@ -23,6 +23,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .enqueue_guard import check_enqueue
+
 
 @dataclass
 class Task:
@@ -76,13 +78,20 @@ class DirectoryTaskProvider(TaskProvider):
     A claim is this provider's own side effect, so claim recovery lives here
     too: `list_claims()`, `requeue_claim()`, `requeue_all_claims()` and
     `claim_age_hours()` see and undo claims without touching the queue layout.
+
+    Files the enqueue guard refuses (plan parents marked `DO NOT EXECUTE`) are
+    never fetched and never claimed: they stay untouched in pending/ as the
+    requirement archives they are, and each skip is logged with the leaf ids to
+    enqueue instead.
     """
 
     name = "directory"
 
-    def __init__(self, pending_dir: str | Path, claimed_dir: str | Path | None = None):
+    def __init__(self, pending_dir: str | Path, claimed_dir: str | Path | None = None,
+                 log=print):
         self.pending_dir = Path(pending_dir)
         self.pending_dir.mkdir(parents=True, exist_ok=True)
+        self.log = log
         # Claimed files are staged here (out of pending/) so they are not
         # re-fetched. The pipeline reads the body at claim time, then the
         # staging file is removed once intake has copied it into the task dir.
@@ -97,6 +106,9 @@ class DirectoryTaskProvider(TaskProvider):
         `limit` caps how many tasks are returned, so a caller that asks for
         one claim gets one instead of the whole queue; whatever it did not
         take stays in pending/. Default None is every task, as before.
+
+        A file the enqueue guard refuses is skipped: it costs no `limit` slot,
+        is not moved into claimed/, and its skip is logged once per fetch.
         """
         tasks = []
         for f in sorted(self.pending_dir.glob("*.md")):
@@ -104,6 +116,10 @@ class DirectoryTaskProvider(TaskProvider):
                 break
             tid = _slug(f.stem)
             body = f.read_text()
+            decision = check_enqueue(body, f.name)
+            if not decision.allowed:
+                self.log(f"  ⚠ not enqueuing {decision.reason}")
+                continue
             if claim:
                 dest = self.claimed_dir / f.name
                 try:
