@@ -62,6 +62,9 @@ def run_pi_session(
     peak = 0
     text_parts: list[str] = []
     stderr_parts: list[str] = []
+    # The drainer can outlive its join below (a grandchild keeping the pipe's
+    # write end open), so the list is only ever touched under this lock.
+    stderr_lock = threading.Lock()
     rc = 0
     crashed = False
     err = ""
@@ -103,10 +106,15 @@ def run_pi_session(
         assert proc.stderr is not None
 
         def drain_stderr():
+            # Read to EOF. `stop_stderr` must never abandon data that is still
+            # sitting in the pipe buffer: the child exits, stdout closes and the
+            # main thread reaches the finally while hundreds of KB of stderr are
+            # still unread.
             for line in proc.stderr:
                 if stop_stderr.is_set():
                     return
-                stderr_parts.append(line)
+                with stderr_lock:
+                    stderr_parts.append(line)
 
         drain_thread = threading.Thread(target=drain_stderr, daemon=True)
         drain_thread.start()
@@ -158,12 +166,17 @@ def run_pi_session(
     finally:
         stop_hb.set()
         hb_thread.join(timeout=2)
-        stop_stderr.set()
+        # The child is reaped by now, so its stderr is at EOF and this join
+        # returns as soon as the buffer is drained. The stop event is only the
+        # safety valve for a wedged child that keeps the pipe open past the
+        # join, so it is set *after* the join - setting it first drops the tail.
         if drain_thread is not None:
             drain_thread.join(timeout=2)
+        stop_stderr.set()
 
     duration = time.monotonic() - t0
-    stderr_txt = "".join(stderr_parts)
+    with stderr_lock:
+        stderr_txt = "".join(stderr_parts)
     if stderr_txt.strip():
         err = (err + "\n" if err else "") + stderr_txt.strip()[-2000:]
     output = "\n".join(text_parts)

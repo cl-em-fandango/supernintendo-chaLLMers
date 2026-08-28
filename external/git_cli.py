@@ -187,8 +187,12 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
                    allow_dirty: bool = False) -> None:
     """Squash-merge a feature branch to trunk, then verify the result.
 
-    If the verification gate fails, trunk is reset to the last known-good tag
-    and the feature branch is left intact (for inspection) and a RuntimeError
+    The feature branch is never deleted here, on any path: deletion is
+    ``cleanup_branch``'s job and runs only after the pipeline's completion move
+    succeeded (F8 — a crash between merge and completion must still resume).
+
+    If the verification gate fails, trunk is reset to the last known-good tag,
+    the feature branch is left intact (for inspection) and a RuntimeError
     is raised so the pipeline parks the task.
 
     ``allow_dirty`` bypasses the uncommitted-work guard in front of the
@@ -251,9 +255,43 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
             f"verification gate FAILED for {task_id}: {detail}. "
             f"trunk reverted to {reverted_to}; feature branch {branch} kept.")
 
-    # gate passed: advance the last-good tag and drop the feature branch
+    # gate passed: advance the last-good tag. `branch` stays where it is.
     _git(workdir, "tag", "-f", LAST_GOOD_TAG, trunk)
-    _git(workdir, "branch", "-d", branch, check=False)
+
+
+def _current_branch(workdir: Path) -> str:
+    """The branch HEAD points at; empty when detached or unresolvable."""
+    return _git(workdir, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+
+
+def cleanup_branch(workdir: Path, task_id: str, trunk: str) -> None:
+    """Delete the task's feature branch, once the task itself is finished.
+
+    Split out of ``merge_to_trunk`` on purpose (F8): the merge has to leave the
+    branch alive so a run that dies before ``complete()`` can resume, so the
+    pipeline calls this only after the completion move succeeded.
+
+    A missing branch is a no-op, which makes the call idempotent (a resumed
+    task cleans up again harmlessly). Any git refusal raises; the caller logs it
+    and must never fail or re-park the completed task.
+
+    Deletion is ``-D``, not ``-d``: a squash-merge lands the branch's *content*
+    on trunk without making the branch an ancestor of trunk, so ``git branch -d``
+    reports "not fully merged" forever — the ``-d`` this replaces silently
+    deleted nothing. The guarantee that the work is safe to drop is the caller's
+    order of operations (verification gate passed, ``pi/last-good`` advanced,
+    task in done/), not git's ancestry check.
+    """
+    workdir = Path(workdir)
+    branch = f"pi/{task_id}"
+    if not has_branch(workdir, branch):
+        return
+    if _current_branch(workdir) == branch:
+        # cannot delete the branch we are standing on: cross-branch checkout,
+        # so the same uncommitted-work guard as every other one here applies.
+        _require_clean(workdir, f"cleanup_branch checkout {trunk}")
+        _git(workdir, "checkout", trunk)
+    _git(workdir, "branch", "-D", branch)
 
 
 def verify_harness(workdir: Path) -> tuple[bool, str]:

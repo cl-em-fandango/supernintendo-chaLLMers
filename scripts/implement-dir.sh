@@ -19,7 +19,7 @@ RENDER="${RENDER:-1}"
 FEATURE_DIR="${1:?usage: implement-dir.sh <feature_dir>}"
 [ -d "$FEATURE_DIR" ] || { echo "not a directory: $FEATURE_DIR" >&2; exit 1; }
 
-MODEL="${MODEL:-$(jq -r '.models.implementer // empty' config.json 2>/dev/null || true)}"
+MODEL="Qwen3.8-Flash-Next-UD-Q4_K_XL"
 PROVIDER="${PROVIDER:-${HARNESS_PI_PROVIDER:-llama-swap}}"
 GLOB="${GLOB:-*.md}"
 LOG_DIR="${LOG_DIR:-.pi-implement-dir}"

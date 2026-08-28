@@ -281,6 +281,7 @@ class Pipeline:
                 ctx.task_id,
                 f"Feature complete and merged to {self.cfg.trunk_branch} "
                 f"(merge checkpointed by an earlier run).")
+            self._cleanup_branch(ctx.workdir, ctx.task_id)
             return "done"
 
         r = self._run(
@@ -300,6 +301,7 @@ class Pipeline:
             self._checkpoint_merge(ctx.task_id)
             self.lifecycle.complete(ctx.task_id, "Feature complete and merged to "
                          f"{self.cfg.trunk_branch}. " + _summary(r.output))
+            self._cleanup_branch(ctx.workdir, ctx.task_id)
             return "done"
         self.lifecycle.park(ctx.task_id, "holistic review failed: " + _summary(r.output))
         return "parked"
@@ -321,6 +323,25 @@ class Pipeline:
             self.lifecycle.checkpoint(task_id, CheckpointStage.MERGE)
         except Exception as e:
             self.log(f"  ⚠ could not checkpoint the merge: {e} — completing anyway")
+
+    # ------------------------------------------------------------------
+    # post-complete branch cleanup (F8)
+    # ------------------------------------------------------------------
+    def _cleanup_branch(self, workdir: Path, task_id: str) -> None:
+        """Drop `pi/<task_id>` now that the task is done (F8).
+
+        Called only after `complete()` returned, never before: until the task
+        dir has actually landed in done/ the branch is the only copy of the
+        work's provenance and a resumed run still needs it. A failed cleanup is
+        cosmetic — the work is on trunk and the task is complete — so it is
+        logged and swallowed; it must never park or fail a done task.
+        """
+        from ..core.gitops import cleanup_branch
+        try:
+            cleanup_branch(workdir, task_id, self.cfg.trunk_branch)
+        except Exception as e:
+            self.log(f"  ⚠ task {task_id} is complete but branch "
+                     f"pi/{task_id} was not deleted: {e}")
 
 
 # ---------------------------------------------------------------------------
