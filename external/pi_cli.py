@@ -14,6 +14,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+VERDICT_RE = re.compile(r"VERDICT\s*:\s*([A-Za-z_]+)", re.IGNORECASE)
+VERDICT_JSON_RE = re.compile(r'"verdict"\s*:\s*"([A-Za-z_]+)"', re.IGNORECASE)
+
 HEARTBEAT_S = 30          # log a heartbeat every 30s while a session runs
 HARD_TIMEOUT_S = 5400     # 90 min absolute cap per session
 WATCHDOG_GRACE_S = 5      # kill-then-reap grace for the wall-clock watchdog
@@ -240,13 +243,20 @@ def run_pi_session(
 
 
 def _extract_verdict(output: str) -> str:
-    """Extract verdict from pi output."""
-    matches = re.findall(r"VERDICT:\s*([a-z_]+)", output)
+    """Extract a verdict from assistant text.
+
+    The wire format may be any case (`VERDICT: DONE`), so the match is
+    case-insensitive and the captured group is lowercased to land on a
+    `Verdict` enum value. When a run emits several verdict lines the last one
+    wins: a session that re-checks its work and changes its mind is normal.
+    Falls back to a JSON `"verdict": "..."` field, then to "unknown".
+    """
+    matches = VERDICT_RE.findall(output)
     if matches:
-        return matches[-1]
-    j = re.findall(r'"verdict"\s*:\s*"([a-z_]+)"', output)
+        return matches[-1].strip().lower()
+    j = VERDICT_JSON_RE.findall(output)
     if j:
-        return j[-1]
+        return j[-1].strip().lower()
     return "unknown"
 
 

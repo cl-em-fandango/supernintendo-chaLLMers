@@ -74,6 +74,8 @@ class SessionRunner:
             log=self.log,
         )
         
+        # `result.output` is assistant text only (T17 removed the stderr splice),
+        # so stderr can never fabricate a verdict here.
         verdict = _extract_verdict(result.output)
         if result.crashed and verdict == "unknown":
             verdict = "error"
