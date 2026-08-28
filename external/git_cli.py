@@ -35,6 +35,21 @@ def has_tag(cwd: Path, ref: str) -> bool:
         cwd=cwd).returncode == 0
 
 
+def is_under_queue(workdir: Path | str, queue_dir: Path | str) -> bool:
+    """True when `workdir` *is* `queue_dir` or lives inside it.
+
+    Pure predicate, no config import, no logging, no subprocess: `external/`
+    must not know what a queue is, it only compares two paths. Both arguments
+    accept `str` as well as `Path` — a `TypeError` raised from inside a guard is
+    how a guard ends up removed. Both sides are resolved first, so a
+    `/tmp/queue-totally-unrelated` never matches `/tmp/queue` on a bare string
+    prefix.
+    """
+    workdir = Path(workdir).resolve()
+    queue_dir = Path(queue_dir).resolve()
+    return queue_dir in workdir.parents or workdir == queue_dir
+
+
 def ensure_branch(workdir: Path, task_id: str, trunk: str) -> str:
     """Ensure repo exists, trunk exists, and we're on the task's feature branch."""
     workdir = Path(workdir)

@@ -8,6 +8,7 @@ from pathlib import Path
 from ..core import prompts
 from ..core.config import Config
 from ..core.enums import CheckpointStage
+from external.git_cli import is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionRunner
@@ -89,6 +90,28 @@ class Pipeline:
             self.provider.release_claim(task)
         workdir = Path(state.workdir)
         self.log(f"  workdir: {workdir}")
+        # F7 guard: `ensure_branch` `git init`s a workdir that has no `.git`, so
+        # a task that names no repo would otherwise create a real repository —
+        # and collect its session `.out` files — inside the queue tree. This is
+        # the only call site that knows both the workdir and `cfg.queue_dir`, so
+        # the check lives here and `git_cli` stays a dumb git wrapper.
+        if is_under_queue(workdir, self.cfg.queue_dir):
+            self.lifecycle.park(
+                task.id,
+                f"refusing to init a repo in the queue: workdir={workdir} is "
+                f"under queue={self.cfg.queue_dir}; record the real repo path "
+                f"in the task body")
+            return "parked"
+        if not workdir.is_dir():
+            # Same refusal, different reason: a workdir that does not exist is
+            # not a repo either, and `ensure_branch` would `git init` into a
+            # path created by nothing but the guard's absence. Never mkdir.
+            self.lifecycle.park(
+                task.id,
+                f"refusing to init a repo outside a real directory: "
+                f"workdir={workdir} does not exist; record the real repo path "
+                f"in the task body")
+            return "parked"
         try:
             ensure_branch(workdir, task.id, self.cfg.trunk_branch)
         except Exception as e:

@@ -16,7 +16,6 @@ from pathlib import Path
 
 from ..core.config import Config
 from ..core.enums import CheckpointStage, TaskStatus
-from ..core.gitops import ensure_branch
 
 # Queue subdirectories that may hold a task dir.
 QUEUE_LOCATIONS = ("active", "parked", "failed", "done")
