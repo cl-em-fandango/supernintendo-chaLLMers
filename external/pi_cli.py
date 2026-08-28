@@ -20,7 +20,11 @@ HARD_TIMEOUT_S = 5400     # 90 min absolute cap per session
 
 @dataclass
 class PiSessionResult:
-    """Raw outcome from a pi subprocess run."""
+    """Raw outcome from a pi subprocess run.
+
+    `output` is assistant text only. The child's stderr is kept separate in
+    `stderr` so it can never be scanned as if it were a verdict.
+    """
     rc: int
     crashed: bool
     err: str
@@ -28,6 +32,7 @@ class PiSessionResult:
     duration_s: float
     output: str
     out_file: Path
+    stderr: str = ""
 
 
 def run_pi_session(
@@ -44,16 +49,19 @@ def run_pi_session(
         model: The model to use
         workdir: Working directory for the subprocess
         prompt: The prompt to send to pi
-        out_file: Path where to write the output
+        out_file: Path where to write the assistant output. Non-empty stderr is
+            written alongside it as `<out_file>.err` and never into `out_file`.
         log: Callable for heartbeat logging
         
     Returns:
-        PiSessionResult with all raw subprocess data
+        PiSessionResult with all raw subprocess data: `output` is assistant text,
+        `stderr` the child's stderr, `err` the failure text (plus a stderr tail)
     """
     workdir = Path(workdir)
     t0 = time.monotonic()
     peak = 0
     text_parts: list[str] = []
+    stderr_parts: list[str] = []
     rc = 0
     crashed = False
     err = ""
@@ -61,6 +69,7 @@ def run_pi_session(
     # heartbeat state (shared with the watchdog thread)
     hb = {"last_event": t0, "events": 0, "peak": 0}
     stop_hb = threading.Event()
+    stop_stderr = threading.Event()
 
     def heartbeat():
         while not stop_hb.wait(HEARTBEAT_S):
@@ -70,6 +79,11 @@ def run_pi_session(
 
     hb_thread = threading.Thread(target=heartbeat, daemon=True)
     hb_thread.start()
+
+    # The stderr drainer is started the instant the pipe exists: a child that
+    # writes more than the ~64 KB OS pipe buffer to stderr blocks on write until
+    # somebody reads, which would otherwise stall stdout, then the reap, forever.
+    drain_thread: threading.Thread | None = None
 
     # Provider is overridable for tests / alternative backends (e.g. openrouter);
     # production default stays llama-swap.
@@ -86,6 +100,17 @@ def run_pi_session(
             text=True,
         )
         assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        def drain_stderr():
+            for line in proc.stderr:
+                if stop_stderr.is_set():
+                    return
+                stderr_parts.append(line)
+
+        drain_thread = threading.Thread(target=drain_stderr, daemon=True)
+        drain_thread.start()
+
         deadline = t0 + HARD_TIMEOUT_S
         for line in proc.stdout:
             if time.monotonic() > deadline:
@@ -128,20 +153,24 @@ def run_pi_session(
         if rc != 0 and not err:
             err = f"pi exited rc={rc}"
             crashed = True
-        if proc.stderr:
-            stderr_txt = proc.stderr.read()
-            if stderr_txt.strip():
-                err = (err + "\n" if err else "") + stderr_txt.strip()[-2000:]
     except FileNotFoundError as e:
         rc, err, crashed = 127, f"failed to spawn pi: {e}", True
     finally:
         stop_hb.set()
         hb_thread.join(timeout=2)
+        stop_stderr.set()
+        if drain_thread is not None:
+            drain_thread.join(timeout=2)
 
     duration = time.monotonic() - t0
+    stderr_txt = "".join(stderr_parts)
+    if stderr_txt.strip():
+        err = (err + "\n" if err else "") + stderr_txt.strip()[-2000:]
     output = "\n".join(text_parts)
-    if err:
-        output += f"\n[stderr]\n{err}"
+    if stderr_txt.strip():
+        # Operator-side copy of stderr, kept off `output` (which is what the
+        # verdict extractor reads) but still recoverable as one file per session.
+        out_file.with_suffix(out_file.suffix + ".err").write_text(stderr_txt)
     out_file.write_text(output)
 
     # Diagnostic: log the raw event tally + output size so an empty/zero-token
@@ -149,7 +178,7 @@ def run_pi_session(
     # events and no text came back from pi).
     log(f"  … pi raw: events={hb['events']} peak={peak} tok "
         f"output={len(output)} chars rc={rc} crashed={crashed} "
-        f"stderr={len(err)} chars")
+        f"stderr={len(stderr_txt)} chars")
     if peak == 0 and not output.strip():
         log(f"  … pi EMPTY: no tokens and no text returned "
             f"(rc={rc}, crashed={crashed}, stderr={err[:200]!r})")
@@ -162,6 +191,7 @@ def run_pi_session(
         duration_s=duration,
         output=output,
         out_file=out_file,
+        stderr=stderr_txt,
     )
 
 
