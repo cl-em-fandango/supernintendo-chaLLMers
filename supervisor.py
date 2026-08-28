@@ -25,6 +25,16 @@ Log handling:
   so supervisor.log + supervisor.log.1 are bounded at 2 * MAX_LOG_BYTES.
   A rotation that fails is warned about once and never aborts the loop.
 
+Child output:
+  A supervised child's stdout and stderr go to a shared file handle on
+  <WORK_DIR>/logs/children/<UTC ts>-<label>.log (one fd keeps their relative
+  order), delimited by "=== spawn ... ===" / "=== exited rc=N ===" banner
+  lines, so verdicts, heartbeats and tracebacks survive a park or a kill.
+  The directory is capped at MAX_CHILD_LOGS files (default 50, override with
+  the SUPERVISOR_MAX_CHILD_LOGS env var): the oldest are deleted before each
+  spawn, counting the file about to be created. Every spawn logs the child
+  log path to supervisor.log so a human can tail the right file.
+
 Usage:
   supervisor.py run          # run the loop (foreground)
   supervisor.py start        # daemonize and run
@@ -38,6 +48,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,6 +71,7 @@ FAIL_LIMIT = int(os.environ.get("FAIL_LIMIT", "3"))
 
 LOG_ENCODING = "utf-8"
 MAX_LOG_BYTES = int(os.environ.get("SUPERVISOR_MAX_LOG_BYTES", "5_000_000"))
+MAX_CHILD_LOGS = int(os.environ.get("SUPERVISOR_MAX_CHILD_LOGS", "50"))
 
 _rotation_warned = False   # warn once per process, not once per failed write
 
@@ -154,8 +166,35 @@ def read_pid() -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# child process management (kill the whole tree on stop)
+# child process management (capture output, kill the whole tree on stop)
 # ---------------------------------------------------------------------------
+def _utc_stamp() -> str:
+    """UTC timestamp for child log names; microseconds keep two spawns inside
+    the same second from colliding."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+
+
+def _prune_child_logs(child_dir: Path) -> None:
+    """Delete the oldest child logs so the dir cannot grow past MAX_CHILD_LOGS.
+
+    Names start with a UTC timestamp, so lexical order is chronological order.
+    Keeps MAX_CHILD_LOGS - 1 existing files: the one the caller is about to
+    create is the last one allowed. Never raises — a stale file we cannot
+    unlink must not stop a spawn; the next prune retries it.
+    """
+    try:
+        logs = sorted((p for p in child_dir.iterdir() if p.is_file()),
+                      key=lambda p: p.name)
+    except OSError:
+        return
+    keep = max(MAX_CHILD_LOGS - 1, 0)
+    for stale in logs[:max(len(logs) - keep, 0)]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
 class ChildTracker:
     """Track the current child (harness.py) and its pi grandchild so we can
     kill the whole tree on stop."""
@@ -163,16 +202,31 @@ class ChildTracker:
     def __init__(self):
         self.current: subprocess.Popen | None = None
 
-    def spawn(self, args: list[str]) -> int:
-        """Run a harness subcommand, tracking it. Returns its exit code."""
-        self.current = subprocess.Popen(
-            args, cwd=HARNESS_DIR,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)  # own process group -> killable as a tree
-        try:
-            return self.current.wait()
-        finally:
-            self.current = None
+    def spawn(self, args: list[str], *, label: str) -> int:
+        """Run a harness subcommand, tracking it. Returns its exit code.
+
+        stdout and stderr share one file handle under
+        <WORK_DIR>/logs/children/ so their relative order is kept and a
+        traceback or pre-kill output is no longer lost to /dev/null.
+        """
+        child_dir = WORK_DIR / "logs" / "children"
+        child_dir.mkdir(parents=True, exist_ok=True)
+        _prune_child_logs(child_dir)
+        log_path = child_dir / f"{_utc_stamp()}-{label}.log"
+        log(f"  ▶ child '{label}' output -> {log_path}")
+        with log_path.open("w", encoding=LOG_ENCODING) as out:
+            out.write(f"=== spawn {label} args={args} ===\n")
+            out.flush()
+            try:
+                self.current = subprocess.Popen(
+                    args, cwd=HARNESS_DIR, stdout=out, stderr=out,
+                    start_new_session=True)  # own process group -> killable as a tree
+                rc = self.current.wait()
+            finally:
+                self.current = None
+            out.write(f"=== exited rc={rc} ===\n")
+            out.flush()
+        return rc
 
     def kill_tree(self) -> None:
         """Kill the current child and its entire process group."""
@@ -229,7 +283,8 @@ def run_loop() -> int:
                 break
 
             # --- circuit breaker: can the harness even launch? ---
-            rc = tracker.spawn([sys.executable, "harness.py", "status"])
+            rc = tracker.spawn([sys.executable, "harness.py", "status"],
+                               label="status")
             if rc != 0:
                 failcount += 1
                 log(f"  ⚠ harness failed to launch ({failcount}/{FAIL_LIMIT})")
@@ -254,11 +309,13 @@ def run_loop() -> int:
             log(f"── cycle {cycle}: pending={len(pending)} ──")
             if pending:
                 # claim + process exactly ONE task this cycle
-                rc = tracker.spawn([sys.executable, "harness.py", "run-one"])
+                rc = tracker.spawn([sys.executable, "harness.py", "run-one"],
+                                   label="run-one")
                 if rc != 0:
                     log(f"  run-one exited rc={rc}")
             else:
-                rc = tracker.spawn([sys.executable, "harness.py", "autonomous"])
+                rc = tracker.spawn([sys.executable, "harness.py", "autonomous"],
+                                   label="autonomous")
                 if rc != 0:
                     log(f"  autonomous exited rc={rc}")
 
