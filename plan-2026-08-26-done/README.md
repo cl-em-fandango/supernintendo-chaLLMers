@@ -3,8 +3,8 @@
 Executable cards from `plan-2026-08-26/` that have been actioned (code landed on
 `pi/trunk` and the global Gate is green), plus the archived parent/epic contracts
 whose leaves have all landed (T04) or whose leaves are still open but which the
-enqueue guard refuses as `DO NOT EXECUTE` parents (T25, T37). Cards still open, and the
-parent/epic archives with leaves still open (T27, T33, T40, T41, T42, T46),
+enqueue guard refuses as `DO NOT EXECUTE` parents (T25, T37, T41). Cards still open, and the
+parent/epic archives with leaves still open (T27, T33, T40, T42, T46),
 remain in `plan-2026-08-26/`.
 
 ## Verified actioned (17)
@@ -67,6 +67,24 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   in `plan-2026-08-26/` and were left there untouched — executing the sequence would be three
   features in one session. Moved out of `plan-2026-08-26/` because `implement-dir.sh` globs `*.md`
   and was handing a refused parent to fresh sessions. File content is unmodified.
+
+- **T41 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract: line 3 reads "Its five
+  independent behaviors are T54, T55, T56, T57, and T58", so the file is a requirement archive, not a
+  unit of work, and `harness/core/enqueue_guard.py` refuses any body carrying that marker. Its five
+  items are five independent features, each owned by its own still-open leaf (T54 `resume --fresh`,
+  T55 the implementer-model fix, T56 the `-review.md` note path, T57 `AllAttemptsCrashed`, T58
+  `count_pending()`), all left untouched in `plan-2026-08-26/` — actioning the epic would be five
+  features in one session, which its own Context section forbids. Item 4 is additionally blocked on
+  T42, also still open: `OverContextBudget` is not in `harness/workflow/pipeline.py`, so there is no
+  sibling exception shape for it to follow. None of the five behaviors had landed at move time —
+  verified by grep: `--fresh` on `run-task` only, `resume_task()` without a `fresh` parameter,
+  `_review_loop` still choosing `self.cfg.implementer if kind is ReviewKind.TECH else
+  self.cfg.model`, one shared `artifacts/progress/slice-{sid}.md` path, `autonomous.py` still calling
+  `fetch_pending()`, and no `count_pending` on either provider. Moved out of `plan-2026-08-26/`
+  because `implement-dir.sh` globs `*.md` and was handing a refused parent to fresh sessions. The
+  only edit to the file is a note recording why it is not actionable; the five items are untouched
+  and remain the requirement archive for T54–T58. That note keeps its extra ticket ids outside the
+  guard's 10-line header window, so a refusal still names exactly T54–T58.
 
 ## Archived references
 

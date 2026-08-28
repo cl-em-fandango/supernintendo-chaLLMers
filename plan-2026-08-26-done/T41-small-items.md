@@ -2,6 +2,22 @@
 
 > **DO NOT EXECUTE THIS FILE AS A CARD.** Its five independent behaviors are T54, T55, T56, T57,
 > and T58. This file is retained only as the parent contract.
+>
+> **Not actionable as written.** The file's own first directive refuses execution, and
+> `harness/core/enqueue_guard.py` vetoes any body carrying that marker (uppercase `DO NOT EXECUTE`
+> inside a blockquote in the first 10 lines), so this file can never become a task. Its five items
+> are five independent features owned by five open leaves — T54 `resume --fresh`, T55 the
+> implementer-model fix, T56 the `-review.md` note path, T57 `AllAttemptsCrashed`, T58
+> `count_pending()` — all still in `plan-2026-08-26/`; implementing them here would be five features
+> in one session, which the Context section itself forbids ("do them one at a time with its verify
+> line, not as one sweep"). Item 4 additionally waits on T42, which has not landed either: there is
+> no `OverContextBudget` in `harness/workflow/pipeline.py` to follow as a sibling shape. None of the
+> five has landed as of this archive — `--fresh` is on `run-task` only, `resume_task()` takes no
+> `fresh` parameter, `_review_loop` still picks `self.cfg.implementer if kind is ReviewKind.TECH
+> else self.cfg.model` (pipeline.py:305), review feedback and the progress note still share
+> `artifacts/progress/slice-{sid}.md`, `autonomous.py:85` still calls `provider.fetch_pending()`, and
+> `TaskProvider` has no `count_pending`. The five items below stay the requirement archive for
+> T54–T58; nothing here is lost, and nothing here is executable.
 
 **Wave 10** · depends: T29, T30, T31 · **blocks: T33** (the README re-sync documents `resume --fresh`,
 which only exists after item 1 — run this card first, or T33 omits that flag) · finding: F14
