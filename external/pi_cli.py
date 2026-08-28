@@ -16,6 +16,8 @@ from pathlib import Path
 
 HEARTBEAT_S = 30          # log a heartbeat every 30s while a session runs
 HARD_TIMEOUT_S = 5400     # 90 min absolute cap per session
+WATCHDOG_GRACE_S = 5      # kill-then-reap grace for the wall-clock watchdog
+TIMEOUT_ERR_PREFIX = "wall-clock timeout"  # err prefix that marks a timeout exit
 
 
 @dataclass
@@ -69,10 +71,14 @@ def run_pi_session(
     crashed = False
     err = ""
 
-    # heartbeat state (shared with the watchdog thread)
+    # heartbeat state (shared with the heartbeat thread)
     hb = {"last_event": t0, "events": 0, "peak": 0}
     stop_hb = threading.Event()
     stop_stderr = threading.Event()
+    stop_watchdog = threading.Event()
+    # Set by the watchdog when it kills the child, so the result can tell a
+    # wall-clock timeout apart from any other crash.
+    killed_by_watchdog = threading.Event()
 
     def heartbeat():
         while not stop_hb.wait(HEARTBEAT_S):
@@ -120,9 +126,27 @@ def run_pi_session(
         drain_thread.start()
 
         deadline = t0 + HARD_TIMEOUT_S
+
+        def watchdog():
+            # A blocked read() yields no line, so the in-loop deadline check below
+            # can never fire for a child that prints nothing. This thread kills it
+            # on the same clock, and the kill is what unblocks the read. The sleep
+            # is on the stop event (heartbeat shape) so shutdown stays prompt.
+            while proc.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    killed_by_watchdog.set()
+                    proc.kill()
+                    break
+                stop_watchdog.wait(min(1.0, remaining))
+
+        watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+        watchdog_thread.start()
+
         for line in proc.stdout:
             if time.monotonic() > deadline:
-                err = f"hard timeout after {HARD_TIMEOUT_S}s"
+                err = (f"{TIMEOUT_ERR_PREFIX} after {HARD_TIMEOUT_S}s "
+                       f"(child still streaming)")
                 crashed = True
                 break
             line = line.strip()
@@ -166,6 +190,8 @@ def run_pi_session(
     finally:
         stop_hb.set()
         hb_thread.join(timeout=2)
+        stop_watchdog.set()
+        watchdog_thread.join(timeout=WATCHDOG_GRACE_S)
         # The child is reaped by now, so its stderr is at EOF and this join
         # returns as soon as the buffer is drained. The stop event is only the
         # safety valve for a wedged child that keeps the pipe open past the
@@ -175,6 +201,11 @@ def run_pi_session(
         stop_stderr.set()
 
     duration = time.monotonic() - t0
+    if killed_by_watchdog.is_set():
+        crashed = True
+        if not err.startswith(TIMEOUT_ERR_PREFIX):
+            err = (f"{TIMEOUT_ERR_PREFIX} after {HARD_TIMEOUT_S}s"
+                   + (f": {err}" if err else ""))
     with stderr_lock:
         stderr_txt = "".join(stderr_parts)
     if stderr_txt.strip():
