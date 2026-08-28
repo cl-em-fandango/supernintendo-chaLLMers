@@ -2,9 +2,10 @@
 
 Executable cards from `plan-2026-08-26/` that have been actioned (code landed on
 `pi/trunk` and the global Gate is green), plus the archived parent/epic contracts
-whose leaves have all landed (T04). Cards still open, and the parent/epic archives
-with leaves still open (T25, T27, T33, T36, T37, T40, T41, T42, T46), remain in
-`plan-2026-08-26/`.
+whose leaves have all landed (T04) or whose leaves are still open but which the
+enqueue guard refuses as `DO NOT EXECUTE` parents (T25). Cards still open, and the
+parent/epic archives with leaves still open (T27, T33, T36, T37, T40, T41, T42, T46),
+remain in `plan-2026-08-26/`.
 
 ## Verified actioned (17)
 
@@ -45,6 +46,13 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   globs `*.md`. Prose path references in `T24` and `T36` were re-pointed at this path.
   The file content is unmodified: it stays the requirement archive and conflict
   reproduction.
+
+- **T25 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract: line 3 reads
+  "Execute T76 → T77 → T61", so the file is a requirement archive, not a unit of work, and
+  `harness/core/enqueue_guard.py` refuses any body carrying that marker. Its leaves are still open
+  in `plan-2026-08-26/` and were left there untouched — executing the sequence would be three
+  features in one session. Moved out of `plan-2026-08-26/` because `implement-dir.sh` globs `*.md`
+  and was handing a refused parent to fresh sessions. File content is unmodified.
 
 ## Archived references
 
