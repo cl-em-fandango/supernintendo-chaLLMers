@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
-from ..core.enums import CheckpointStage
+from ..core.enums import CheckpointStage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
@@ -148,11 +148,11 @@ class Pipeline:
                 self.cfg.model, ctx.workdir, prompts.spec_author(ctx.task_dir),
                 task_id=ctx.task_id, stage="spec_author")
             self.log(f"  spec author verdict: {r.verdict}")
-            if r.verdict != "done":
+            if r.verdict is not Verdict.DONE:
                 r = self._run(
                     self.cfg.model, ctx.workdir, prompts.spec_author(ctx.task_dir),
                     task_id=ctx.task_id, stage="spec_author", notes="retry")
-                if r.verdict != "done":
+                if r.verdict is not Verdict.DONE:
                     self.lifecycle.park(ctx.task_id, "spec author failed twice")
                     return False
 
@@ -160,7 +160,7 @@ class Pipeline:
                 self.cfg.assessor, ctx.workdir, prompts.spec_assess(ctx.task_dir, "ornith"),
                 task_id=ctx.task_id, stage="spec_assess_ornith")
             self.log(f"  ornith assessment verdict: {r.verdict}")
-            if r.verdict == "kickback":
+            if r.verdict is Verdict.KICKBACK:
                 kickbacks += 1
                 if kickbacks > self.cfg.max_spec_kickbacks:
                     self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
@@ -173,7 +173,7 @@ class Pipeline:
                 self.cfg.model, ctx.workdir, prompts.spec_assess(ctx.task_dir, "tw"),
                 task_id=ctx.task_id, stage="spec_assess_tw")
             self.log(f"  TW requirement-check verdict: {r.verdict}")
-            if r.verdict == "kickback":
+            if r.verdict is Verdict.KICKBACK:
                 kickbacks += 1
                 if kickbacks > self.cfg.max_spec_kickbacks:
                     self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
@@ -193,12 +193,12 @@ class Pipeline:
             self.cfg.implementer, ctx.workdir, prompts.feasibility(ctx.task_dir),
             task_id=ctx.task_id, stage="feasibility")
         self.log(f"  feasibility verdict: {r.verdict}")
-        if r.verdict == "pass":
+        if r.verdict is Verdict.PASS:
             return True
-        if r.verdict == "kickout":
+        if r.verdict is Verdict.KICKOUT:
             self.lifecycle.fail(ctx.task_id, "Task rejected at feasibility: " + _summary(r.output))
             return False
-        if r.verdict == "kickback":
+        if r.verdict is Verdict.KICKBACK:
             shutil.copy(r.out_file, ctx.task_dir / "artifacts" / "feasibility_kickback.md")
             self.log("  feasibility kickback -> back to spec stage")
             if not self.stage_spec(ctx):
@@ -206,7 +206,7 @@ class Pipeline:
             r = self._run(
                 self.cfg.implementer, ctx.workdir, prompts.feasibility(ctx.task_dir),
                 task_id=ctx.task_id, stage="feasibility", notes="recheck")
-            if r.verdict == "pass":
+            if r.verdict is Verdict.PASS:
                 return True
             self.lifecycle.park(ctx.task_id, "feasibility still failing after spec revision")
             return False
@@ -221,7 +221,7 @@ class Pipeline:
             self.cfg.implementer, ctx.workdir, prompts.slice(ctx.task_dir),
             task_id=ctx.task_id, stage="slicing")
         self.log(f"  slicing verdict: {r.verdict}")
-        if r.verdict != "done":
+        if r.verdict is not Verdict.DONE:
             self.lifecycle.park(ctx.task_id, f"slicing failed (verdict={r.verdict})")
             return False
 
@@ -231,9 +231,9 @@ class Pipeline:
                 fast, ctx.workdir, prompts.slice_check(ctx.task_dir),
                 task_id=ctx.task_id, stage="slice_check", iteration=check)
             self.log(f"  slice check #{check} verdict: {r.verdict}")
-            if r.verdict == "pass":
+            if r.verdict is Verdict.PASS:
                 return True
-            if r.verdict == "resliced":
+            if r.verdict is Verdict.RESLICED:
                 continue
         self.lifecycle.park(ctx.task_id, "slice fit check loop exceeded")
         return False
@@ -285,10 +285,10 @@ class Pipeline:
                 prompts.implement_slice(ctx.task_dir, sid, it, self.cfg.max_slice_implement),
                 task_id=ctx.task_id, stage="slice_implement", slice_id=sid, iteration=it)
             self.log(f"    implement iter {it} verdict: {r.verdict}")
-            if r.verdict == "done":
+            if r.verdict is Verdict.DONE:
                 return True
             note = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
-            if r.verdict == "progress" and not note.exists():
+            if r.verdict is Verdict.PROGRESS and not note.exists():
                 shutil.copy(r.out_file, note)
         self.lifecycle.park(ctx.task_id, f"slice {sid} not delivered in {self.cfg.max_slice_implement} implementation iterations")
         return False
@@ -305,7 +305,7 @@ class Pipeline:
                 model, ctx.workdir, prompt_fn(ctx.task_dir, sid),
                 task_id=ctx.task_id, stage=stage, slice_id=sid, iteration=it)
             self.log(f"    {kind} review iter {it} verdict: {r.verdict}")
-            if r.verdict == "pass":
+            if r.verdict is Verdict.PASS:
                 return True
             if it < max_iter:
                 feedback = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
@@ -337,7 +337,7 @@ class Pipeline:
             self.cfg.model, ctx.workdir, prompts.holistic_review(ctx.task_dir),
             task_id=ctx.task_id, stage="holistic")
         self.log(f"  holistic review verdict: {r.verdict}")
-        if r.verdict == "pass":
+        if r.verdict is Verdict.PASS:
             try:
                 original = ctx.task_dir / "original.md"
                 title = (original.read_text().strip().splitlines()[0][:70]

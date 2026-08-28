@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import prompts
 from .config import Config
+from .enums import Verdict
 from .stats import SessionRecord, StatsStore
 from external.pi_cli import run_pi_session, _extract_verdict, _now
 
@@ -25,7 +26,7 @@ from external.pi_cli import run_pi_session, _extract_verdict, _now
 @dataclass
 class SessionResult:
     ok: bool
-    verdict: str
+    verdict: Verdict
     peak_tokens: int
     duration_s: float
     output: str
@@ -76,16 +77,19 @@ class SessionRunner:
         
         # `result.output` is assistant text only (T17 removed the stderr splice),
         # so stderr can never fabricate a verdict here.
-        verdict = _extract_verdict(result.output)
-        if result.crashed and verdict == "unknown":
-            verdict = "error"
+        # Process edge: the model's `VERDICT:` line is a raw string. Convert it
+        # to the enum exactly once here; everything downstream compares members.
+        raw = _extract_verdict(result.output)
+        verdict = Verdict.parse(raw) or Verdict.UNKNOWN
+        if result.crashed and verdict is Verdict.UNKNOWN:
+            verdict = Verdict.ERROR
         self.store.record(SessionRecord(
             ts=_now(),
             task_id=task_id,
             stage=stage,
             model=model,
-            verdict=verdict,
-            outcome=_outcome(verdict),
+            verdict=verdict.value,
+            outcome=_outcome(verdict.value),
             peak_tokens=result.peak_tokens,
             duration_s=round(result.duration_s, 1),
             rc=result.rc,
@@ -99,7 +103,7 @@ class SessionRunner:
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.
-        if verdict == "unknown" or result.peak_tokens == 0:
+        if verdict is Verdict.UNKNOWN or result.peak_tokens == 0:
             tail = result.output.strip()[-300:]
             self.log(f"  … {stage} DIAG: verdict={verdict} tokens={result.peak_tokens} "
                      f"output_len={len(result.output)} tail={tail!r}")
@@ -119,6 +123,8 @@ class SessionRunner:
 
 
 def _outcome(verdict: str) -> str:
+    """Map a verdict *wire value* to the stats `outcome` column. Takes and returns
+    a plain string — it feeds the JSONL row, so it is a wire-side function."""
     return verdict if verdict in (
         "pass", "fail", "kickback", "kickout", "done",
         "progress", "resliced", "error",
