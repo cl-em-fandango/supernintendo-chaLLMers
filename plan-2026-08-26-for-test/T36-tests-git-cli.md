@@ -2,6 +2,14 @@
 
 > **DO NOT EXECUTE THIS FILE AS A CARD.** Execute T62, T63, T64, and T65. This file is retained only
 > as the parent test matrix.
+>
+> **Not actionable as written.** The file's own first line refuses execution, and its leaf tickets
+> (T62–T65) each create or extend a *different* module (`tests/test_git_refs.py`,
+> `tests/test_git_merge_gate.py`, `tests/test_git_conflict.py`, `tests/test_gate_not_applicable.py`)
+> rather than the single `tests/test_git_cli.py` this epic describes — so there is no single feature
+> here to implement, and `harness/core/enqueue_guard.py` refuses any body carrying the marker above.
+> The test matrix below stays the requirement archive for the four leaves; the cases it numbers (a–h)
+> are reproduced inside those leaves' scope lines.
 
 **Wave 9** · depends: T03, T04, T05, T23, T24, T27 · finding: F11
 
