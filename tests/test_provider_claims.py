@@ -140,6 +140,17 @@ class DirectoryClaimApiTest(unittest.TestCase):
         self.assertAlmostEqual(self.provider.claim_age_hours("004-d.md"), 2.0, delta=0.1)
         self.assertEqual(self.provider.claim_age_hours("nope.md"), -1.0)
 
+    def test_claim_age_hours_accepts_a_slugified_task_id(self):
+        """A caller (status, T12's requeue-claims) only has `Task.id`, which is
+        slugified and truncated at 60 chars — it must still find the claim."""
+        f = self.claimed / ("007-" + "x" * 80 + ".md")
+        f.write_text("L")
+        claim = self.provider.list_claims()[0]
+        self.assertNotEqual(claim.id, f.stem, "expected a truncated id")
+        stamp = f.stat().st_mtime - 3600
+        os.utime(f, (stamp, stamp))
+        self.assertAlmostEqual(self.provider.claim_age_hours(claim.id), 1.0, delta=0.1)
+
     def test_failed_move_leaves_the_claim_intact(self):
         (self.claimed / "001-a.md").write_text("A")
         with mock.patch.object(Path, "rename", side_effect=OSError("busy")):

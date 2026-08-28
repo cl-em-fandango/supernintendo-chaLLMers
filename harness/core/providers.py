@@ -187,10 +187,20 @@ class DirectoryTaskProvider(TaskProvider):
 
 
 def _named_file(directory: Path, name: str) -> Path | None:
-    """`directory/<name>.md` if it exists; `name` may already carry the .md."""
+    """`directory/<name>.md` if it exists; `name` may already carry the .md.
+
+    Falls back to a slug match: a `Task.id` is `_slug`-ified (and truncated at
+    60 chars), so the id a caller got from `list_claims()` is not always the
+    file's stem, and the id is all it has to look a claim up with.
+    """
     filename = Path(str(name)).name
-    candidate = directory / (filename if filename.endswith(".md") else f"{filename}.md")
-    return candidate if candidate.is_file() else None
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    candidate = directory / f"{stem}.md"
+    if candidate.is_file():
+        return candidate
+    slug = _slug(stem)
+    return next((f for f in sorted(directory.glob("*.md"))
+                 if _slug(f.stem) == slug), None)
 
 
 def _slug(name: str) -> str:

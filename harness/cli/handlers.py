@@ -8,9 +8,17 @@ from pathlib import Path
 from ..workflow.autonomous import AutonomousGenerator
 from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
+from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
 from ..core.providers import Task
 from ..core.stats import render_report
 from ..composition import build
+
+# Shown under the status table while claims exist. It names the plan card that
+# ships the fix, not a subcommand: `requeue-claims` does not exist yet, and
+# telling an operator to type a command that is not there is a lie. T12
+# rewrites this line to name the command once it lands.
+CLAIMS_STRANDED_WARNING = ("⚠ {count} claimed tasks: nothing will process them "
+                           "until they are requeued (plan card T12, 'requeue-claims').")
 
 
 def _slug(name: str) -> str:
@@ -136,12 +144,34 @@ def cmd_autonomous() -> int:
     return 0
 
 
+def _queue_names(queue_dir: Path, sub: str) -> list[str]:
+    """Entry names in one queue subdirectory, sorted; [] when it is missing."""
+    d = queue_dir / sub
+    return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+
+def _claim_labels(provider) -> list[str]:
+    """One `<id> (<age>h)` label per claim the provider is holding.
+
+    Ages are whole hours from `provider.claim_age_hours()`; a claim the
+    provider cannot age (it reports -1.0) is listed without an age rather than
+    with a bogus one.
+    """
+    labels = []
+    for claim in provider.list_claims():
+        age = provider.claim_age_hours(claim.id)
+        labels.append(f"{claim.id} ({int(age)}h)" if age >= 0 else claim.id)
+    return labels
+
+
 def cmd_status() -> int:
     cfg, store, runner, provider, pipeline, log = build()
-    for sub in ("pending", "active", "done", "failed", "parked", "review"):
-        d = cfg.queue_dir / sub
-        items = sorted(p.name for p in d.iterdir()) if d.exists() else []
+    claims = _claim_labels(provider)
+    for sub in QUEUE_LOCATIONS_ALL:
+        items = claims if sub == CLAIMED_LOCATION else _queue_names(cfg.queue_dir, sub)
         log(f"{sub:<10} ({len(items)}): {', '.join(items) if items else '-'}")
+    if claims:
+        log(CLAIMS_STRANDED_WARNING.format(count=len(claims)))
     log()
     log(render_report(store.all()))
     return 0

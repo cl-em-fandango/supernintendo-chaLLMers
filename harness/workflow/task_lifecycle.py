@@ -21,6 +21,15 @@ from ..core.gitops import ensure_branch
 # Queue subdirectories that may hold a task dir.
 QUEUE_LOCATIONS = ("active", "parked", "failed", "done")
 
+# The one queue subdirectory that holds claims instead of task dirs.
+CLAIMED_LOCATION = "claimed"
+
+# Every queue subdirectory the harness creates or reports on, in lifecycle
+# order: a task is written to pending/, held in claimed/ while a run owns it,
+# worked in active/, then lands in review/, parked/, failed/ or done/.
+QUEUE_LOCATIONS_ALL = ("pending", CLAIMED_LOCATION, "active", "review",
+                       "parked", "failed", "done")
+
 
 @dataclass
 class TaskState:

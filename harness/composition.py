@@ -9,6 +9,7 @@ from .core.providers import create_provider
 from .core.session import SessionRunner
 from .core.stats import StatsStore
 from .workflow.pipeline import Pipeline
+from .workflow.task_lifecycle import QUEUE_LOCATIONS_ALL
 
 
 def build(cfg_path: Path | None = None) -> tuple:
@@ -28,7 +29,7 @@ def build(cfg_path: Path | None = None) -> tuple:
             cfg_path = Path(__file__).resolve().parent.parent / "config.json"
     cfg = load(cfg_path)
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
-    for sub in ("pending", "active", "done", "failed", "parked", "review"):
+    for sub in QUEUE_LOCATIONS_ALL:
         (cfg.queue_dir / sub).mkdir(parents=True, exist_ok=True)
     log = LogSink(cfg.logs_dir / "harness.log")
     store = StatsStore(cfg.stats_path)
