@@ -250,10 +250,12 @@ def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
             raise RuntimeError(
                 f"verification gate FAILED for {task_id}: {detail}. "
                 f"{refused} Trunk left at its current commit; "
-                f"feature branch {branch} kept.") from refused
+                f"feature branch {branch} kept. "
+                f"(trunk before merge: {pre_head})") from refused
         raise RuntimeError(
             f"verification gate FAILED for {task_id}: {detail}. "
-            f"trunk reverted to {reverted_to}; feature branch {branch} kept.")
+            f"trunk reverted to {reverted_to}; feature branch {branch} kept. "
+            f"(trunk before merge: {pre_head})")
 
     # gate passed: advance the last-good tag. `branch` stays where it is.
     _git(workdir, "tag", "-f", LAST_GOOD_TAG, trunk)
