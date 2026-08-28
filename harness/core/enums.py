@@ -74,6 +74,18 @@ CHECKPOINT_ORDER: tuple[CheckpointStage, ...] = (
 )
 
 
+class ReviewKind(str, Enum):
+    """Which review a `_review_loop` pass is running.
+
+    `kind` survives in `_review_loop` (prompt selection, iteration cap, model
+    choice, log text), so it is an enum member rather than a bare string. It
+    never reaches the wire: the stats `stage` column is a `Stage` value, and
+    the review's own prompt text is built by `prompts.py`.
+    """
+    TECH = "tech"
+    FUNC = "func"
+
+
 class Stage(str, Enum):
     """Pipeline stage names, used in stats and logs.
 

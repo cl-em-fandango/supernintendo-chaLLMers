@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import prompts
 from .config import Config
-from .enums import Verdict
+from .enums import Stage, Verdict
 from .stats import SessionRecord, StatsStore
 from external.pi_cli import run_pi_session, _extract_verdict, _now
 
@@ -47,19 +47,23 @@ class SessionRunner:
         prompt: str,
         *,
         task_id: str | None = None,
-        stage: str = "unknown",
+        stage: Stage | str = "unknown",
         slice_id: str | None = None,
         iteration: int = 1,
         notes: str = "",
     ) -> SessionResult:
         workdir = Path(workdir)
-        out_file = workdir / f".pi-session-{stage}-{int(time.time())}.out"
+        # Wire-side conversion, the one place a `Stage` becomes its string. A
+        # stray string is recorded verbatim rather than raising: losing a stats
+        # row is worse than a row with an unrecognised stage label.
+        stage_value = stage.value if isinstance(stage, Stage) else stage
+        out_file = workdir / f".pi-session-{stage_value}-{int(time.time())}.out"
 
         # Per-model budget: the smaller of the global tokenBudget and the model's
         # real context window (minus output headroom). This is the ceiling the
         # model is told to stay under, so it never overflows the window.
         budget = self.cfg.model_budget(model)
-        self.log(f"  ▶ {stage} model={model} iter={iteration} "
+        self.log(f"  ▶ {stage_value} model={model} iter={iteration} "
                  f"budget={budget}k ctx={self.cfg.model_context(model)}k")
 
         # Prepend the per-model context-budget note so the model knows its own
@@ -86,7 +90,7 @@ class SessionRunner:
         self.store.record(SessionRecord(
             ts=_now(),
             task_id=task_id,
-            stage=stage,
+            stage=stage_value,
             model=model,
             verdict=verdict.value,
             outcome=_outcome(verdict.value),
@@ -98,14 +102,14 @@ class SessionRunner:
             iteration=iteration,
             notes=notes + (f" [crashed: {result.err[:120]}]" if result.crashed else ""),
         ))
-        self.log(f"  ◀ {stage} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
+        self.log(f"  ◀ {stage_value} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.
         if verdict is Verdict.UNKNOWN or result.peak_tokens == 0:
             tail = result.output.strip()[-300:]
-            self.log(f"  … {stage} DIAG: verdict={verdict} tokens={result.peak_tokens} "
+            self.log(f"  … {stage_value} DIAG: verdict={verdict} tokens={result.peak_tokens} "
                      f"output_len={len(result.output)} tail={tail!r}")
 
         return SessionResult(

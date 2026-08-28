@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
-from ..core.enums import Verdict
+from ..core.enums import Stage, Verdict
 from ..core.providers import Task
 from ..core.session import SessionRunner
 
@@ -48,7 +48,7 @@ class AutonomousGenerator:
             ma = self._random_model()
             r = self.runner.run(
                 ma, workdir, prompts.autonomous_suggest(),
-                stage="autonomous_suggest", notes="proposal")
+                stage=Stage.AUTONOMOUS_SUGGEST, notes="proposal")
             if r.verdict is not Verdict.DONE:
                 self.log(f"  suggestion failed (verdict={r.verdict}); retrying")
                 continue
@@ -65,7 +65,7 @@ class AutonomousGenerator:
             mb = self._random_model(exclude=ma)
             r = self.runner.run(
                 mb, workdir, prompts.autonomous_review(prop_file),
-                stage="autonomous_review", notes=f"review of {ma}'s proposal")
+                stage=Stage.AUTONOMOUS_REVIEW, notes=f"review of {ma}'s proposal")
             self.log(f"  review ({mb}) verdict: {r.verdict}")
             if r.verdict is not Verdict.PASS:
                 self.log("  proposal rejected; trying again")

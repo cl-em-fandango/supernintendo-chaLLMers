@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
-from ..core.enums import CheckpointStage, Verdict
+from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
@@ -43,9 +43,14 @@ class Pipeline:
         self.lifecycle = TaskLifecycle(cfg, log)
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
 
-    def _run(self, model, workdir, prompt, *, task_id, stage, **kw):
+    def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
         """Run a session, retrying on crash. Artifacts persist on disk, so a
-        retry continues from what the model already wrote rather than restarting."""
+        retry continues from what the model already wrote rather than restarting.
+
+        Call sites pass a `Stage` member (T30); `SessionRunner` converts it at
+        the stats edge, so the value travelling through here stays whatever the
+        caller handed over.
+        """
         for attempt in range(self.max_crash_retries + 1):
             r = self.runner.run(model, workdir, prompt, task_id=task_id,
                                 stage=stage, **kw)
@@ -146,19 +151,19 @@ class Pipeline:
         while True:
             r = self._run(
                 self.cfg.model, ctx.workdir, prompts.spec_author(ctx.task_dir),
-                task_id=ctx.task_id, stage="spec_author")
+                task_id=ctx.task_id, stage=Stage.SPEC_AUTHOR)
             self.log(f"  spec author verdict: {r.verdict}")
             if r.verdict is not Verdict.DONE:
                 r = self._run(
                     self.cfg.model, ctx.workdir, prompts.spec_author(ctx.task_dir),
-                    task_id=ctx.task_id, stage="spec_author", notes="retry")
+                    task_id=ctx.task_id, stage=Stage.SPEC_AUTHOR, notes="retry")
                 if r.verdict is not Verdict.DONE:
                     self.lifecycle.park(ctx.task_id, "spec author failed twice")
                     return False
 
             r = self._run(
                 self.cfg.assessor, ctx.workdir, prompts.spec_assess(ctx.task_dir, "ornith"),
-                task_id=ctx.task_id, stage="spec_assess_ornith")
+                task_id=ctx.task_id, stage=Stage.SPEC_ASSESS_ORNITH)
             self.log(f"  ornith assessment verdict: {r.verdict}")
             if r.verdict is Verdict.KICKBACK:
                 kickbacks += 1
@@ -171,7 +176,7 @@ class Pipeline:
 
             r = self._run(
                 self.cfg.model, ctx.workdir, prompts.spec_assess(ctx.task_dir, "tw"),
-                task_id=ctx.task_id, stage="spec_assess_tw")
+                task_id=ctx.task_id, stage=Stage.SPEC_ASSESS_TW)
             self.log(f"  TW requirement-check verdict: {r.verdict}")
             if r.verdict is Verdict.KICKBACK:
                 kickbacks += 1
@@ -191,7 +196,7 @@ class Pipeline:
     def stage_feasibility(self, ctx: StageContext) -> bool:
         r = self._run(
             self.cfg.implementer, ctx.workdir, prompts.feasibility(ctx.task_dir),
-            task_id=ctx.task_id, stage="feasibility")
+            task_id=ctx.task_id, stage=Stage.FEASIBILITY)
         self.log(f"  feasibility verdict: {r.verdict}")
         if r.verdict is Verdict.PASS:
             return True
@@ -205,7 +210,7 @@ class Pipeline:
                 return False
             r = self._run(
                 self.cfg.implementer, ctx.workdir, prompts.feasibility(ctx.task_dir),
-                task_id=ctx.task_id, stage="feasibility", notes="recheck")
+                task_id=ctx.task_id, stage=Stage.FEASIBILITY, notes="recheck")
             if r.verdict is Verdict.PASS:
                 return True
             self.lifecycle.park(ctx.task_id, "feasibility still failing after spec revision")
@@ -219,7 +224,7 @@ class Pipeline:
     def stage_slicing(self, ctx: StageContext) -> bool:
         r = self._run(
             self.cfg.implementer, ctx.workdir, prompts.slice(ctx.task_dir),
-            task_id=ctx.task_id, stage="slicing")
+            task_id=ctx.task_id, stage=Stage.SLICING)
         self.log(f"  slicing verdict: {r.verdict}")
         if r.verdict is not Verdict.DONE:
             self.lifecycle.park(ctx.task_id, f"slicing failed (verdict={r.verdict})")
@@ -229,7 +234,7 @@ class Pipeline:
         for check in range(1, self.cfg.max_slice_check_loops + 1):
             r = self._run(
                 fast, ctx.workdir, prompts.slice_check(ctx.task_dir),
-                task_id=ctx.task_id, stage="slice_check", iteration=check)
+                task_id=ctx.task_id, stage=Stage.SLICE_CHECK, iteration=check)
             self.log(f"  slice check #{check} verdict: {r.verdict}")
             if r.verdict is Verdict.PASS:
                 return True
@@ -261,9 +266,9 @@ class Pipeline:
             self.log(f"  ── slice {sid} ──")
             if not self._implement(ctx, sid):
                 return False
-            if not self._review_loop(ctx, sid, "tech"):
+            if not self._review_loop(ctx, sid, ReviewKind.TECH, Stage.TECH_REVIEW):
                 return False
-            if not self._review_loop(ctx, sid, "func"):
+            if not self._review_loop(ctx, sid, ReviewKind.FUNC, Stage.FUNC_REVIEW):
                 return False
             self._checkpoint_slice(ctx.task_id, sid)
             self.log(f"    slice {sid} passed all reviews")
@@ -283,7 +288,7 @@ class Pipeline:
             r = self._run(
                 self.cfg.implementer, ctx.workdir,
                 prompts.implement_slice(ctx.task_dir, sid, it, self.cfg.max_slice_implement),
-                task_id=ctx.task_id, stage="slice_implement", slice_id=sid, iteration=it)
+                task_id=ctx.task_id, stage=Stage.SLICE_IMPLEMENT, slice_id=sid, iteration=it)
             self.log(f"    implement iter {it} verdict: {r.verdict}")
             if r.verdict is Verdict.DONE:
                 return True
@@ -293,12 +298,13 @@ class Pipeline:
         self.lifecycle.park(ctx.task_id, f"slice {sid} not delivered in {self.cfg.max_slice_implement} implementation iterations")
         return False
 
-    def _review_loop(self, ctx: StageContext, sid: str, kind: str) -> bool:
-        max_iter = (self.cfg.max_slice_tech_review if kind == "tech"
+    def _review_loop(self, ctx: StageContext, sid: str, kind: ReviewKind,
+                     stage: Stage) -> bool:
+        max_iter = (self.cfg.max_slice_tech_review if kind is ReviewKind.TECH
                     else self.cfg.max_slice_func_review)
-        model = self.cfg.implementer if kind == "tech" else self.cfg.model
-        prompt_fn = prompts.tech_review if kind == "tech" else prompts.func_review
-        stage = f"{kind}_review"
+        model = self.cfg.implementer if kind is ReviewKind.TECH else self.cfg.model
+        prompt_fn = (prompts.tech_review if kind is ReviewKind.TECH
+                     else prompts.func_review)
 
         for it in range(1, max_iter + 1):
             r = self._run(
@@ -312,7 +318,7 @@ class Pipeline:
                 shutil.copy(r.out_file, feedback)
                 self._run(
                     model, ctx.workdir, prompts.fix_slice(ctx.task_dir, sid, feedback, kind),
-                    task_id=ctx.task_id, stage="slice_fix", slice_id=sid, iteration=it,
+                    task_id=ctx.task_id, stage=Stage.SLICE_FIX, slice_id=sid, iteration=it,
                     notes=f"fix after {kind} review")
         self.lifecycle.park(ctx.task_id, f"slice {sid} failed {kind} review after {max_iter} iterations")
         return False
@@ -335,7 +341,7 @@ class Pipeline:
 
         r = self._run(
             self.cfg.model, ctx.workdir, prompts.holistic_review(ctx.task_dir),
-            task_id=ctx.task_id, stage="holistic")
+            task_id=ctx.task_id, stage=Stage.HOLISTIC)
         self.log(f"  holistic review verdict: {r.verdict}")
         if r.verdict is Verdict.PASS:
             try:
