@@ -187,6 +187,7 @@ class TaskLifecycle:
         dst = self.cfg.queue_dir / "parked" / task_id
         if src.exists():
             shutil.move(str(src), str(dst))
+        self._stamp_status(task_id, TaskStatus.PARKED, "parked")
         self._exec_summary(task_id, "PARKED", reason, "parked")
         self.log(f"  task {task_id} PARKED: {reason}")
 
@@ -195,6 +196,7 @@ class TaskLifecycle:
         dst = self.cfg.queue_dir / "failed" / task_id
         if src.exists():
             shutil.move(str(src), str(dst))
+        self._stamp_status(task_id, TaskStatus.FAILED, "failed")
         self._exec_summary(task_id, "KICKED OUT", reason, "failed")
         self.log(f"  task {task_id} FAILED: {reason}")
 
@@ -203,8 +205,26 @@ class TaskLifecycle:
         dst = self.cfg.queue_dir / "done" / task_id
         if src.exists():
             shutil.move(str(src), str(dst))
+        self._stamp_status(task_id, TaskStatus.DONE, "done")
         self._exec_summary(task_id, "DONE", summary, "done")
         self.log(f"  task {task_id} DONE")
+
+    def _stamp_status(self, task_id: str, status: TaskStatus, where: str) -> None:
+        """Rewrite `task.json` at its *new* location so `status` agrees with the
+        directory it landed in. Called only after the move succeeded. A missing
+        or corrupt file yields a minimal valid state instead of raising."""
+        try:
+            state = self.load_state(task_id, where)
+        except FileNotFoundError:
+            state = TaskState(
+                id=task_id,
+                status=status.value,
+                source="unknown",
+                created=_now(),
+            )
+        state.status = status.value
+        state.last_updated = _now()
+        self.save_state(state, where)
 
     def _exec_summary(self, task_id: str, status: str, text: str, where: str) -> None:
         td = self.cfg.queue_dir / where / task_id
