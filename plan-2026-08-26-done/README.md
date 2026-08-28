@@ -3,8 +3,8 @@
 Executable cards from `plan-2026-08-26/` that have been actioned (code landed on
 `pi/trunk` and the global Gate is green), plus the archived parent/epic contracts
 whose leaves have all landed (T04) or whose leaves are still open but which the
-enqueue guard refuses as `DO NOT EXECUTE` parents (T25). Cards still open, and the
-parent/epic archives with leaves still open (T27, T33, T36, T37, T40, T41, T42, T46),
+enqueue guard refuses as `DO NOT EXECUTE` parents (T25, T37). Cards still open, and the
+parent/epic archives with leaves still open (T27, T33, T40, T41, T42, T46),
 remain in `plan-2026-08-26/`.
 
 ## Verified actioned (17)
@@ -46,6 +46,20 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   globs `*.md`. Prose path references in `T24` and `T36` were re-pointed at this path.
   The file content is unmodified: it stays the requirement archive and conflict
   reproduction.
+
+- **T37 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract: line 3 reads
+  "Claim handlers are T66, run cleanup is T67, parser/dispatch is T68, and autonomous read-only
+  counting is tested with T58", so the file is a requirement archive, not a unit of work, and
+  `harness/core/enqueue_guard.py` refuses any body carrying that marker. Its four leaves each own a
+  *different* test module (`tests/test_handlers_claims.py`, `tests/test_handlers_run.py`,
+  `tests/test_cli_surface.py`, `tests/test_autonomous_count.py`) rather than the single
+  `tests/test_handlers.py` the epic names, so no single feature could be implemented from it; and its
+  case **h** asserts `provider.count_pending()`, which is not in the tree until T58 lands. Those four
+  leaves are still open in `plan-2026-08-26/` and were left there untouched — executing the sequence
+  would be four features in one session. Moved out of `plan-2026-08-26/` because
+  `implement-dir.sh` globs `*.md` and was handing a refused parent to fresh sessions. The only edit
+  to the file is a note recording why it is not actionable; the cases (a–h) are untouched and remain
+  the requirement archive for T58 and T66–T68.
 
 - **T25 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract: line 3 reads
   "Execute T76 → T77 → T61", so the file is a requirement archive, not a unit of work, and

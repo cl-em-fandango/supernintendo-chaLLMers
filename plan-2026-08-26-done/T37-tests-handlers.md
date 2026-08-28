@@ -2,6 +2,17 @@
 
 > **DO NOT EXECUTE THIS FILE AS A CARD.** Claim handlers are T66, run cleanup is T67, parser/dispatch
 > is T68, and autonomous read-only counting is tested with T58.
+>
+> **Not actionable as written.** The file's own first directive refuses execution, and its leaf tickets
+> each create or extend a *different* module — T66 `tests/test_handlers_claims.py`, T67
+> `tests/test_handlers_run.py`, T68 `tests/test_cli_surface.py`, T58 `tests/test_autonomous_count.py`
+> — rather than the single `tests/test_handlers.py` this epic describes, so there is no single feature
+> here to implement and `harness/core/enqueue_guard.py` refuses any body carrying the marker above.
+> Two of its own acceptance conditions are also unsatisfiable today: `Done when` wants ≥8 green cases
+> in one file (the re-slice split cases a–h across four leaves), and case **h** asserts
+> `provider.count_pending()`, which does not exist in the tree until T58 lands — as an epic case it
+> could only ever be a `skipUnless` skip. The cases below stay the requirement archive for T58 and
+> T66–T68; nothing here is lost, and nothing here is executable.
 
 **Wave 9** · depends: T09, T10, T11, T12 (case **h** additionally wants **T41** — see Do 2h) ·
 finding: F11
