@@ -13,15 +13,11 @@ from ..core.stats import render_report
 from ..composition import build
 
 
-def _log(line: str = "") -> None:
-    print(line, flush=True)
-
-
 def _slug(name: str) -> str:
     return (re.sub(r"[^a-zA-Z0-9-]+", "_", name).strip("_")[:60] or "task")
 
 
-def _requeue_claimed(provider, task) -> None:
+def _requeue_claimed(provider, task, log) -> None:
     """Move a claimed-but-unprocessed task back to pending."""
     claimed = getattr(provider, "claimed_dir", None)
     pending = getattr(provider, "pending_dir", None)
@@ -30,36 +26,36 @@ def _requeue_claimed(provider, task) -> None:
     for f in claimed.glob("*.md"):
         if _slug(f.stem) == task.id:
             f.rename(pending / f.name)
-            _log(f"  requeued unprocessed claim: {task.id}")
+            log(f"  requeued unprocessed claim: {task.id}")
             break
 
 
 def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int:
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
                 source=f"cli:{file}")
     if fresh:
-        fresh_restart(task.id, cfg, log=_log)
+        fresh_restart(task.id, cfg, log=log)
     if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
+        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     pipeline.process(task)
     return 0
 
 
 def cmd_run(continue_: bool = False) -> int:
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
+        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     tasks = provider.fetch_pending(claim=True)
     if not tasks:
-        _log("no pending tasks")
+        log("no pending tasks")
     for task in tasks:
         pipeline.process(task)
     # autonomous mode when queue drains
     remaining = provider.fetch_pending()
     if not remaining:
-        _log("queue empty -> entering autonomous mode")
-        gen = AutonomousGenerator(cfg, runner, provider, log=_log)
+        log("queue empty -> entering autonomous mode")
+        gen = AutonomousGenerator(cfg, runner, provider, log=log)
         # generate against the harness's own repo (self-improvement)
         gen.run(Path(__file__).resolve().parent)
     return 0
@@ -71,18 +67,18 @@ def cmd_run_one() -> int:
     Kept for manual use. The supervisor uses `run-task-loop --continue`
     instead, which also resumes in-flight tasks left in active/.
     """
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     tasks = provider.fetch_pending(claim=True)
     if not tasks:
-        _log("no pending tasks to claim")
+        log("no pending tasks to claim")
         return 0
     task = tasks[0]
-    _log(f"processing {task.id} ({len(tasks)} claimed this cycle)")
+    log(f"processing {task.id} ({len(tasks)} claimed this cycle)")
     pipeline.process(task)
     # release any other claims made this cycle that we did not process,
     # returning them to pending so a future cycle picks them up.
     for other in tasks[1:]:
-        _requeue_claimed(provider, other)
+        _requeue_claimed(provider, other, log)
     return 0
 
 
@@ -92,36 +88,36 @@ def cmd_run_task_loop(continue_: bool = False) -> int:
     The supervisor calls this each cycle (with `--continue`, which first
     resumes in-flight tasks left in active/ from a previous run or crash).
     """
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=_log)
+        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     while True:
         tasks = provider.fetch_pending(claim=True)
         if not tasks:
-            _log("pending queue empty")
+            log("pending queue empty")
             return 0
         task = tasks[0]
-        _log(f"processing {task.id} ({len(tasks)} pending)")
+        log(f"processing {task.id} ({len(tasks)} pending)")
         pipeline.process(task)
         for other in tasks[1:]:
-            _requeue_claimed(provider, other)
+            _requeue_claimed(provider, other, log)
 
 
 def cmd_autonomous() -> int:
-    cfg, store, runner, provider, pipeline = build()
-    gen = AutonomousGenerator(cfg, runner, provider, log=_log)
+    cfg, store, runner, provider, pipeline, log = build()
+    gen = AutonomousGenerator(cfg, runner, provider, log=log)
     gen.run(Path(__file__).resolve().parent)
     return 0
 
 
 def cmd_status() -> int:
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     for sub in ("pending", "active", "done", "failed", "parked", "review"):
         d = cfg.queue_dir / sub
         items = sorted(p.name for p in d.iterdir()) if d.exists() else []
-        _log(f"{sub:<10} ({len(items)}): {', '.join(items) if items else '-'}")
-    _log()
-    _log(render_report(store.all()))
+        log(f"{sub:<10} ({len(items)}): {', '.join(items) if items else '-'}")
+    log()
+    log(render_report(store.all()))
     return 0
 
 
@@ -133,9 +129,9 @@ def cmd_report() -> int:
 
 def cmd_resume(task_id: str, yes: bool = False) -> int:
     """Resume a task from its last checkpoint (spec FR3)."""
-    cfg, store, runner, provider, pipeline = build()
+    cfg, store, runner, provider, pipeline, log = build()
     return resume_task(task_id, yes, cfg, pipeline,
-                       lifecycle=pipeline.lifecycle, log=_log)
+                       lifecycle=pipeline.lifecycle, log=log)
 
 
 def cmd_unpark(task_id: str) -> int:
@@ -144,7 +140,7 @@ def cmd_unpark(task_id: str) -> int:
     The task's artifacts (spec, slices, progress) are preserved, so the next
     run continues from where it got to rather than starting over.
     """
-    cfg, *_ = build()
+    cfg, _, _, _, _, log = build()
     moved = False
     for src_folder in ("parked", "failed"):
         src = cfg.queue_dir / src_folder / task_id
@@ -159,9 +155,9 @@ def cmd_unpark(task_id: str) -> int:
             shutil.rmtree(src)
             # drop any stale exec summary
             (cfg.queue_dir / "review" / f"{task_id}.md").unlink(missing_ok=True)
-            _log(f"unparked {task_id}: {src_folder} -> pending/{task_id}.md")
+            log(f"unparked {task_id}: {src_folder} -> pending/{task_id}.md")
             moved = True
     if not moved:
-        _log(f"{task_id} not found in parked/ or failed/")
+        log(f"{task_id} not found in parked/ or failed/")
         return 1
     return 0
