@@ -1,6 +1,6 @@
 """Enqueue guard — a plan parent marked DO NOT EXECUTE is never enqueued.
 
-`plan-2026-08-26/SLICING-MAP.md`: "Parent files remain as requirement archives
+`plan-2026-08-26-done/SLICING-MAP.md`: "Parent files remain as requirement archives
 and must not be enqueued when marked **DO NOT EXECUTE**." Nothing enforced it,
 so dropping `T04-merge-abort.md` into pending/ claimed an epic and burned a
 session re-deriving work T72 and T73 already own.

@@ -6,7 +6,7 @@
 **Wave 5** · depends: T21, T22, T23 · finding: F13 · **[decision D4 — recorded, see Context]**
 
 The original inventory leaf exceeded the five-criterion ceiling and was re-sliced on 2026-08-26 into
-the two leaves that now open this slice; see `SLICING-MAP.md`.
+the two leaves that now open this slice; see `plan-2026-08-26-done/SLICING-MAP.md`.
 
 ## Context
 The live queue is in a state the code cannot describe: `active/002-pipeline-checkpoint-and-resume`

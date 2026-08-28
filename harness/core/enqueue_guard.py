@@ -3,7 +3,7 @@
 A plan parent (an epic) is a requirement archive, not work. Its card file
 carries a `DO NOT EXECUTE THIS FILE AS A CARD.` directive naming the leaf
 tickets that own its acceptance criteria, and
-`plan-2026-08-26/SLICING-MAP.md` is explicit: parent files "must not be
+`plan-2026-08-26-done/SLICING-MAP.md` is explicit: parent files "must not be
 enqueued when marked **DO NOT EXECUTE**". Enqueuing one spends a session
 re-deriving work its leaves already own, so the check runs at the single
 boundary where a pending file becomes a task —

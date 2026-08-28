@@ -6,7 +6,7 @@
 **Depends:** T21, T22, T23, T51 · **Re-sliced into T76 → T77**
 
 ## Context
-Re-sliced on 2026-08-26 (see `SLICING-MAP.md`): its `Do` listed seven unrelated anomaly classes in
+Re-sliced on 2026-08-26 (see `plan-2026-08-26-done/SLICING-MAP.md`): its `Do` listed seven unrelated anomaly classes in
 one ticket, over the five-criterion ceiling, and `fits()` Q8 applies — one check could be implemented
 while another silently regressed. T76 owns the inventory, the task-state anomalies and `.git`
 detection; T77 owns the stray-output, duplicate-slug, claim-metadata and short-body anomalies plus

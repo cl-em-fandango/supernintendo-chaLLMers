@@ -38,8 +38,17 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   written). Left in `plan-2026-08-26/`.
 - **T04 EPIC — left in place.** Parent/DO-NOT-EXECUTE archive. Its leaves (T72, T73)
   are both done so the epic's `[tag]` condition is met, but the parent file itself is
-  a requirement archive per `SLICING-MAP.md` and was never executed, so it stays with
+  a requirement archive per `plan-2026-08-26-done/SLICING-MAP.md` and was never executed, so it stays with
   the other parent contracts.
+
+## Archived references
+
+- **`SLICING-MAP.md`** — the plan's parent → leaf slicing map, re-slice audit and enqueue rule.
+  Not a card: no `Read first`/`Do`/Verify block, owns no code, and is not a leaf of any marked
+  parent (every normalization it reports already landed — T33, T40, T48, T52, T64, T69 — and its
+  enqueue rule is enforced by `harness/core/enqueue_guard.py`). `implement-dir.sh` globs `*.md`, so
+  it was being handed to sessions as a card; it is archived here, with the prose references in
+  `T25`, `T42`, `T50`, `T60` and the enqueue-guard docstrings re-pointed at this path.
 
 ## Note on the plan's task index
 

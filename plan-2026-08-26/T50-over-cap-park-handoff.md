@@ -6,7 +6,7 @@
 **Depends:** T26, T49 · **Re-sliced into T74 → T75**
 
 ## Context
-Re-sliced on 2026-08-26 (see `SLICING-MAP.md`): this leaf crossed workflow routing and markdown
+Re-sliced on 2026-08-26 (see `plan-2026-08-26-done/SLICING-MAP.md`): this leaf crossed workflow routing and markdown
 persistence/rendering in one ticket (`fits()` Q1) and touched two production modules plus a test
 module, so `RECURSIVE-SLICING-ALGORITHM.md` forces another split. T74 owns the routing and the park,
 T75 owns the handoff rendering; together they own every criterion below exactly once.

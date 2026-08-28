@@ -7,7 +7,7 @@
 **Wave 8** · depends: T17, T18, T20, T26, T32 · finding: F10 + decision D2
 
 The original third leaf was re-sliced on 2026-08-26 into the two leaves that now close this slice;
-see `SLICING-MAP.md` for the audit that forced it.
+see `plan-2026-08-26-done/SLICING-MAP.md` for the audit that forced it.
 
 ## Context
 D2 requires an immediate stop when context usage goes over 60,000 tokens. Checking `peak_tokens` after `run_pi_session()` returns is too late: the model may continue consuming context for the rest of the session. Enforcement must occur while JSON usage events are read. The same structured result must carry enough data for stats and the handoff.

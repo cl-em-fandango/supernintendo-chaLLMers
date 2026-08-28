@@ -1,5 +1,10 @@
 # Recursive Slicing Map
 
+> **Archived reference — not a card.** This file has no `Do`/`Verify` block and owns no code, so it
+> is not executable work; it was moved here out of `plan-2026-08-26/` so `implement-dir.sh`'s `*.md`
+> glob stops handing it to a session. It remains the authority for the parent → leaf sequences and
+> the enqueue rule below.
+
 Parent files remain as requirement archives and must not be enqueued when marked **DO NOT EXECUTE**.
 
 | Parent | Executable leaves | Order |
