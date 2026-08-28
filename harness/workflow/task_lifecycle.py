@@ -47,6 +47,9 @@ class TaskState:
     history: list = field(default_factory=list)
     checkpointed_stages: list = field(default_factory=list)
     last_updated: str = ""
+    # Recorded at intake and never re-derived (F7). Kept last so positional
+    # construction of the earlier fields keeps working.
+    workdir: str = ""
 
     def to_json(self) -> str:
         return json.dumps({
@@ -58,6 +61,7 @@ class TaskState:
             "history": self.history,
             "checkpointed_stages": [s.value for s in self.checkpointed_stages],
             "last_updated": self.last_updated,
+            "workdir": self.workdir,
         }, indent=2)
 
 
@@ -135,6 +139,7 @@ class TaskLifecycle:
             history=list(raw.get("history", [])),
             checkpointed_stages=_parse_stages(raw.get("checkpointed_stages", []), self.log),
             last_updated=raw.get("last_updated", ""),
+            workdir=raw.get("workdir", ""),
         )
 
     def save_state(self, state: TaskState, where: str = "active") -> None:
@@ -180,6 +185,9 @@ class TaskLifecycle:
             last_updated=now,
         )
         self.save_state(state)
+        # original.md exists from here on, so the workdir can be resolved and
+        # recorded before any git or session work starts (F7).
+        self.record_workdir(task_dir)
         return task_dir
 
     def park(self, task_id: str, reason: str) -> None:
@@ -251,6 +259,22 @@ class TaskLifecycle:
 - session outputs: `{td}/artifacts/*.out`
 """)
         self.log(f"  exec summary: {review_dir / (task_id + '.md')}")
+
+    def record_workdir(self, task_dir: Path, where: str = "active") -> Path:
+        """Resolve the workdir and persist it in `task.json` (F7).
+
+        Two callers only: `intake`, immediately after it writes `original.md`
+        and `task.json`, and `Pipeline.process` once while migrating a
+        `task.json` that predates the field. The value therefore lands before
+        `ensure_branch` or any session starts, and every later run reads it
+        back instead of re-deriving it.
+        """
+        workdir = self.resolve_workdir(task_dir)
+        state = self.load_state(task_dir.name, where)
+        state.workdir = str(workdir)
+        state.last_updated = _now()
+        self.save_state(state, where)
+        return workdir
 
     def resolve_workdir(self, task_dir: Path) -> Path:
         """If the task references an existing git repo, work there; else the

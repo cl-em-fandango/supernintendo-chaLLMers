@@ -72,6 +72,13 @@ class Pipeline:
             self.log(f"═══ task {task.id} ═══")
             self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
                      else f"  resuming (no checkpoints yet)")
+            if not state.workdir:
+                # Old-format task.json: migrate once from the same persisted
+                # original.md intake used, then never re-derive.
+                self.log(f"  workdir not recorded for {task.id}, "
+                         f"re-derived from original.md")
+                self.lifecycle.record_workdir(task_dir)
+                state = self.lifecycle.load_state(task.id)
         else:
             task_dir = self.lifecycle.intake(task)
             state = self.lifecycle.load_state(task.id)
@@ -80,7 +87,7 @@ class Pipeline:
         # so this task cannot be re-claimed while it is in flight or terminal.
         if self.provider is not None and hasattr(self.provider, "release_claim"):
             self.provider.release_claim(task)
-        workdir = self.lifecycle.resolve_workdir(task_dir)
+        workdir = Path(state.workdir)
         self.log(f"  workdir: {workdir}")
         try:
             ensure_branch(workdir, task.id, self.cfg.trunk_branch)
