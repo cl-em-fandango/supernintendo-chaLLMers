@@ -1,0 +1,44 @@
+# Project metadata and advisory lint policy for the autonomous workflow harness.
+#
+# Runtime dependencies are the third-party modules actually imported by
+# `harness/`, `external/`, `harness.py` and `supervisor.py`. Discovery command:
+#
+#   grep -rhoE --include='*.py' '^[[:space:]]*(import|from) [a-zA-Z0-9_.]+' \
+#     harness external harness.py supervisor.py | sort -u
+#
+# Every hit is either the standard library (abc, argparse, dataclasses,
+# datetime, enum, json, os, pathlib, random, re, shutil, signal, subprocess,
+# sys, threading, time, typing) or a local module (`harness`, `external`).
+# There are no third-party runtime dependencies, so `dependencies` is empty.
+#
+# Nothing here is enforced: no CI, no hooks, and the Gate (T69) does not run
+# ruff. `ruff` is an advisory dev tool only.
+
+[project]
+name = "harness"
+# The repo carries no version of its own — git history is the source of truth.
+# This placeholder exists because PEP 621 requires the field; packaging and
+# publishing are out of scope (see T40 "Out of scope").
+version = "0.0.0"
+description = "Autonomous workflow harness: task cards in, reviewed commits out, driven by fresh pi sessions."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["ruff"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Narrowed Pyflakes subset: dead names and undefined names only. Deliberately
+# not the whole `F` family — the stylistic members (e.g. F541, f-string without
+# placeholders) are left off so the policy stays advisory rather than turning
+# into a style fight. Source is not edited to satisfy these rules; findings are
+# recorded in the commit message and cleaned up by their own cards.
+select = [
+    "F401", # unused-import
+    "F811", # redefined-while-unused
+    "F821", # undefined-name
+    "F841", # unused-variable
+]
