@@ -50,7 +50,7 @@ for spec in "${FILES[@]}"; do
             --provider "$PROVIDER" \
             ${MODEL:+--model "$MODEL"} \
             --no-session --mode json -p \
-            "Implement exactly one feature in this repository: read the file $spec and do what it asks. Do not start any other feature. Follow CODING_STANDARDS.md if present, run the tests, commit your work, and end your final message with a line 'VERDICT: done' (or 'VERDICT: failed' with the reason). You are to move the task to the directory plan-2026-08-26-done/ so the next agent doesn't waste time checking it. IF A TASK IS NON-ACTIONABLE, DO NOT ACTION IT AND EXIT WITH 'VERDICT: no action' and move it into plan-2026-08-26-done/. DO NOT CALL ANYTHING THAT MAY TRIGGER A NESTED PI SESSION. THIS WILL BREAK THE LLM SERVER. YOU FUCKING RETARD DO THE TASKS ONLY. STOP FUCKING AROUND DO THE TASK AND TERMINATE." \
+            "Implement exactly one feature in this repository: read the file $spec and do what it asks. Do not start any other feature. Follow CODING_STANDARDS.md - DO NOT RUN THE TESTS. commit your work, and end your final message with a line 'VERDICT: done' (or 'VERDICT: failed' with the reason). You are to move the task to the directory plan-2026-08-26-for-test/ so the next agent doesn't waste time checking it. IF A TASK IS NON-ACTIONABLE, DO NOT ACTION IT AND EXIT WITH 'VERDICT: no action' and move it into plan-2026-08-26-done/. DO NOT EXECUTE ANY PYTHON. DO NOT EXECUTE A PI INSTANCE. "  \
             </dev/null 2>&1 | tee "$log" | "${render[@]}"
     then
         echo "--- $name ok"
