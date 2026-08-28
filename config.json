@@ -7,6 +7,7 @@
   "maxSliceTechReview": 5,
   "maxSliceFuncReview": 5,
   "maxSliceCheckLoops": 3,
+  "maxCrashRetries": 2,
   "autonomousQueueTarget": 5,
   "trunkBranch": "pi/trunk",
   "modelContext": {

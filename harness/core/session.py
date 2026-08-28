@@ -69,8 +69,10 @@ class SessionRunner:
         # window minus output headroom. This is the ceiling the model is told to
         # stay under, so it never overflows the window.
         budget = self.cfg.model_budget(model)
+        # Both numbers are raw token counts, so both are labelled `tokens` — a
+        # `k` suffix on an unscaled integer would read as a thousand-fold lie.
         self.log(f"  ▶ {stage_value} model={model} iter={iteration} "
-                 f"budget={budget}k ctx={self.cfg.model_context(model)}k")
+                 f"budget={budget} tokens ctx={self.cfg.model_context(model)} tokens")
 
         # Prepend the per-model context-budget note so the model knows its own
         # ceiling (smaller for 32k/64k models, ~100k for 128k models).
