@@ -11,8 +11,9 @@ from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
-from ..core.session import SessionRunner
+from ..core.session import SessionResult, SessionRunner
 from .params import StageContext
+from .spec_assessment import SpecAssessment, assess_spec
 from .task_lifecycle import TaskLifecycle
 
 # The four stages that have a `stage_*` function to run, in pipeline order
@@ -147,6 +148,14 @@ class Pipeline:
     # stage 1: specification
     # ------------------------------------------------------------------
     def stage_spec(self, ctx: StageContext) -> bool:
+        """Author the spec, then have both assessors accept it (T43).
+
+        Each assessor must return a healthy `PASS` for the stage to pass. A
+        `KICKBACK` from either one re-runs the author under the shared kickback
+        maximum; anything else — including a session that did not finish —
+        parks with the assessor name and verdict in the reason. The protocol
+        itself is `workflow.spec_assessment.assess_spec`.
+        """
         kickbacks = 0
         while True:
             r = self._run(
@@ -165,30 +174,48 @@ class Pipeline:
                 self.cfg.assessor, ctx.workdir, prompts.spec_assess(ctx.task_dir, "ornith"),
                 task_id=ctx.task_id, stage=Stage.SPEC_ASSESS_ORNITH)
             self.log(f"  ornith assessment verdict: {r.verdict}")
-            if r.verdict is Verdict.KICKBACK:
-                kickbacks += 1
-                if kickbacks > self.cfg.max_spec_kickbacks:
-                    self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
+            decision = assess_spec("ornith", r)
+            if decision.outcome is SpecAssessment.PARKED:
+                self.lifecycle.park(ctx.task_id, decision.reason)
+                return False
+            if decision.outcome is SpecAssessment.KICKBACK:
+                kickbacks = self._spec_kickback(ctx, "ornith", r, kickbacks)
+                if kickbacks is None:
                     return False
-                shutil.copy(r.out_file, ctx.task_dir / "artifacts" / f"kickback_ornith_{kickbacks}.md")
-                self.log(f"  kickback to spec author (#{kickbacks})")
                 continue
 
             r = self._run(
                 self.cfg.model, ctx.workdir, prompts.spec_assess(ctx.task_dir, "tw"),
                 task_id=ctx.task_id, stage=Stage.SPEC_ASSESS_TW)
             self.log(f"  TW requirement-check verdict: {r.verdict}")
-            if r.verdict is Verdict.KICKBACK:
-                kickbacks += 1
-                if kickbacks > self.cfg.max_spec_kickbacks:
-                    self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
+            decision = assess_spec("tw", r)
+            if decision.outcome is SpecAssessment.PARKED:
+                self.lifecycle.park(ctx.task_id, decision.reason)
+                return False
+            if decision.outcome is SpecAssessment.KICKBACK:
+                kickbacks = self._spec_kickback(ctx, "tw", r, kickbacks)
+                if kickbacks is None:
                     return False
-                shutil.copy(r.out_file, ctx.task_dir / "artifacts" / f"kickback_tw_{kickbacks}.md")
-                self.log(f"  kickback to spec author (#{kickbacks})")
                 continue
 
             self.log("  spec approved")
             return True
+
+    def _spec_kickback(self, ctx: StageContext, assessor: str, r: SessionResult,
+                       kickbacks: int) -> int | None:
+        """Count one spec kickback and file its report.
+
+        Returns the new count, or None when the maximum is exceeded — the task
+        is parked and the caller must stop. The counter is shared by both
+        assessors; the artifact name says which one kicked back.
+        """
+        kickbacks += 1
+        if kickbacks > self.cfg.max_spec_kickbacks:
+            self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
+            return None
+        shutil.copy(r.out_file, ctx.task_dir / "artifacts" / f"kickback_{assessor}_{kickbacks}.md")
+        self.log(f"  kickback to spec author (#{kickbacks})")
+        return kickbacks
 
     # ------------------------------------------------------------------
     # stage 2: feasibility
