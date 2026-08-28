@@ -45,6 +45,9 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int
 def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
     """Process pending tasks one claim at a time, then enter autonomous mode.
 
+    That is the difference from `run-task-loop`, which exits once pending/ is
+    empty: this one ends in task generation.
+
     Claims are taken a single file at a time (`limit=1`), so a run can never
     hold the whole queue; anything it did not work stays in pending/. Claims
     this invocation made are handed back to pending/ on the way out, so a
@@ -104,10 +107,10 @@ def _release_run_claims(provider, claimed: list[Task], log) -> int:
 
 
 def cmd_run_one() -> int:
-    """Claim and process exactly ONE pending task, then exit.
+    """Claim and process at most one pending task, then exit.
 
-    Kept for manual use. The supervisor uses `run-task-loop --continue`
-    instead, which also resumes in-flight tasks left in active/.
+    Anything the claim fetch returned but this call did not process is handed
+    back to pending/ for a later cycle. Not used by the supervisor.
     """
     cfg, store, runner, provider, pipeline, log = build()
     tasks = provider.fetch_pending(claim=True)
@@ -128,10 +131,11 @@ def cmd_run_one() -> int:
 def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> int:
     """Process pending tasks one at a time until the queue is empty.
 
-    The supervisor calls this each cycle (with `--continue`, which first
-    resumes in-flight tasks left in active/ from a previous run or crash).
-    Stale claims are reclaimed at the start of the cycle only when the
-    operator opted in (`requeue_stale` / `autoRequeueStaleClaims`).
+    With `--continue`, every `active/` task that has a `task.json` is resumed
+    before `pending/` is touched. Tasks are claimed one at a time, and the
+    loop returns once `pending/` is empty. This is the subcommand T14's pure
+    `command_for_action` maps RESUME and WORK to; T38 checks that mapping and
+    the supervisor call site. Stale claims: `_requeue_stale_claims`.
     """
     cfg, store, runner, provider, pipeline, log = build()
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,

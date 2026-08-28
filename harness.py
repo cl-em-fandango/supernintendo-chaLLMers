@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """CLI entry point for the autonomous workflow harness.
 
-Usage:
+Usage — subcommands and flags exactly as cli/parser.py defines them:
   harness.py run                 Process all pending tasks, then autonomous mode
-  harness.py run-task <file>     Process a single task file (--fresh, --continue)
-  harness.py run-task-loop       Process pending tasks until queue is empty (--continue)
-  harness.py resume <task_id>    Resume a task from its last checkpoint
+                                 (--continue, --requeue-stale)
+  harness.py run-task <file>     Process one task file (--continue, --fresh)
+  harness.py run-one             Claim and process exactly one pending task
+  harness.py run-task-loop       Process pending tasks until the queue is empty
+                                 (--continue, --requeue-stale)
   harness.py autonomous          Generate tasks until queue has N
   harness.py status              Show queue + stats
   harness.py report              Print the stats report
+  harness.py resume <task_id>    Resume a task from its last checkpoint
+                                 (--yes / -y)
+  harness.py unpark <task_id>    Move a parked/failed task back to pending
+                                 (hidden alias: requeue <task_id>)
   harness.py requeue-claims      Hand stranded claimed/ files back to pending
                                  (--older-than HOURS, --dry-run)
 
-`run` and `run-task-loop` also take --requeue-stale: reclaim claims older than
-CLAIM_STALE_HOURS at startup (off unless flagged, or "autoRequeueStaleClaims":
-true in config.json).
+--continue (run, run-task, run-task-loop) resumes in-flight tasks in active/
+before the pending queue is worked. --fresh (run-task) deletes any existing
+active/ dir and restarts that task from scratch. --yes skips resume's
+confirmation prompt. --requeue-stale (run, run-task-loop) reclaims claims older
+than CLAIM_STALE_HOURS at startup (off unless flagged, or
+"autoRequeueStaleClaims": true in config.json).
 """
 from __future__ import annotations
 
