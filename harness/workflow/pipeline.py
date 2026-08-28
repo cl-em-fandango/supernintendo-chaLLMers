@@ -242,6 +242,7 @@ class Pipeline:
     # stage 4: per-slice execution
     # ------------------------------------------------------------------
     def stage_slices(self, ctx: StageContext) -> bool:
+        state = self.lifecycle.load_state(ctx.task_id)
         slices = _parse_slices(ctx.task_dir / "artifacts" / "slices.md")
         if not slices:
             self.lifecycle.park(ctx.task_id, "no slices parsed from slices.md")
@@ -249,6 +250,14 @@ class Pipeline:
         self.log(f"  slices: {' '.join(slices)}")
 
         for sid in slices:
+            # F8: a slice that already passed its last required review is work
+            # committed on the task branch — never re-run it on a resume. The
+            # stage-level `CheckpointStage.SLICES` marker still answers the
+            # other question ("is the whole loop done") and is written by the
+            # caller, not here.
+            if sid in state.checkpointed_slices:
+                self.log(f"  ⏭ skipping slice {sid} (checkpointed)")
+                continue
             self.log(f"  ── slice {sid} ──")
             if not self._implement(ctx, sid):
                 return False
@@ -256,8 +265,18 @@ class Pipeline:
                 return False
             if not self._review_loop(ctx, sid, "func"):
                 return False
+            self._checkpoint_slice(ctx.task_id, sid)
             self.log(f"    slice {sid} passed all reviews")
         return True
+
+    def _checkpoint_slice(self, task_id: str, sid: str) -> None:
+        """Record one finished slice. A lost write only costs a re-run of that
+        slice on resume, so it is logged and swallowed rather than parking the
+        task whose reviews all passed."""
+        try:
+            self.lifecycle.checkpoint_slices(task_id, [sid])
+        except Exception as e:
+            self.log(f"  ⚠ could not checkpoint slice {sid}: {e}")
 
     def _implement(self, ctx: StageContext, sid: str) -> bool:
         for it in range(1, self.cfg.max_slice_implement + 1):

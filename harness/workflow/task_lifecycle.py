@@ -37,6 +37,11 @@ class TaskState:
     `checkpointed_stages` is an ordered prefix of CHECKPOINT_ORDER: the stages
     that completed successfully. `stage` is the stage currently in flight
     (informational; only `checkpointed_stages` drives skip decisions, F1.4).
+
+    `checkpointed_slices` holds the ids of slices that passed their last
+    required review (F8). They are plain strings exactly as `_parse_slices`
+    yields them (`"3"`, `"3.1"`) — never ints, never re-formatted — in
+    completion order, which is not necessarily `slices.md` order.
     """
     id: str
     status: str = TaskStatus.ACTIVE.value
@@ -45,6 +50,7 @@ class TaskState:
     stage: str = CheckpointStage.SPEC.value
     history: list = field(default_factory=list)
     checkpointed_stages: list = field(default_factory=list)
+    checkpointed_slices: list = field(default_factory=list)
     last_updated: str = ""
     # Recorded at intake and never re-derived (F7). Kept last so positional
     # construction of the earlier fields keeps working.
@@ -59,6 +65,7 @@ class TaskState:
             "stage": self.stage,
             "history": self.history,
             "checkpointed_stages": [s.value for s in self.checkpointed_stages],
+            "checkpointed_slices": list(self.checkpointed_slices),
             "last_updated": self.last_updated,
             "workdir": self.workdir,
         }, indent=2)
@@ -91,6 +98,26 @@ def _parse_stages(raw: list, log=print) -> list:
             continue
         if stage not in seen:
             seen.append(stage)
+    return seen
+
+
+def _parse_completed_slices(raw, log=print) -> list:
+    """Normalize a `checkpointed_slices` list from disk (F8).
+
+    Mirrors `_parse_stages`' rules, with two differences dictated by the data:
+    the entries are opaque slice id strings rather than enum members, and
+    insertion order is the real completion order, so it is preserved exactly
+    (dedupe keeps the first occurrence). Non-string entries are dropped with a
+    warning — an int on disk means something wrote ids wrong, and re-formatting
+    them here (`3.10` -> `3.1`) would silently mismatch later comparisons.
+    """
+    seen: list = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            log(f"  ⚠ non-string checkpointed slice {entry!r} in task.json; ignoring")
+            continue
+        if entry not in seen:
+            seen.append(entry)
     return seen
 
 
@@ -137,6 +164,8 @@ class TaskLifecycle:
             stage=raw.get("stage", CheckpointStage.SPEC.value),
             history=list(raw.get("history", [])),
             checkpointed_stages=_parse_stages(raw.get("checkpointed_stages", []), self.log),
+            checkpointed_slices=_parse_completed_slices(
+                raw.get("checkpointed_slices") or [], self.log),
             last_updated=raw.get("last_updated", ""),
             workdir=raw.get("workdir", ""),
         )
@@ -151,6 +180,21 @@ class TaskLifecycle:
         state = self.load_state(task_id, where)
         if stage not in state.checkpointed_stages:
             state.checkpointed_stages.append(stage)
+        state.last_updated = _now()
+        self.save_state(state, where)
+
+    def checkpoint_slices(self, task_id: str, slice_ids, where: str = "active") -> None:
+        """Record slices as completed (F8): append-only, dedupe, `last_updated`
+        bump, atomic save.
+
+        Same read-modify-write discipline as `checkpoint()`. Slice ids are
+        stored verbatim — the resume decision compares them against what
+        `_parse_slices` yields, so nothing here re-formats them.
+        """
+        state = self.load_state(task_id, where)
+        for sid in _parse_completed_slices(list(slice_ids), self.log):
+            if sid not in state.checkpointed_slices:
+                state.checkpointed_slices.append(sid)
         state.last_updated = _now()
         self.save_state(state, where)
 
