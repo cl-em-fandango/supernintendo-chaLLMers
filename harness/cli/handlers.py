@@ -17,19 +17,6 @@ def _slug(name: str) -> str:
     return (re.sub(r"[^a-zA-Z0-9-]+", "_", name).strip("_")[:60] or "task")
 
 
-def _requeue_claimed(provider, task, log) -> None:
-    """Move a claimed-but-unprocessed task back to pending."""
-    claimed = getattr(provider, "claimed_dir", None)
-    pending = getattr(provider, "pending_dir", None)
-    if not claimed or not pending:
-        return
-    for f in claimed.glob("*.md"):
-        if _slug(f.stem) == task.id:
-            f.rename(pending / f.name)
-            log(f"  requeued unprocessed claim: {task.id}")
-            break
-
-
 def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int:
     cfg, store, runner, provider, pipeline, log = build()
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
@@ -78,7 +65,8 @@ def cmd_run_one() -> int:
     # release any other claims made this cycle that we did not process,
     # returning them to pending so a future cycle picks them up.
     for other in tasks[1:]:
-        _requeue_claimed(provider, other, log)
+        if provider.requeue_claim(other):
+            log(f"  requeued unprocessed claim: {other.id}")
     return 0
 
 
@@ -100,7 +88,8 @@ def cmd_run_task_loop(continue_: bool = False) -> int:
         log(f"processing {task.id} ({len(tasks)} pending)")
         pipeline.process(task)
         for other in tasks[1:]:
-            _requeue_claimed(provider, other, log)
+            if provider.requeue_claim(other):
+                log(f"  requeued unprocessed claim: {other.id}")
 
 
 def cmd_autonomous() -> int:
