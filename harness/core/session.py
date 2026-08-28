@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import prompts
-from .config import Config
+from .config import Config, DEFAULT_CONTEXT_WINDOW
 from .enums import Stage, Verdict
 from .stats import SessionRecord, StatsStore
 from external.pi_cli import run_pi_session, _extract_verdict, _now
@@ -59,9 +59,15 @@ class SessionRunner:
         stage_value = stage.value if isinstance(stage, Stage) else stage
         out_file = workdir / f".pi-session-{stage_value}-{int(time.time())}.out"
 
-        # Per-model budget: the smaller of the global tokenBudget and the model's
-        # real context window (minus output headroom). This is the ceiling the
-        # model is told to stay under, so it never overflows the window.
+        # A window we had to guess is worth saying out loud: it is the one case
+        # where the budget below is derived from a default, not from config.
+        if not self.cfg.has_known_context(model):
+            self.log(f"  unknown context window for {model}, "
+                     f"assuming {DEFAULT_CONTEXT_WINDOW}")
+
+        # Per-model budget: the working prompt cap, clamped to the model's real
+        # window minus output headroom. This is the ceiling the model is told to
+        # stay under, so it never overflows the window.
         budget = self.cfg.model_budget(model)
         self.log(f"  ▶ {stage_value} model={model} iter={iteration} "
                  f"budget={budget}k ctx={self.cfg.model_context(model)}k")
