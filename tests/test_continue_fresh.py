@@ -127,7 +127,7 @@ class ContinueFreshTest(unittest.TestCase):
         self.assertTrue((self.queue_dir / "done" / "t1" / "task.json").exists())
         raw = json.loads((self.queue_dir / "done" / "t1" / "task.json").read_text())
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
         # F4.3 log line
         self.assertIn("resuming 1 in-flight task(s) from active/", self._log())
 
@@ -182,7 +182,7 @@ class ContinueFreshTest(unittest.TestCase):
         self.assertIn("slice_implement", self.runner.calls)
         raw = json.loads((self.queue_dir / "done" / "t1" / "task.json").read_text())
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
 
 
 if __name__ == "__main__":

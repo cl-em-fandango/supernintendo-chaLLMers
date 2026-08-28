@@ -14,7 +14,10 @@ from ..core.session import SessionRunner
 from .params import StageContext
 from .task_lifecycle import TaskLifecycle
 
-# The four checkpointable stages, in pipeline order (F2.1).
+# The four stages that have a `stage_*` function to run, in pipeline order
+# (F2.1). Deliberately not derived from CHECKPOINT_ORDER: `MERGE` is a
+# checkpoint marker with no stage function of its own — `stage_holistic` writes
+# it and honours it (F8).
 STAGE_SEQUENCE: tuple[CheckpointStage, ...] = (
     CheckpointStage.SPEC,
     CheckpointStage.FEASIBILITY,
@@ -269,6 +272,17 @@ class Pipeline:
     # stage 5: holistic review + merge
     # ------------------------------------------------------------------
     def stage_holistic(self, ctx: StageContext) -> str:
+        if self._is_merged(ctx.task_id):
+            # F8: the merge already landed, only the completion move was lost.
+            # Re-merging cannot work (the branch content is on trunk) and a
+            # second holistic session would cost a model run for nothing.
+            self.log("  already merged, completing")
+            self.lifecycle.complete(
+                ctx.task_id,
+                f"Feature complete and merged to {self.cfg.trunk_branch} "
+                f"(merge checkpointed by an earlier run).")
+            return "done"
+
         r = self._run(
             self.cfg.model, ctx.workdir, prompts.holistic_review(ctx.task_dir),
             task_id=ctx.task_id, stage="holistic")
@@ -283,11 +297,30 @@ class Pipeline:
             except Exception as e:
                 self.lifecycle.park(ctx.task_id, f"merge failed: {e}")
                 return "parked"
+            self._checkpoint_merge(ctx.task_id)
             self.lifecycle.complete(ctx.task_id, "Feature complete and merged to "
                          f"{self.cfg.trunk_branch}. " + _summary(r.output))
             return "done"
         self.lifecycle.park(ctx.task_id, "holistic review failed: " + _summary(r.output))
         return "parked"
+
+    # ------------------------------------------------------------------
+    # merge checkpoint (F8)
+    # ------------------------------------------------------------------
+    def _is_merged(self, task_id: str) -> bool:
+        """True when a previous run recorded `CheckpointStage.MERGE`."""
+        if not self.lifecycle.task_json_path(task_id).exists():
+            return False
+        state = self.lifecycle.load_state(task_id)
+        return CheckpointStage.MERGE in state.checkpointed_stages
+
+    def _checkpoint_merge(self, task_id: str) -> None:
+        """Record the merge before completing. A lost checkpoint write is the
+        lesser evil — leaving an already-merged task stuck in active/ is not."""
+        try:
+            self.lifecycle.checkpoint(task_id, CheckpointStage.MERGE)
+        except Exception as e:
+            self.log(f"  ⚠ could not checkpoint the merge: {e} — completing anyway")
 
 
 # ---------------------------------------------------------------------------

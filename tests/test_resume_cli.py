@@ -103,7 +103,7 @@ class ResumeCliTest(unittest.TestCase):
         self.assertTrue((self.queue_dir / "done" / "t1" / "task.json").exists())
         raw = json.loads((self.queue_dir / "done" / "t1" / "task.json").read_text())
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
 
     # ------------------------------------------------------------------
     # F3.4: plan preview

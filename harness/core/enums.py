@@ -25,15 +25,20 @@ class Verdict(str, Enum):
 
 
 class CheckpointStage(str, Enum):
-    """The four non-terminal pipeline stages, in pipeline order.
+    """The checkpointable stages, in pipeline order.
 
     `holistic` is deliberately absent: it is terminal (success -> done/, failure
     -> parked/), so it is never recorded in `checkpointed_stages`.
+
+    `merge` is the marker for "the squash-merge onto trunk succeeded". It lives
+    outside `holistic` on purpose: the merge and the completion move are two
+    separate steps, and a crash between them must not re-run the merge (F8).
     """
     SPEC = "spec"
     FEASIBILITY = "feasibility"
     SLICING = "slicing"
     SLICES = "slices"
+    MERGE = "merge"
 
 
 CHECKPOINT_ORDER: tuple[CheckpointStage, ...] = (
@@ -41,6 +46,7 @@ CHECKPOINT_ORDER: tuple[CheckpointStage, ...] = (
     CheckpointStage.FEASIBILITY,
     CheckpointStage.SLICING,
     CheckpointStage.SLICES,
+    CheckpointStage.MERGE,
 )
 
 

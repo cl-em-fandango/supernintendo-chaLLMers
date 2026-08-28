@@ -164,7 +164,7 @@ class PipelineResumeTest(unittest.TestCase):
         self.assertEqual(status, "done")
         raw = self._task_json()
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
         self.assertGreaterEqual(raw["last_updated"], raw["created"])
         # every stage ran exactly once
         for stage in ("spec_author", "feasibility", "slicing", "slice_implement"):
@@ -203,7 +203,7 @@ class PipelineResumeTest(unittest.TestCase):
         # task reached done/ with all four stages checkpointed
         raw = json.loads((self.queue_dir / "done" / "t1" / "task.json").read_text())
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
 
     # ------------------------------------------------------------------
     # acceptance #7: old-format task.json resumes from spec
@@ -231,7 +231,7 @@ class PipelineResumeTest(unittest.TestCase):
         # the corrupt file was replaced with a valid one (F1.4.1)
         raw = self._task_json()
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
 
     # ------------------------------------------------------------------
     # EC10: feasibility kickback re-completing spec keeps the list a prefix
@@ -244,7 +244,7 @@ class PipelineResumeTest(unittest.TestCase):
         self.assertEqual(status, "done")
         raw = self._task_json()
         self.assertEqual(raw["checkpointed_stages"],
-                         ["spec", "feasibility", "slicing", "slices"])
+                         ["spec", "feasibility", "slicing", "slices", "merge"])
         # spec ran twice (initial + kickback), feasibility twice (kick + recheck)
         self.assertEqual(self.runner.calls.count("spec_author"), 2)
         self.assertEqual(self.runner.calls.count("feasibility"), 2)
