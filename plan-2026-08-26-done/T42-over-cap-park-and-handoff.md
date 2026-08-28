@@ -3,6 +3,22 @@
 > **DO NOT EXECUTE THIS FILE AS A CARD.** It is retained as the complete contract and is recursively
 > sliced into executable leaves T48 → T49 → T74 → T75. Those four leaves jointly own every criterion
 > below.
+>
+> **Not actionable as written.** The directive above refuses execution, and
+> `harness/core/enqueue_guard.py` vetoes any body carrying that marker (uppercase `DO NOT EXECUTE`
+> inside a blockquote in the first ten lines), so this file can never become a task. Its four leaves
+> are four separate features — the stream trip, the session propagation, the park routing and the
+> handoff rendering — each owning its own test module, all still open in `plan-2026-08-26/`;
+> implementing them here would be four features in one session. None of them had landed at move time
+> (verified by grep, no code changed here): no `over_budget_limit` in `harness/core/config.py`, no
+> `max_context_tokens` parameter on `run_pi_session()`, no `over_context_budget`/`context_limit`
+> field on `PiSessionResult` or `SessionResult`, no `OverContextBudget` in
+> `harness/workflow/pipeline.py`, and no handoff parameter on `TaskLifecycle.park()`. The `Do` list
+> below is the union of the four leaves' work and its `Verify` block is the union of their four test
+> modules, so no single card can close it — and the `Do` list still describes the pre-re-slice shape
+> (one leaf owning park *and* rendering), which the slicing audit in `SLICING-MAP.md` rejected.
+> Everything below stays the requirement archive for the four leaves named in the directive; nothing
+> here is lost, and nothing here is executable.
 
 **Wave 8** · depends: T17, T18, T20, T26, T32 · finding: F10 + decision D2
 

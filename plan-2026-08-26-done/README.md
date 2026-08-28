@@ -3,8 +3,8 @@
 Executable cards from `plan-2026-08-26/` that have been actioned (code landed on
 `pi/trunk` and the global Gate is green), plus the archived parent/epic contracts
 whose leaves have all landed (T04) or whose leaves are still open but which the
-enqueue guard refuses as `DO NOT EXECUTE` parents (T25, T37, T41). Cards still open, and the
-parent/epic archives with leaves still open (T27, T33, T40, T42, T46),
+enqueue guard refuses as `DO NOT EXECUTE` parents (T25, T37, T41, T42). Cards still open, and the
+parent/epic archives with leaves still open (T27, T33, T40, T46),
 remain in `plan-2026-08-26/`.
 
 ## Verified actioned (17)
@@ -85,6 +85,26 @@ Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
   only edit to the file is a note recording why it is not actionable; the five items are untouched
   and remain the requirement archive for T54–T58. That note keeps its extra ticket ids outside the
   guard's 10-line header window, so a refusal still names exactly T54–T58.
+
+- **T42 EPIC — archived here, NOT executed.** Parent/DO-NOT-EXECUTE contract: line 3 reads "sliced
+  into executable leaves T48 → T49 → T74 → T75", so the file is a requirement archive, not a unit of
+  work, and `harness/core/enqueue_guard.py` refuses any body carrying that marker. Its four leaves are
+  four separate features — T48 the in-stream trip in `external/pi_cli.py`, T49 the propagation through
+  `PiSessionResult`/`SessionResult` and the stats note, T74 the `OverContextBudget` raise/park routing
+  in `Pipeline`, T75 the handoff rendering — each owning its own test module
+  (`test_pi_over_cap_stream`, `test_over_cap_session`, `test_over_cap_park`, `test_over_cap_handoff`),
+  so the epic's single Verify block is the union of four cards' gates and actioning it would be four
+  features in one session. None of the four had landed at move time — verified by grep: no
+  `over_budget_limit` in `harness/core/config.py`, no `max_context_tokens` on `run_pi_session()`, no
+  `over_context_budget`/`context_limit` on `PiSessionResult` or `SessionResult`, no `OverContextBudget`
+  in `harness/workflow/pipeline.py`, no handoff parameter on `TaskLifecycle.park()`, and none of those
+  four test modules exists. The four leaves stay open in `plan-2026-08-26/`, untouched and in order.
+  The `Do` list is additionally stale relative to the re-slice — it still has one leaf owning park
+  *and* rendering, which `SLICING-MAP.md` records as rejected. Moved out of `plan-2026-08-26/` because
+  `implement-dir.sh` globs `*.md` and was handing a refused parent to fresh sessions — same treatment
+  as T25, T37 and T41. The only edit to the file is a note recording why it is not actionable; the
+  note keeps its extra ticket ids outside the guard's 10-line header window, so a refusal still names
+  exactly T48 → T49 → T74 → T75. The prose reference in `T32`'s *Read first* was re-pointed here.
 
 ## Archived references
 

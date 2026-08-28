@@ -21,7 +21,8 @@ the *window* is a separate, true number. The over-cap **park + markdown handoff*
 - `config.json` — `tokenBudget: 60000`, the `modelContext` map, `models.*`
 - `harness/core/session.py` — `full_prompt = prompts.CONTEXT_BUDGET_NOTE.format(budget_k=budget //
   1000) + prompt` and the log line that prints `budget={budget}k` (units are T33's, not yours)
-- `plan-2026-08-26/T42-over-cap-park-and-handoff.md` — the consumer of what you expose
+- `plan-2026-08-26-done/T42-over-cap-park-and-handoff.md` — the archived epic that consumes what you
+  expose; its executable leaves are T48 → T49 → T74 → T75 in `plan-2026-08-26/`
 
 ## Do
 1. Two concepts, two keys. `modelContext` becomes the **real window** per model
