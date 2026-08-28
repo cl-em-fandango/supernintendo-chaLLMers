@@ -191,8 +191,14 @@ def _stale_claims(provider, older_hours: float) -> list[StaleClaim]:
 def _requeue_stale_enabled(cfg, requeue_stale: bool) -> bool:
     """The automatic guard runs when the operator said so on the CLI or in
     config.json (`autoRequeueStaleClaims`). Absent or false in both = off.
+
+    The config read is defensive on purpose: a caller that hands in a cfg
+    without a `get()` (a partial wiring, a stub) simply has no opinion on the
+    flag, and reading an optional setting must never be what kills a run path
+    before it has claimed anything.
     """
-    return bool(requeue_stale) or bool(cfg.get("autoRequeueStaleClaims", False))
+    configured = cfg.get("autoRequeueStaleClaims", False) if hasattr(cfg, "get") else False
+    return bool(requeue_stale) or bool(configured)
 
 
 def _requeue_stale_claims(provider, older_hours: float, enabled: bool,
