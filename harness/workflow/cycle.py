@@ -61,3 +61,26 @@ def cycle_summary(pending: int, in_flight: int, claims: int,
     """The one-line form of a decision, for the log (T14 logs it verbatim)."""
     return (f"pending={pending} in_flight={in_flight} "
             f"claimed={claims} action={action.value}")
+
+
+def command_for_action(action: CycleAction, python: str) -> tuple[str, ...]:
+    """The child command for one cycle action, as an argv tuple.
+
+    ``python`` is the interpreter the supervisor runs under, so the child uses
+    the very same one (``sys.executable``). ``RESUME`` and ``WORK`` map to the
+    same command: ``harness.py run-task-loop --continue`` resumes whatever is
+    in ``active/`` first, then works the pending queue one claim at a time, so
+    one child covers both. ``GENERATE`` maps to ``harness.py autonomous``.
+
+    An action with no child returns an empty tuple and the caller spawns
+    nothing — that is T44's ``BLOCKED`` slot, left empty here on purpose
+    because this module must not invent an action before that card lands.
+
+    The supervisor takes its argv from this function alone: command literals
+    do not belong in ``run_loop()`` (T38 asserts the seam with ``ast``).
+    """
+    if action in (CycleAction.RESUME, CycleAction.WORK):
+        return (python, "harness.py", "run-task-loop", "--continue")
+    if action is CycleAction.GENERATE:
+        return (python, "harness.py", "autonomous")
+    return ()

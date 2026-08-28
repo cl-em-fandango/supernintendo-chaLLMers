@@ -5,8 +5,13 @@ Pure-Python replacement for the old supervisor.sh. Hardening over the bash
 version:
   - Single instance enforced by a PID lockfile with a liveness check
     (no more two supervisors running at once).
-  - Claims ONE task per cycle (the old loop claimed them all up front and
-    leaked the rest into claimed/ forever).
+  - One cycle = status probe -> decide -> one child -> sleep. The decision
+    (harness.workflow.cycle.decide_cycle_action) reads pending/, active/ and
+    claimed/, and the child's argv comes from cycle.command_for_action rather
+    than from a literal in the loop: "run-task-loop" with "--continue" to
+    resume what is in active/ and then work the queue one claim at a time, or
+    "autonomous" to generate when there is nothing left to work. The old loop
+    counted pending/ alone, so a task already in active/ was never resumed.
   - Tracks the child pi process and kills the whole process tree on stop,
     so a hung session can't orphan a model.
   - Circuit breaker: if the harness fails to launch N times in a row, revert
@@ -55,6 +60,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.core.config import load            # noqa: E402
 from harness.core.providers import create_provider  # noqa: E402
+from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
+from harness.workflow.cycle import (CycleAction, command_for_action,  # noqa: E402
+                                    cycle_summary, decide_cycle_action)
+from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 from external.git_cli import revert_to_last_good  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
@@ -269,6 +278,14 @@ def run_loop() -> int:
     log(f"supervisor started (pid {os.getpid()}, sleep={SLEEP_S}s, "
         f"max_cycles={MAX_CYCLES}, fail_limit={FAIL_LIMIT})")
 
+    # Built once for the whole loop: the queue state is re-read every cycle,
+    # the provider, the lifecycle and the config behind them never change, and
+    # rebuilding them per cycle is what used to make only one count cheap
+    # enough to log.
+    cfg = load(CONFIG_PATH)
+    provider = create_provider(cfg)
+    lifecycle = TaskLifecycle(cfg, log=log)
+
     cycle = 0
     failcount = 0
     try:
@@ -303,21 +320,28 @@ def run_loop() -> int:
                 continue
             failcount = 0  # launched fine
 
-            # --- work: one task per cycle, or autonomous if empty ---
-            provider = create_provider(load(CONFIG_PATH))
-            pending = provider.fetch_pending()  # read-only count
-            log(f"── cycle {cycle}: pending={len(pending)} ──")
-            if pending:
-                # claim + process exactly ONE task this cycle
-                rc = tracker.spawn([sys.executable, "harness.py", "run-one"],
-                                   label="run-one")
+            # --- decide: in-flight beats claims beats pending beats generate ---
+            # claim=False is spelled out because a call that only counts must
+            # never be one default-flip away from moving the queue.
+            pending = len(provider.fetch_pending(claim=False))
+            in_flight = len(in_flight_task_dirs(lifecycle))
+            claims = len(provider.list_claims())
+            action = decide_cycle_action(pending, in_flight, claims)
+            log(f"── cycle {cycle}: "
+                f"{cycle_summary(pending, in_flight, claims, action)} ──")
+            if action is CycleAction.WORK and pending == 0 and in_flight == 0:
+                # The D4 state (see decide_cycle_action): the WORK branch is
+                # chasing claims alone, and the stale-claim requeue is opt-in,
+                # so the cycle can look like it is going nowhere. Name it.
+                log(f"  ⚠ work on {claims} claim(s) only: pending/ and active/ "
+                    "are empty and claimed/ is left alone unless "
+                    "autoRequeueStaleClaims is on — clear them with "
+                    "harness.py requeue-claims")
+            cmd = command_for_action(action, sys.executable)
+            if cmd:   # an action with no child (T44's BLOCKED) spawns nothing
+                rc = tracker.spawn(list(cmd), label=action.value)
                 if rc != 0:
-                    log(f"  run-one exited rc={rc}")
-            else:
-                rc = tracker.spawn([sys.executable, "harness.py", "autonomous"],
-                                   label="autonomous")
-                if rc != 0:
-                    log(f"  autonomous exited rc={rc}")
+                    log(f"  {action.value} child exited rc={rc}")
 
             _sleep(stop, SLEEP_S)
     finally:
