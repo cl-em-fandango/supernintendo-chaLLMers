@@ -32,11 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness.composition import build
 from harness.cli.parser import parse_args
 from harness.cli import handlers
-
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
 def main() -> int:

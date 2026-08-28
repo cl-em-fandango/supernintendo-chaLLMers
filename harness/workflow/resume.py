@@ -10,20 +10,18 @@ import shutil
 from pathlib import Path
 
 from ..core.config import Config
-from ..core.enums import CheckpointStage
-from ..core.providers import Task
+from ..core.enums import CheckpointStage, Stage
 from .continue_fresh import task_from_dir
 from .pipeline import STAGE_SEQUENCE
 from .task_lifecycle import QUEUE_LOCATIONS, TaskLifecycle
 
-# The terminal stage, never checkpointed (F1.1).
-HOLISTIC = "holistic"
 
-
-def _plan_stages() -> tuple:
-    """The stages a resume may run: the four checkpointable stages plus
-    `holistic` (terminal, never checkpointed)."""
-    return STAGE_SEQUENCE + (HOLISTIC,)
+def _plan_stages() -> list[CheckpointStage]:
+    """The checkpoint stages a resume may still run: the four pipeline stages
+    plus the `merge` marker (T27). The terminal review is deliberately absent —
+    it is never checkpointed (F1.1), so it is not a `CheckpointStage`; the plan
+    preview appends it at the display site instead (T31)."""
+    return list(STAGE_SEQUENCE) + [CheckpointStage.MERGE]
 
 
 def _reason_from_review(review_file: Path) -> str:
@@ -45,7 +43,14 @@ def _print_plan(task_id: str, where: str, lifecycle: TaskLifecycle, log=print) -
     if lifecycle.task_json_path(task_id, where).exists():
         checkpointed = lifecycle.load_state(task_id, where=where).checkpointed_stages
     skipped = [s.value for s in checkpointed]
-    will_run = [s for s in _plan_stages() if s not in checkpointed]
+    # `MERGE` is a completion marker, not a stage a resume runs, so the preview
+    # lists the pipeline stages only, then the terminal review — which is
+    # terminal and never checkpointed, hence printed from `Stage` here rather
+    # than from the checkpoint list (T31).
+    will_run = [s.value for s in _plan_stages()
+                if s not in checkpointed and s is not CheckpointStage.MERGE]
+    if CheckpointStage.MERGE not in checkpointed:
+        will_run.append(Stage.HOLISTIC.value)
     log(f"task {task_id} ({where})")
     log(f"  checkpointed: {', '.join(skipped) if skipped else '(none)'}")
     log(f"  will run:     {', '.join(will_run)}")
