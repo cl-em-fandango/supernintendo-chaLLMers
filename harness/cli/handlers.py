@@ -30,22 +30,59 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int
 
 
 def cmd_run(continue_: bool = False) -> int:
+    """Process pending tasks one claim at a time, then enter autonomous mode.
+
+    Claims are taken a single file at a time (`limit=1`), so a run can never
+    hold the whole queue; anything it did not work stays in pending/. Claims
+    this invocation made are handed back to pending/ on the way out, so a
+    park, an exception or an early return cannot strand them. Claims that were
+    already sitting in claimed/ when the run started are left untouched.
+    """
     cfg, store, runner, provider, pipeline, log = build()
-    if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
-    tasks = provider.fetch_pending(claim=True)
-    if not tasks:
-        log("no pending tasks")
-    for task in tasks:
-        pipeline.process(task)
-    # autonomous mode when queue drains
-    remaining = provider.fetch_pending()
-    if not remaining:
-        log("queue empty -> entering autonomous mode")
-        gen = AutonomousGenerator(cfg, runner, provider, log=log)
-        # generate against the harness's own repo (self-improvement)
-        gen.run(Path(__file__).resolve().parent)
-    return 0
+    claimed: list[Task] = []
+    try:
+        if continue_:
+            resume_in_flight(pipeline.lifecycle, pipeline, log=log)
+        while True:
+            tasks = provider.fetch_pending(claim=True, limit=1)
+            if not tasks:
+                log("pending queue empty")
+                break
+            task = tasks[0]
+            claimed.extend(tasks)
+            log(f"processing {task.id}")
+            try:
+                pipeline.process(task)
+            except Exception as e:
+                # one bad task must not strand the rest of the queue
+                log(f"  task {task.id} raised {type(e).__name__}: {e}; skipping")
+                continue
+        if not provider.fetch_pending():
+            log("queue empty -> entering autonomous mode")
+            gen = AutonomousGenerator(cfg, runner, provider, log=log)
+            # generate against the harness's own repo (self-improvement)
+            gen.run(Path(__file__).resolve().parent)
+        return 0
+    finally:
+        _release_run_claims(provider, claimed, log)
+
+
+def _release_run_claims(provider, claimed: list[Task], log) -> int:
+    """Hand back the claims this run made, and log how many.
+
+    Only the tasks named in `claimed` are moved: pre-existing entries in
+    claimed/ belong to the human review pass, not to this run (see
+    `provider.requeue_all_claims()`, which is the operator command's job).
+    A claim already consumed by the pipeline is simply not there to move.
+    """
+    released = 0
+    for task in claimed:
+        if provider.requeue_claim(task):
+            released += 1
+            log(f"  released claim: {task.id}")
+    if released:
+        log(f"released {released} unprocessed claim(s) back to pending")
+    return released
 
 
 def cmd_run_one() -> int:
