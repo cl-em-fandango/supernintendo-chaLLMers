@@ -6,6 +6,11 @@ harness vanished and a parked task left no record of why. Child stdout and
 stderr now share one file handle under `<WORK_DIR>/logs/children/` (same fd
 keeps their relative order), delimited by spawn/exit banner lines, and the
 directory is capped at `MAX_CHILD_LOGS` files with the oldest deleted first.
+
+The card also binds the loop's two call sites: their `label` is the
+*subcommand* (`status`, `run-task-loop`, `autonomous`) — the thing a human
+would rerun and therefore tail — not the internal `CycleAction` value that
+picked it.
 """
 from __future__ import annotations
 
@@ -23,6 +28,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import supervisor as S  # noqa: E402
+from harness.workflow.cycle import (CycleAction, command_for_action,  # noqa: E402
+                                    subcommand_for_action)
 
 
 class SupervisorChildLogTest(unittest.TestCase):
@@ -95,6 +102,85 @@ class SupervisorChildLogTest(unittest.TestCase):
             self.assertEqual(S.MAX_CHILD_LOGS, 7)
         finally:
             importlib.reload(S)  # restore defaults for any later test
+
+
+class LabelIsTheSubcommandTest(unittest.TestCase):
+    """Every child label names the subcommand it labels (T08 item 5)."""
+
+    def test_mapping(self):
+        self.assertEqual(subcommand_for_action(CycleAction.RESUME),
+                         "run-task-loop")
+        self.assertEqual(subcommand_for_action(CycleAction.WORK),
+                         "run-task-loop")
+        self.assertEqual(subcommand_for_action(CycleAction.GENERATE),
+                         "autonomous")
+
+    def test_label_appears_in_the_command_it_labels(self):
+        """An action with no child has no label either (T44's BLOCKED slot)."""
+        for action in CycleAction:
+            label = subcommand_for_action(action)
+            cmd = command_for_action(action, sys.executable)
+            if cmd:
+                self.assertIn(label, cmd,
+                              f"{action}: label {label!r} is not in {cmd}")
+            else:
+                self.assertEqual(label, "")
+
+    def _loop_labels(self, *, pending: int, in_flight: int) -> list[str]:
+        """Run one supervised cycle with a fake tracker; return its labels."""
+        labels: list[str] = []
+        claims: list[str] = []
+
+        class _RecordingTracker:
+            def spawn(self, args, *, label: str) -> int:
+                labels.append(label)
+                return 0
+
+            def kill_tree(self) -> None:
+                pass
+
+        class _Provider:
+            def fetch_pending(self, claim: bool = False,
+                              limit: int | None = None) -> list[str]:
+                return ["task"] * pending
+
+            def list_claims(self) -> list[str]:
+                return list(claims)
+
+        with tempfile.TemporaryDirectory(prefix="t08-label-") as tmp:
+            for patch in (
+                mock.patch.object(S, "LOG", Path(tmp) / "supervisor.log"),
+                mock.patch.object(S, "STOPFILE", Path(tmp) / "STOP"),
+                mock.patch.object(S, "acquire_lock", lambda: True),
+                mock.patch.object(S, "release_lock", lambda: None),
+                mock.patch.object(S.signal, "signal", lambda *a, **k: None),
+                mock.patch.object(S, "load", lambda path: mock.MagicMock()),
+                mock.patch.object(S, "create_provider", lambda cfg: _Provider()),
+                mock.patch.object(S, "TaskLifecycle", lambda cfg, log=None: None),
+                mock.patch.object(S, "in_flight_task_dirs",
+                                  lambda lifecycle: ["t"] * in_flight),
+                mock.patch.object(S, "ChildTracker", _RecordingTracker),
+                mock.patch.object(S, "_sleep", lambda stop, seconds: None),
+                mock.patch.object(S, "MAX_CYCLES", 1),
+            ):
+                patch.start()
+                self.addCleanup(patch.stop)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(S.run_loop(), 0)
+        return labels
+
+    def test_probe_is_labelled_status_and_work_names_its_subcommand(self):
+        self.assertEqual(self._loop_labels(pending=1, in_flight=0),
+                         ["status", "run-task-loop"])
+
+    def test_in_flight_resumes_under_the_same_subcommand_label(self):
+        """RESUME and WORK share a child, so they share its log label."""
+        self.assertEqual(self._loop_labels(pending=0, in_flight=1),
+                         ["status", "run-task-loop"])
+
+    def test_an_empty_queue_labels_the_generator(self):
+        self.assertEqual(self._loop_labels(pending=0, in_flight=0),
+                         ["status", "autonomous"])
 
 
 if __name__ == "__main__":

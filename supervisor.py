@@ -7,10 +7,11 @@ version:
     (no more two supervisors running at once).
   - One cycle = status probe -> decide -> one child -> sleep. The decision
     (harness.workflow.cycle.decide_cycle_action) reads pending/, active/ and
-    claimed/, and the child's argv comes from cycle.command_for_action rather
-    than from a literal in the loop: "run-task-loop" with "--continue" to
-    resume what is in active/ and then work the queue one claim at a time, or
-    "autonomous" to generate when there is nothing left to work. The old loop
+    claimed/, and the child's argv comes from cycle.command_for_action (its log
+    label from cycle.subcommand_for_action) rather than from a literal in the
+    loop: "run-task-loop" with "--continue" to resume what is in active/ and
+    then work the queue one claim at a time, or "autonomous" to generate when
+    there is nothing left to work. The old loop
     counted pending/ alone, so a task already in active/ was never resumed.
   - No-progress backoff: the same three counts are read again after the child
     exits, and a cycle that left them exactly as it found them accomplished
@@ -42,6 +43,8 @@ Child output:
   <WORK_DIR>/logs/children/<UTC ts>-<label>.log (one fd keeps their relative
   order), delimited by "=== spawn ... ===" / "=== exited rc=N ===" banner
   lines, so verdicts, heartbeats and tracebacks survive a park or a kill.
+  <label> names the subcommand that ran — "status", "run-task-loop",
+  "autonomous" — so a file is findable by what the child was doing.
   The directory is capped at MAX_CHILD_LOGS files (default 50, override with
   the SUPERVISOR_MAX_CHILD_LOGS env var): the oldest are deleted before each
   spawn, counting the file about to be created. Every spawn logs the child
@@ -70,7 +73,8 @@ from harness.core.providers import TaskProvider, create_provider  # noqa: E402
 from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
 from harness.workflow.cycle import (CycleAction, QueueCounts,  # noqa: E402
                                     backoff_seconds, command_for_action,
-                                    cycle_summary, decide_cycle_action)
+                                    cycle_summary, decide_cycle_action,
+                                    subcommand_for_action)
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 from external.git_cli import revert_to_last_good  # noqa: E402
 
@@ -363,7 +367,11 @@ def run_loop() -> int:
                     "harness.py requeue-claims")
             cmd = command_for_action(action, sys.executable)
             if cmd:   # an action with no child (T44's BLOCKED) spawns nothing
-                rc = tracker.spawn(list(cmd), label=action.value)
+                # The label is the subcommand, not the action: two actions share
+                # `run-task-loop`, and the name a human tails or reruns is the
+                # subcommand (T08 item 5).
+                rc = tracker.spawn(list(cmd),
+                                   label=subcommand_for_action(action))
                 if rc != 0:
                     log(f"  {action.value} child exited rc={rc}")
 

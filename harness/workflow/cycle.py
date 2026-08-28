@@ -104,6 +104,25 @@ def cycle_summary(pending: int, in_flight: int, claims: int,
             f"claimed={claims} action={action.value}")
 
 
+def subcommand_for_action(action: CycleAction) -> str:
+    """The ``harness.py`` subcommand an action runs, ``""`` when it runs none.
+
+    The name of the subcommand, without the interpreter or the flags. T08's
+    child log uses it as the log label, so ``logs/children/<ts>-<label>.log``
+    is named after the command a human would rerun by hand (``run-task-loop``,
+    ``autonomous``) rather than after the internal action that picked it —
+    ``RESUME`` and ``WORK`` share one subcommand and therefore one label.
+
+    ``command_for_action`` builds its argv from this value, so the label can
+    never drift from the command it labels.
+    """
+    if action in (CycleAction.RESUME, CycleAction.WORK):
+        return "run-task-loop"
+    if action is CycleAction.GENERATE:
+        return "autonomous"
+    return ""
+
+
 def command_for_action(action: CycleAction, python: str) -> tuple[str, ...]:
     """The child command for one cycle action, as an argv tuple.
 
@@ -120,8 +139,9 @@ def command_for_action(action: CycleAction, python: str) -> tuple[str, ...]:
     The supervisor takes its argv from this function alone: command literals
     do not belong in ``run_loop()`` (T38 asserts the seam with ``ast``).
     """
-    if action in (CycleAction.RESUME, CycleAction.WORK):
-        return (python, "harness.py", "run-task-loop", "--continue")
+    subcommand = subcommand_for_action(action)
+    if not subcommand:
+        return ()
     if action is CycleAction.GENERATE:
-        return (python, "harness.py", "autonomous")
-    return ()
+        return (python, "harness.py", subcommand)
+    return (python, "harness.py", subcommand, "--continue")
