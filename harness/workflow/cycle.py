@@ -1,11 +1,13 @@
 """The pure cycle decision: in-flight beats claims beats pending beats generate (F1).
 
-Three ints in, one `CycleAction` out. This module imports `enum` and nothing
-else on purpose: `supervisor.py` loads the config and `WORK_DIR` at import
-time, so importing it from a test reads real config and touches real
-directories. Keeping the decision here, import-clean, is what makes it
-testable. T14 wires it into the loop.
+Three ints in, one `CycleAction` out. This module imports `dataclasses`, `enum`
+and nothing else on purpose: `supervisor.py` loads the config and `WORK_DIR` at
+import time, so importing it from a test reads real config and touches real
+directories. Keeping the decision and the backoff math here, import-clean, is
+what makes them testable. T14 wires the decision into the loop, T15 the
+backoff.
 """
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -54,6 +56,45 @@ def decide_cycle_action(pending: int, in_flight: int, claims: int) -> CycleActio
     if pending > 0:
         return CycleAction.WORK
     return CycleAction.GENERATE
+
+
+@dataclass(frozen=True)
+class QueueCounts:
+    """A read-only snapshot of the three queue directories.
+
+    It exists so the loop's progress test has a name and a shape instead of a
+    loose 3-tuple: two snapshots compare by value, so `after != before` is the
+    whole test — any state change (claim→active, active→done/parked, new
+    pending from generation) moves at least one number, and a cycle that moved
+    nothing is a cycle that accomplished nothing.
+    """
+
+    pending: int
+    in_flight: int
+    claims: int
+
+
+def backoff_seconds(idle_streak: int, base: int, cap: int) -> int:
+    """How long to sleep after `idle_streak` consecutive no-progress cycles.
+
+    `min(base * 2 ** idle_streak, cap)`: streak 0 returns `base` — today's
+    behavior, so a healthy loop is untouched — and every further idle cycle
+    doubles the sleep until it flattens at `cap`. A wedged task or an
+    unreachable model endpoint therefore costs a shrinking share of the CPU and
+    log volume instead of a full probe-and-spawn every `base` seconds forever.
+
+    Args:
+        idle_streak: consecutive cycles that changed nothing; must be >= 0.
+        base: the normal sleep (the supervisor's `SLEEP_S`), returned at streak 0.
+        cap: the longest the loop may ever idle (its `MAX_SLEEP_S`).
+
+    Raises:
+        ValueError: if `idle_streak` is negative — a negative streak means the
+            caller miscounted, and a miscount must not silently pick a duration.
+    """
+    if idle_streak < 0:
+        raise ValueError(f"idle_streak must not be negative, got {idle_streak}")
+    return min(base * 2 ** idle_streak, cap)
 
 
 def cycle_summary(pending: int, in_flight: int, claims: int,

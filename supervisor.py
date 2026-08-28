@@ -12,6 +12,13 @@ version:
     resume what is in active/ and then work the queue one claim at a time, or
     "autonomous" to generate when there is nothing left to work. The old loop
     counted pending/ alone, so a task already in active/ was never resumed.
+  - No-progress backoff: the same three counts are read again after the child
+    exits, and a cycle that left them exactly as it found them accomplished
+    nothing, so the sleep doubles (SLEEP_S, 2x, 4x, ... up to MAX_SLEEP_S,
+    default 900s) and the streak is logged. Any state change resets the sleep
+    to SLEEP_S. A wedged task or an unreachable model endpoint therefore stops
+    costing a full probe-and-spawn every SLEEP_S forever. The sleep is still
+    the interruptible _sleep(), so a stop is honoured mid-backoff.
   - Tracks the child pi process and kills the whole process tree on stop,
     so a hung session can't orphan a model.
   - Circuit breaker: if the harness fails to launch N times in a row, revert
@@ -59,9 +66,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.core.config import load            # noqa: E402
-from harness.core.providers import create_provider  # noqa: E402
+from harness.core.providers import TaskProvider, create_provider  # noqa: E402
 from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
-from harness.workflow.cycle import (CycleAction, command_for_action,  # noqa: E402
+from harness.workflow.cycle import (CycleAction, QueueCounts,  # noqa: E402
+                                    backoff_seconds, command_for_action,
                                     cycle_summary, decide_cycle_action)
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 from external.git_cli import revert_to_last_good  # noqa: E402
@@ -75,6 +83,7 @@ PIDFILE = WORK_DIR / "logs" / "supervisor.pid"
 STOPFILE = WORK_DIR / "STOP"
 
 SLEEP_S = int(os.environ.get("SLEEP_S", "60"))
+MAX_SLEEP_S = int(os.environ.get("SUPERVISOR_MAX_SLEEP_S", "900"))  # backoff cap
 MAX_CYCLES = int(os.environ.get("MAX_CYCLES", "0"))   # 0 = unlimited
 FAIL_LIMIT = int(os.environ.get("FAIL_LIMIT", "3"))
 
@@ -262,6 +271,20 @@ class ChildTracker:
 # ---------------------------------------------------------------------------
 # the loop
 # ---------------------------------------------------------------------------
+def _queue_snapshot(provider: TaskProvider,
+                    lifecycle: TaskLifecycle) -> QueueCounts:
+    """Read the three counts one cycle's decision is made from.
+
+    Read-only: `claim=False` is spelled out because a call that only counts must
+    never be one default-flip away from moving the queue. The supervisor takes
+    one snapshot before the cycle's child runs and another after it exits;
+    `QueueCounts` compares by value, so the pair is the progress test (T15).
+    """
+    return QueueCounts(pending=len(provider.fetch_pending(claim=False)),
+                       in_flight=len(in_flight_task_dirs(lifecycle)),
+                       claims=len(provider.list_claims()))
+
+
 def run_loop() -> int:
     if not acquire_lock():
         return 1
@@ -288,6 +311,7 @@ def run_loop() -> int:
 
     cycle = 0
     failcount = 0
+    idle_streak = 0   # consecutive cycles that changed nothing (T15 backoff)
     try:
         while not stop["flag"]:
             if STOPFILE.exists():
@@ -321,20 +345,20 @@ def run_loop() -> int:
             failcount = 0  # launched fine
 
             # --- decide: in-flight beats claims beats pending beats generate ---
-            # claim=False is spelled out because a call that only counts must
-            # never be one default-flip away from moving the queue.
-            pending = len(provider.fetch_pending(claim=False))
-            in_flight = len(in_flight_task_dirs(lifecycle))
-            claims = len(provider.list_claims())
-            action = decide_cycle_action(pending, in_flight, claims)
-            log(f"── cycle {cycle}: "
-                f"{cycle_summary(pending, in_flight, claims, action)} ──")
-            if action is CycleAction.WORK and pending == 0 and in_flight == 0:
+            before = _queue_snapshot(provider, lifecycle)
+            action = decide_cycle_action(before.pending, before.in_flight,
+                                         before.claims)
+            summary = cycle_summary(before.pending, before.in_flight,
+                                    before.claims, action)
+            log(f"── cycle {cycle}: {summary} ──")
+            if action is CycleAction.WORK and before.pending == 0 \
+                    and before.in_flight == 0:
                 # The D4 state (see decide_cycle_action): the WORK branch is
                 # chasing claims alone, and the stale-claim requeue is opt-in,
-                # so the cycle can look like it is going nowhere. Name it.
-                log(f"  ⚠ work on {claims} claim(s) only: pending/ and active/ "
-                    "are empty and claimed/ is left alone unless "
+                # so the cycle can look like it is going nowhere. Name it, then
+                # let the backoff below bound what it costs.
+                log(f"  ⚠ work on {before.claims} claim(s) only: pending/ and "
+                    "active/ are empty and claimed/ is left alone unless "
                     "autoRequeueStaleClaims is on — clear them with "
                     "harness.py requeue-claims")
             cmd = command_for_action(action, sys.executable)
@@ -343,7 +367,18 @@ def run_loop() -> int:
                 if rc != 0:
                     log(f"  {action.value} child exited rc={rc}")
 
-            _sleep(stop, SLEEP_S)
+            # --- sleep: SLEEP_S after progress, doubling backoff after none ---
+            # A cycle blocked by stale claims under D4 is idle, not an error:
+            # it backs off, and nothing here fails a task for sitting still.
+            after = _queue_snapshot(provider, lifecycle)
+            progressed = after != before
+            idle_streak = 0 if progressed else idle_streak + 1
+            if idle_streak >= 1:
+                secs = backoff_seconds(idle_streak, SLEEP_S, MAX_SLEEP_S)
+                log(f"  no progress (streak {idle_streak}); sleeping {secs}s")
+                _sleep(stop, secs)
+            else:
+                _sleep(stop, SLEEP_S)
     finally:
         tracker.kill_tree()
         release_lock()
