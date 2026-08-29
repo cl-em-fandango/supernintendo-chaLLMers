@@ -28,7 +28,7 @@ PI_BIN="${PI_BIN:-pi}"
 mkdir -p "$LOG_DIR"
 
 # Alphabetic order. Sort the NUL-separated list so names with spaces survive.
-mapfile -d '' -t FILES < <(find "$FEATURE_DIR" -maxdepth 1 -type f -name "$GLOB" -print0 | LC_ALL=C sort -z)
+mapfile -d '' -t FILES < <(find "$FEATURE_DIR" -maxdepth 1 -type f -print0 | LC_ALL=C sort -z)
 [ "${#FILES[@]}" -gt 0 ] || { echo "no files matching '$GLOB' in $FEATURE_DIR" >&2; exit 1; }
 
 for spec in "${FILES[@]}"; do

@@ -1,1 +1,0 @@
-FAILED tests/test_slice_checkpoint.py::SliceCheckpointTest::test_slice_not_recorded_when_a_review_fails

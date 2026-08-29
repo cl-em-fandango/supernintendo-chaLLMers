@@ -1,1 +1,0 @@
-FAILED tests/test_resume_cli.py::ResumeCliTest::test_task_reconstruction_from_dir
