@@ -30,7 +30,7 @@ from harness.core.config import Config
 from harness.core.enums import Stage, Verdict
 from harness.core.session import SessionResult
 from harness.workflow.params import StageContext
-from harness.workflow.pipeline import Pipeline
+from harness.workflow.pipeline import AllAttemptsCrashed, Pipeline
 from harness.workflow.spec_assessment import SpecAssessment, assess_spec
 
 ASSESSORS = (("ornith", Stage.SPEC_ASSESS_ORNITH), ("tw", Stage.SPEC_ASSESS_TW))
@@ -201,19 +201,26 @@ class SpecAssessmentRoutingTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # G2: a process failure is not a content verdict
     # ------------------------------------------------------------------
-    def test_crashed_assessor_with_pass_output_parks(self):
+    def test_crashed_assessor_with_pass_output_cannot_approve(self):
+        """A dead process never approves.
+
+        T57 moved the park for this case out of the stage: every attempt
+        crashed, so `_run` raises `AllAttemptsCrashed` and `process` parks —
+        the assessor's verdict is never read and `stage_spec` parks nothing
+        itself. What is asserted here is the part this card owns: approval is
+        unreachable. The park itself is tests/test_all_attempts_crashed.py.
+        """
         for assessor, stage in ASSESSORS:
             with self.subTest(assessor=assessor):
                 runner = StubRunner(crashed=[stage])  # verdict defaults to PASS
-                self.assertFalse(self._spec(runner))
+                with self.assertRaises(AllAttemptsCrashed):
+                    self._spec(runner)
                 self.assertNotIn("spec approved", self._log)
                 last = runner.results[-1]
                 self.assertFalse(last.ok)
                 self.assertIn("VERDICT: pass", last.output)
-                self.assertEqual(len(self._reasons), 1)
-                self.assertIn(assessor, self._reasons[0])
-                self.assertIn("process failure", self._reasons[0])
-                # `_run` exhausted its crash retries before the park happened
+                self.assertEqual(self._reasons, [])
+                # `_run` exhausted its crash retries before it raised
                 self.assertEqual(runner.calls.count(stage.value), 3)
 
     def test_nonzero_exit_assessor_with_pass_output_parks(self):

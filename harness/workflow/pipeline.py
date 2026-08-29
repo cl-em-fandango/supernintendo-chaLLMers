@@ -35,6 +35,23 @@ _STAGE_FUNCTIONS = {
 }
 
 
+class AllAttemptsCrashed(Exception):
+    """Every crash retry of one stage session died (T57).
+
+    `_run` raises this instead of handing back the last dead result, so a
+    verdict read out of a process that never finished can never be routed on.
+    `Pipeline.process` catches it once — no stage catches it — and parks with
+    `str(exc)`, which names the task, the stage and the number of attempts.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str, attempts: int):
+        self.task_id = task_id
+        self.stage = stage
+        self.attempts = attempts
+        super().__init__(f"all {attempts} attempts crashed at stage "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
 class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
         self.cfg = cfg
@@ -48,6 +65,11 @@ class Pipeline:
         """Run a session, retrying on crash. Artifacts persist on disk, so a
         retry continues from what the model already wrote rather than restarting.
 
+        A session that comes back healthy is returned as it stands. When the
+        last allowed attempt crashes there is no verdict left to trust, so
+        `AllAttemptsCrashed` is raised (T57) and the task is parked by
+        `process`; the crashed result is never returned to a stage.
+
         Call sites pass a `Stage` member (T30); `SessionRunner` converts it at
         the stats edge, so the value travelling through here stays whatever the
         caller handed over.
@@ -60,7 +82,7 @@ class Pipeline:
             if attempt < self.max_crash_retries:
                 self.log(f"  ⚠ {stage} crashed (rc/timeout); retrying "
                          f"({attempt+1}/{self.max_crash_retries}) — artifacts preserved")
-        return r
+        raise AllAttemptsCrashed(task_id, stage, self.max_crash_retries + 1)
 
     # ------------------------------------------------------------------
     # top level
@@ -125,16 +147,24 @@ class Pipeline:
             return "parked"
 
         ctx = StageContext(task.id, task_dir, workdir)
-        for stage in STAGE_SEQUENCE:
-            if stage in state.checkpointed_stages:
-                self.log(f"  ⏭ skipping {stage.value} (checkpointed)")
-                continue
-            self.lifecycle.set_stage(task.id, stage)
-            self.log(f"  ▶ {stage.value}")
-            if not getattr(self, _STAGE_FUNCTIONS[stage])(ctx):
-                return self._stage_failed(task.id, stage, task_dir)
-            self.lifecycle.checkpoint(task.id, stage)
-        return self.stage_holistic(ctx)
+        try:
+            for stage in STAGE_SEQUENCE:
+                if stage in state.checkpointed_stages:
+                    self.log(f"  ⏭ skipping {stage.value} (checkpointed)")
+                    continue
+                self.lifecycle.set_stage(task.id, stage)
+                self.log(f"  ▶ {stage.value}")
+                if not getattr(self, _STAGE_FUNCTIONS[stage])(ctx):
+                    return self._stage_failed(task.id, stage, task_dir)
+                self.lifecycle.checkpoint(task.id, stage)
+            return self.stage_holistic(ctx)
+        except AllAttemptsCrashed as e:
+            # The one catch site (T57). A stage that lost every attempt to a
+            # dead process is a process failure, not a content verdict, so it
+            # parks whatever stage it happened on — including the holistic one,
+            # where a merge must not be attempted on unreviewed work.
+            self.lifecycle.park(task.id, str(e))
+            return "parked"
 
     def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
         """Per-stage terminal return contract (F2.1): feasibility failure is
@@ -444,6 +474,12 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------------------
+
+def _stage_value(stage: Stage | str) -> str:
+    """A `Stage` member's wire name; a stray string passes through unchanged
+    (the same tolerant conversion `SessionRunner.run` makes at the stats edge)."""
+    return stage.value if isinstance(stage, Stage) else str(stage)
+
 
 def _parse_slices(path: Path) -> list[str]:
     if not path.exists():
