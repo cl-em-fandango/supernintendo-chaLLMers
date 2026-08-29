@@ -148,6 +148,9 @@ def cmd_run_one() -> int:
     """
     cfg, store, runner, provider, pipeline, log = build()
     owner = _new_owner_id("run-one")
+    if not provider.count_pending():
+        log("no pending tasks to claim")
+        return 0
     tasks = provider.fetch_pending(claim=True, owner=owner)
     if not tasks:
         log("no pending tasks to claim")
