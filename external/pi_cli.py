@@ -20,7 +20,9 @@ VERDICT_JSON_RE = re.compile(r'"verdict"\s*:\s*"([A-Za-z_]+)"', re.IGNORECASE)
 HEARTBEAT_S = 30          # log a heartbeat every 30s while a session runs
 HARD_TIMEOUT_S = 5400     # 90 min absolute cap per session
 WATCHDOG_GRACE_S = 5      # kill-then-reap grace for the wall-clock watchdog
+TERMINATE_GRACE_S = 5     # SIGTERM-then-SIGKILL grace in the shared stop helper
 TIMEOUT_ERR_PREFIX = "wall-clock timeout"  # err prefix that marks a timeout exit
+OVER_CAP_ERR_PREFIX = "over context cap"   # err prefix that marks an over-cap stop
 
 
 @dataclass
@@ -29,6 +31,11 @@ class PiSessionResult:
 
     `output` is assistant text only. The child's stderr is kept separate in
     `stderr` so it can never be scanned as if it were a verdict.
+
+    `over_context_budget` is *not* a crash: it says a streamed usage value went
+    strictly over `context_limit` and the session was stopped for that reason.
+    The child's own return code stays in `rc` either way, so an over-cap stop
+    and a genuine crash remain tellable apart downstream.
     """
     rc: int
     crashed: bool
@@ -38,6 +45,32 @@ class PiSessionResult:
     output: str
     out_file: Path
     stderr: str = ""
+    over_context_budget: bool = False
+    context_limit: int | None = None
+
+
+def _terminate_reap(proc: subprocess.Popen, *, grace_s: float = TERMINATE_GRACE_S) -> None:
+    """Stop a running child and reap it: SIGTERM first, SIGKILL after `grace_s`.
+
+    One stop path for both reasons we stop early — the wall-clock watchdog and
+    the over-context-cap trip — so a session is never torn down two different
+    ways. Terminating before killing lets pi close its own streams; the kill is
+    only for a child that ignores SIGTERM. Reaping here is what makes the
+    caller's later `wait()` return at once instead of blocking on a pipe a live
+    child still holds open. A child that already exited is not an error: both
+    callers race against a natural exit.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 def run_pi_session(
@@ -47,6 +80,7 @@ def run_pi_session(
     prompt: str,
     out_file: Path,
     log,
+    max_context_tokens: int | None = None,
 ) -> PiSessionResult:
     """Run a pi subprocess and return the raw result.
     
@@ -57,10 +91,16 @@ def run_pi_session(
         out_file: Path where to write the assistant output. Non-empty stderr is
             written alongside it as `<out_file>.err` and never into `out_file`.
         log: Callable for heartbeat logging
+        max_context_tokens: Hard context ceiling in tokens, or None for no cap.
+            Checked against every streamed usage value, so a session that walks
+            past the ceiling is stopped while it is still consuming context
+            rather than after it returns. Exactly the cap does not trip.
         
     Returns:
         PiSessionResult with all raw subprocess data: `output` is assistant text,
-        `stderr` the child's stderr, `err` the failure text (plus a stderr tail)
+        `stderr` the child's stderr, `err` the failure text (plus a stderr tail),
+        `over_context_budget`/`context_limit` the over-cap trip and the cap that
+        was in force.
     """
     workdir = Path(workdir)
     t0 = time.monotonic()
@@ -73,6 +113,10 @@ def run_pi_session(
     rc = 0
     crashed = False
     err = ""
+    # Set on the first streamed usage value strictly over `max_context_tokens`.
+    # Deliberately not `crashed`: the stop is a budget decision, the child's own
+    # exit code stays in `rc`.
+    over_context_budget = False
 
     # heartbeat state (shared with the heartbeat thread)
     hb = {"last_event": t0, "events": 0, "peak": 0}
@@ -132,19 +176,40 @@ def run_pi_session(
 
         def watchdog():
             # A blocked read() yields no line, so the in-loop deadline check below
-            # can never fire for a child that prints nothing. This thread kills it
-            # on the same clock, and the kill is what unblocks the read. The sleep
-            # is on the stop event (heartbeat shape) so shutdown stays prompt.
+            # can never fire for a child that prints nothing. This thread stops it
+            # on the same clock, and stopping it is what unblocks the read. The
+            # sleep is on the stop event (heartbeat shape) so shutdown stays
+            # prompt.
             while proc.poll() is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     killed_by_watchdog.set()
-                    proc.kill()
+                    _terminate_reap(proc)
                     break
                 stop_watchdog.wait(min(1.0, remaining))
 
         watchdog_thread = threading.Thread(target=watchdog, daemon=True)
         watchdog_thread.start()
+
+        def measure(usage: dict | None) -> bool:
+            """Fold one usage block into `peak`; True when it is over the cap.
+
+            Strictly greater than the cap, so a session that lands exactly on it
+            is still inside. The first over-cap value is the trip: the caller
+            stops reading stdout immediately, so `err` is written once and can
+            never be overwritten by a later, larger value.
+            """
+            nonlocal peak, over_context_budget, err
+            total = int((usage or {}).get("totalTokens", 0))
+            peak = max(peak, total)
+            hb["peak"] = peak
+            if (max_context_tokens is not None and not over_context_budget
+                    and total > max_context_tokens):
+                over_context_budget = True
+                err = (f"{OVER_CAP_ERR_PREFIX}: peak={total} tokens "
+                       f"limit={max_context_tokens} tokens")
+                return True
+            return False
 
         for line in proc.stdout:
             if time.monotonic() > deadline:
@@ -163,20 +228,25 @@ def run_pi_session(
                 continue
             t = e.get("type")
             if t == "message_end":
-                u = (e.get("message") or {}).get("usage") or {}
-                peak = max(peak, int(u.get("totalTokens", 0)))
-                hb["peak"] = peak
                 msg = e.get("message") or {}
+                if measure(msg.get("usage")):
+                    break
                 if msg.get("role") == "assistant":
                     for c in msg.get("content", []):
                         if isinstance(c, dict) and c.get("type") == "text":
                             text_parts.append(c.get("text", ""))
             elif t == "agent_end":
                 for m in e.get("messages", []):
-                    u = (m or {}).get("usage") or {}
-                    peak = max(peak, int(u.get("totalTokens", 0)))
-                    hb["peak"] = peak
+                    if measure((m or {}).get("usage")):
+                        break
+                if over_context_budget:
+                    break
         # stdout closed (or we broke). Reap the process.
+        if over_context_budget:
+            # Stop the child *before* the wait. A session that is over cap is by
+            # definition still working, so it still holds the stdout pipe open:
+            # waiting first would block on output we have decided not to read.
+            _terminate_reap(proc)
         try:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
@@ -229,6 +299,8 @@ def run_pi_session(
     if peak == 0 and not output.strip():
         log(f"  … pi EMPTY: no tokens and no text returned "
             f"(rc={rc}, crashed={crashed}, stderr={err[:200]!r})")
+    if over_context_budget:
+        log(f"  … pi {err} (rc={rc}, output={len(output)} chars)")
 
     return PiSessionResult(
         rc=rc,
@@ -239,6 +311,8 @@ def run_pi_session(
         output=output,
         out_file=out_file,
         stderr=stderr_txt,
+        over_context_budget=over_context_budget,
+        context_limit=max_context_tokens,
     )
 
 
