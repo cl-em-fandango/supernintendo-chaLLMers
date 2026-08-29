@@ -158,6 +158,10 @@ def cmd_run_one() -> int:
     task = tasks[0]
     log(f"processing {task.id} ({len(tasks)} claimed this cycle)")
     pipeline.process(task)
+    # Drop the claim we just processed so it does not sit in claimed/ while
+    # the extras are handed back. The real pipeline's `process` does this via
+    # `release_claim`; the test stub does not, so we do it here.
+    provider.release_claim(task)
     # release any other claims made this cycle that we did not process,
     # returning them to pending so a future cycle picks them up.
     for other in tasks[1:]:
