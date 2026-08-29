@@ -13,6 +13,12 @@ version:
     then work the queue one claim at a time, or "autonomous" to generate when
     there is nothing left to work. The old loop
     counted pending/ alone, so a task already in active/ was never resumed.
+  - A claimed-only queue (pending/ and active/ empty, claimed/ not) is
+    `CycleAction.BLOCKED`, not work (T44): it spawns no child at all, logs one
+    operator-action line naming `harness.py requeue-claims --dry-run` and the
+    claim count, and idles through the same backoff. Spawning
+    "run-task-loop --continue" for it could only ever be a no-op child, because
+    that command consumes active/ and pending/ and stale reclaim is opt-in (D4).
   - No-progress backoff: the same three counts are read again after the child
     exits, and a cycle that left them exactly as it found them accomplished
     nothing, so the sleep doubles (SLEEP_S, 2x, 4x, ... up to MAX_SLEEP_S,
@@ -348,25 +354,25 @@ def run_loop() -> int:
                 continue
             failcount = 0  # launched fine
 
-            # --- decide: in-flight beats claims beats pending beats generate ---
+            # --- decide: in-flight beats pending beats claims beats generate ---
             before = _queue_snapshot(provider, lifecycle)
             action = decide_cycle_action(before.pending, before.in_flight,
                                          before.claims)
             summary = cycle_summary(before.pending, before.in_flight,
                                     before.claims, action)
             log(f"── cycle {cycle}: {summary} ──")
-            if action is CycleAction.WORK and before.pending == 0 \
-                    and before.in_flight == 0:
-                # The D4 state (see decide_cycle_action): the WORK branch is
-                # chasing claims alone, and the stale-claim requeue is opt-in,
-                # so the cycle can look like it is going nowhere. Name it, then
-                # let the backoff below bound what it costs.
-                log(f"  ⚠ work on {before.claims} claim(s) only: pending/ and "
-                    "active/ are empty and claimed/ is left alone unless "
-                    "autoRequeueStaleClaims is on — clear them with "
-                    "harness.py requeue-claims")
+            if action is CycleAction.BLOCKED:
+                # The D4 state, now named instead of chased (T44): claims are
+                # recoverable only by the operator command, since the stale-claim
+                # requeue is opt-in. One line naming what to run and how many
+                # claims it would move; nothing here fails, moves or requeues a
+                # claim, and the backoff below bounds what the wait costs.
+                log(f"  ⚠ blocked: {before.claims} claim(s) in claimed/ with "
+                    "pending/ and active/ empty — no child can work them; "
+                    "preview the operator recovery with "
+                    "harness.py requeue-claims --dry-run")
             cmd = command_for_action(action, sys.executable)
-            if cmd:   # an action with no child (T44's BLOCKED) spawns nothing
+            if cmd:   # BLOCKED has no child: this cycle spawns nothing
                 # The label is the subcommand, not the action: two actions share
                 # `run-task-loop`, and the name a human tails or reruns is the
                 # subcommand (T08 item 5).
@@ -376,8 +382,9 @@ def run_loop() -> int:
                     log(f"  {action.value} child exited rc={rc}")
 
             # --- sleep: SLEEP_S after progress, doubling backoff after none ---
-            # A cycle blocked by stale claims under D4 is idle, not an error:
-            # it backs off, and nothing here fails a task for sitting still.
+            # A blocked cycle ran no child, so its counts cannot move and it
+            # lands on this same path: idle, not an error. The sleep stays the
+            # interruptible _sleep(), so a stop is honoured mid-backoff.
             after = _queue_snapshot(provider, lifecycle)
             progressed = after != before
             idle_streak = 0 if progressed else idle_streak + 1

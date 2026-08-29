@@ -114,6 +114,8 @@ class LabelIsTheSubcommandTest(unittest.TestCase):
                          "run-task-loop")
         self.assertEqual(subcommand_for_action(CycleAction.GENERATE),
                          "autonomous")
+        # T44: a blocked cycle runs nothing, so there is nothing to label.
+        self.assertEqual(subcommand_for_action(CycleAction.BLOCKED), "")
 
     def test_label_appears_in_the_command_it_labels(self):
         """An action with no child has no label either (T44's BLOCKED slot)."""

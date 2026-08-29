@@ -1,4 +1,4 @@
-"""The pure cycle decision: in-flight beats claims beats pending beats generate (F1).
+"""The pure cycle decision: in-flight, then pending, then blocked claims (F1, T44).
 
 Three ints in, one `CycleAction` out. This module imports `dataclasses`, `enum`,
 `typing` and nothing else on purpose: `supervisor.py` loads the config and
@@ -16,31 +16,33 @@ class CycleAction(str, Enum):
     """What one supervisor cycle does next."""
 
     RESUME = "resume"        # finish a task already in active/
-    WORK = "work"            # work a task that is claimed or still pending
+    WORK = "work"            # work a task that is still pending
+    BLOCKED = "blocked"      # claims only: no child can consume them (T44)
     GENERATE = "generate"    # nothing to do: ask for new tasks
 
 
 def decide_cycle_action(pending: int, in_flight: int, claims: int) -> CycleAction:
     """Pick the cycle's action. First match wins:
 
-    | condition        | action                 |
-    |------------------|------------------------|
-    | ``in_flight > 0``| ``CycleAction.RESUME`` |
-    | ``claims > 0``   | ``CycleAction.WORK``   |
-    | ``pending > 0``  | ``CycleAction.WORK``   |
-    | otherwise        | ``CycleAction.GENERATE`` |
+    | condition         | action                  |
+    |-------------------|-------------------------|
+    | ``in_flight > 0`` | ``CycleAction.RESUME``  |
+    | ``pending > 0``   | ``CycleAction.WORK``    |
+    | ``claims > 0``    | ``CycleAction.BLOCKED`` |
+    | otherwise         | ``CycleAction.GENERATE``|
 
-    A claim counts as *work*, not as garbage: ``cmd_run_task_loop`` requeues
-    stale claims before the decision is made (T12), so whatever is left in
-    ``claimed/`` is a task someone started and must finish. Treating it as
-    nothing-to-do would hand started work back to generation and drop it.
+    A claim is not work (T44): the child both RESUME and WORK spawn —
+    ``harness.py run-task-loop --continue`` — resumes ``active/`` and then
+    drains ``pending/``, and neither step reads ``claimed/``. Automatic stale
+    reclaim is opt-in (decision D4), so a queue of nothing but claims is a
+    state the loop reaches by design and cannot leave on its own: calling it
+    WORK bought an endless sequence of children that each exited without
+    touching a task. ``BLOCKED`` names it for what it is — work an operator
+    has to hand back with ``harness.py requeue-claims`` — and the caller logs
+    that command and lets the no-progress backoff (T15) do the waiting.
 
-    D4 caveat — a known blocked state, deliberately not handled here: T12's
-    loop-start requeue ships off by default, so with the 7 live claims sitting
-    put, ``claims > 0`` returns WORK forever and generation is blocked (T15's
-    no-progress backoff bounds the cost). Two consequences: this function stays
-    pure — three ints in, one action out, no policy, no thresholds — and it is
-    the caller (T14) that decides which number to pass as ``claims``.
+    This function stays pure: three ints in, one action out, no policy, no
+    thresholds, and no claim is moved, failed or requeued here.
 
     Raises:
         ValueError: if any count is negative. A negative count means the caller
@@ -52,10 +54,10 @@ def decide_cycle_action(pending: int, in_flight: int, claims: int) -> CycleActio
             raise ValueError(f"{name} must not be negative, got {count}")
     if in_flight > 0:
         return CycleAction.RESUME
-    if claims > 0:
-        return CycleAction.WORK
     if pending > 0:
         return CycleAction.WORK
+    if claims > 0:
+        return CycleAction.BLOCKED
     return CycleAction.GENERATE
 
 
@@ -153,7 +155,12 @@ def next_fail_state(failcount: int, rc: int, limit: int) -> FailState:
 
 def cycle_summary(pending: int, in_flight: int, claims: int,
                   action: CycleAction) -> str:
-    """The one-line form of a decision, for the log (T14 logs it verbatim)."""
+    """The one-line form of a decision, for the log (T14 logs it verbatim).
+
+    The action is rendered from the enum, so a claimed-only queue reads
+    ``pending=0 in_flight=0 claimed=2 action=blocked`` (T44): the state is
+    visible in the log under the same word the code uses for it.
+    """
     return (f"pending={pending} in_flight={in_flight} "
             f"claimed={claims} action={action.value}")
 
@@ -166,6 +173,7 @@ def subcommand_for_action(action: CycleAction) -> str:
     is named after the command a human would rerun by hand (``run-task-loop``,
     ``autonomous``) rather than after the internal action that picked it —
     ``RESUME`` and ``WORK`` share one subcommand and therefore one label.
+    ``BLOCKED`` runs no child and therefore has no label.
 
     ``command_for_action`` builds its argv from this value, so the label can
     never drift from the command it labels.
@@ -187,8 +195,8 @@ def command_for_action(action: CycleAction, python: str) -> tuple[str, ...]:
     one child covers both. ``GENERATE`` maps to ``harness.py autonomous``.
 
     An action with no child returns an empty tuple and the caller spawns
-    nothing — that is T44's ``BLOCKED`` slot, left empty here on purpose
-    because this module must not invent an action before that card lands.
+    nothing — that is ``CycleAction.BLOCKED`` (T44): a claimed-only queue has
+    no command that could consume it, so the cycle runs no child at all.
 
     The supervisor takes its argv from this function alone: command literals
     do not belong in ``run_loop()`` (T38 asserts the seam with ``ast``).

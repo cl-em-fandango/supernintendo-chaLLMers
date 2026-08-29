@@ -16,7 +16,6 @@ import ast
 import subprocess
 import sys
 import unittest
-from enum import Enum
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,23 +33,8 @@ SUPERVISOR_SRC = (REPO_ROOT / "supervisor.py").read_text(encoding="utf-8")
 # `sys.executable` proves the value is threaded through and not hardcoded.
 INTERPRETER = "/opt/test-env/bin/python3"
 
-# T44 turns a claimed-only queue into `CycleAction.BLOCKED`. Until it lands,
-# claimed-only is `WORK` (the D4 state T13 documented), so the two cases that
-# depend on it are gated on the member's existence rather than asserting a
-# contract the code does not have yet.
-BLOCKED = getattr(CycleAction, "BLOCKED", None)
-T44_LANDED = BLOCKED is not None
-
-
-class _ActionWithNoChild(str, Enum):
-    """A stand-in for T44's `BLOCKED`: an action `cycle.py` maps to no child.
-
-    `command_for_action` reserves an empty slot for exactly this case, so the
-    slot is testable before the action itself exists — and this module never
-    invents an action on the supervisor's behalf.
-    """
-
-    UNKNOWN = "unknown"
+# T44's action: a claimed-only queue is blocked, not work.
+BLOCKED = CycleAction.BLOCKED
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +112,7 @@ class ImportPurityTest(unittest.TestCase):
 
 
 class DecideCycleActionTest(unittest.TestCase):
-    """T13's table: in-flight beats claims beats pending beats generate."""
+    """The table: in-flight beats pending beats claims beats generate (T13, T44)."""
 
     def test_in_flight_beats_pending(self):
         self.assertIs(decide_cycle_action(pending=5, in_flight=1, claims=0),
@@ -142,20 +126,20 @@ class DecideCycleActionTest(unittest.TestCase):
         self.assertIs(decide_cycle_action(pending=3, in_flight=0, claims=0),
                       CycleAction.WORK)
 
-    @unittest.skipIf(T44_LANDED, "T44 landed: claimed-only is BLOCKED now")
-    def test_claimed_only_is_work_before_t44(self):
-        """A claim is work, not garbage (T13) — until T44 reclassifies it."""
-        self.assertIs(decide_cycle_action(pending=0, in_flight=0, claims=1),
-                      CycleAction.WORK)
-
-    @unittest.skipUnless(T44_LANDED, "T44 has not landed: claimed-only is WORK")
-    def test_claimed_only_is_blocked_once_t44_lands(self):
+    def test_claimed_only_is_blocked(self):
         """`pending=0, in_flight=0, claims>0` starts no child that could
-        consume the claims: a state to name, not work to chase."""
+        consume the claims: a state to name, not work to chase (T44)."""
         self.assertIs(decide_cycle_action(pending=0, in_flight=0, claims=2),
                       BLOCKED)
+        self.assertIs(decide_cycle_action(pending=0, in_flight=0, claims=1),
+                      BLOCKED)
+
+    def test_pending_beats_claims(self):
+        """One pending task is real work, and the claims wait for a later cycle."""
         self.assertIs(decide_cycle_action(pending=1, in_flight=0, claims=2),
                       CycleAction.WORK)
+
+    def test_in_flight_beats_claims(self):
         self.assertIs(decide_cycle_action(pending=0, in_flight=1, claims=2),
                       CycleAction.RESUME)
 
@@ -191,6 +175,12 @@ class CycleSummaryTest(unittest.TestCase):
             cycle_summary(0, 0, 0, CycleAction.GENERATE),
             "pending=0 in_flight=0 claimed=0 action=generate")
 
+    def test_summary_of_a_claimed_only_queue(self):
+        """T44: the blocked state is legible in the log line, count included."""
+        self.assertEqual(
+            cycle_summary(0, 0, 2, CycleAction.BLOCKED),
+            "pending=0 in_flight=0 claimed=2 action=blocked")
+
 
 class CommandForActionTest(unittest.TestCase):
     """T14's pure command mapping: one action, one argv, no literals in the loop."""
@@ -207,14 +197,9 @@ class CommandForActionTest(unittest.TestCase):
         self.assertEqual(command_for_action(CycleAction.GENERATE, INTERPRETER),
                          (INTERPRETER, "harness.py", "autonomous"))
 
-    def test_an_action_with_no_child_maps_to_no_command(self):
-        """The empty slot: an action cycle.py runs nothing for gets `()`."""
-        self.assertEqual(command_for_action(_ActionWithNoChild.UNKNOWN, INTERPRETER),
-                         ())
-        self.assertEqual(subcommand_for_action(_ActionWithNoChild.UNKNOWN), "")
-
-    @unittest.skipUnless(T44_LANDED, "T44 has not landed: there is no BLOCKED yet")
-    def test_blocked_maps_to_no_command_once_t44_lands(self):
+    def test_blocked_maps_to_no_command_and_no_label(self):
+        """T44: a claimed-only cycle spawns nothing, so it has no argv and no
+        child-log label either."""
         self.assertEqual(command_for_action(BLOCKED, INTERPRETER), ())
         self.assertEqual(subcommand_for_action(BLOCKED), "")
 
