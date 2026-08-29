@@ -343,8 +343,12 @@ class Pipeline:
             if it < max_iter:
                 feedback = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
                 shutil.copy(r.out_file, feedback)
+                # A fix session is a code edit, so it runs on the implementer
+                # regardless of which review asked for it (T55). `model` above
+                # follows the review type; the fix model follows the work type.
                 self._run(
-                    model, ctx.workdir, prompts.fix_slice(ctx.task_dir, sid, feedback, kind),
+                    self.cfg.implementer, ctx.workdir,
+                    prompts.fix_slice(ctx.task_dir, sid, feedback, kind),
                     task_id=ctx.task_id, stage=Stage.SLICE_FIX, slice_id=sid, iteration=it,
                     notes=f"fix after {kind} review")
         self.lifecycle.park(ctx.task_id, f"slice {sid} failed {kind} review after {max_iter} iterations")
