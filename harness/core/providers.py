@@ -279,7 +279,7 @@ class DirectoryTaskProvider(TaskProvider):
         for f in sorted(self.claimed_dir.glob("*.md")):
             meta = read_metadata(f)
             task = Task(id=_slug(f.stem), body=f.read_text(),
-                        source=f"claimed:{f.name}")
+                        source=f"directory:{f.name}")
             claims.append(Claim(task=task, filename=f.name, owner=meta.owner,
                                 claimed_at=meta.claimed_at,
                                 meta_path=metadata_path(f)))
