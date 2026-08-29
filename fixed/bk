@@ -1,0 +1,1 @@
+FAILED tests/test_resume_cli.py::ResumeCliTest::test_resume_done_task_reports_complete
