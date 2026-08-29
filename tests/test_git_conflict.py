@@ -9,13 +9,19 @@ the worktree), plus removal of *exactly* the paths the branch added — never a
 `git status --porcelain` `??` sweep, because a concurrent tool may have dropped
 an unrelated file in the worktree after `_require_clean` proved it clean.
 
-Out of scope here (T73 and friends own them): the squash *commit* failing, the
-verification gate, the revert path and branch deletion.
+Out of scope here (T73 owns them): the squash *commit* failing, the verification
+gate and branch deletion.
+
+T64 extends this module with `ConflictCleanupAndDirtyRevertTest`: conflict
+cleanup asserted through the module's own pieces (recorded added paths,
+`abort_merge`) and the T05 guard that stands in front of every `git reset --hard`
+on the revert path.
 
 Run from the repo root:  python3 -m unittest tests.test_git_conflict
 """
 from __future__ import annotations
 
+import inspect
 import shutil
 import subprocess
 import sys
@@ -261,6 +267,305 @@ class SquashConflictCleanupTest(unittest.TestCase):
                          "now-empty parent of a removed file was not pruned")
         self.assertTrue((self.dir / "kept" / "other.txt").exists(),
                         "a directory we did not empty was removed")
+
+
+# ------------------------------------------------------------------
+# T64 — conflict cleanup, and the dirty-tree refusal in front of a revert
+# ------------------------------------------------------------------
+
+class ConflictCleanupAndDirtyRevertTest(unittest.TestCase):
+    """One fixture: a temp repo whose feature branch conflicts with trunk, plus
+    a trunk commit standing in for a bad merge with `pi/last-good` behind it.
+
+    The conflict is cleaned up through the module's own pieces — `_added_paths`
+    recorded on a clean tree, `abort_merge` after the wreck — rather than through
+    `merge_to_trunk`: that entry point refuses any repo without the T24 gate-
+    recognition stubs, and gate recognition is out of scope here. The revert
+    guard is exercised at `revert_to_last_good`, the supervisor's breaker entry
+    point, which performs no gate check of its own.
+
+    Every repo lives under its own `tempfile.mkdtemp()` root; nothing here
+    touches this working tree or `/home/donald/work/queue`.
+    """
+
+    TRUNK = "pi/trunk"
+    BRANCH = "pi/conflict"
+    ADDED = {"feature_new.txt", "feature_dir/nested.txt"}
+    MARKERS = ("<<<<<<<", ">>>>>>>")
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="t64-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self._git("init", "-b", self.TRUNK)
+        self._write("shared.txt", "base\n")
+        self._write("trunk_only.txt", "trunk content\n")
+        self._git("add", "-A")
+        self._commit("base")
+        self.base_sha = self.head()
+
+        self._git("checkout", "-b", self.BRANCH)
+        self._write("shared.txt", "feature\n")
+        self._write("feature_new.txt", "added by the branch\n")
+        self._write("feature_dir/nested.txt", "added by the branch, nested\n")
+        self._git("add", "-A")
+        self._commit("feat")
+
+        self._git("checkout", self.TRUNK)
+        self._write("shared.txt", "trunk\n")
+        self._git("add", "-A")
+        self._commit("trunk-change")
+        self.trunk_sha = self.head()
+
+    # -- helpers ----------------------------------------------------------
+    def _write(self, rel: str, text: str) -> None:
+        p = self.dir / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    def _git(self, *args: str) -> str:
+        r = subprocess.run(["git", *args], cwd=self.dir,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, (args, r.stderr))
+        return r.stdout
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess:
+        """Run git without asserting on the return code (conflicts are expected)."""
+        return subprocess.run(["git", *args], cwd=self.dir,
+                              capture_output=True, text=True)
+
+    def _commit(self, msg: str) -> None:
+        self._git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", msg)
+
+    def porcelain(self) -> str:
+        return self._git("status", "--porcelain").strip()
+
+    def unmerged(self) -> str:
+        return self._git("ls-files", "-u").strip()
+
+    def read(self, rel: str) -> str:
+        return (self.dir / rel).read_text()
+
+    def head(self) -> str:
+        return self._git("rev-parse", "HEAD").strip()
+
+    def rev(self, ref: str) -> str:
+        """The commit `ref` resolves to (tags peeled, branches followed)."""
+        return self._git("rev-parse", f"{ref}^{{commit}}").strip()
+
+    def wrecked_squash(self) -> list[str]:
+        """Reproduce the conflict path with the module's own pieces.
+
+        `_added_paths` is captured while the tree is still clean — it is the
+        allow-list the cleanup deletes from — then trunk is checked out and the
+        bare `git merge --squash` is run so it fails. Returns the recorded list.
+        """
+        self.assertEqual(self.porcelain(), "", "fixture started dirty")
+        added = G._added_paths(self.dir, self.TRUNK, self.BRANCH)
+        self.assertEqual(set(added), self.ADDED)
+        self._git("checkout", self.TRUNK)
+        squash = self._run("merge", "--squash", self.BRANCH)
+        self.assertNotEqual(squash.returncode, 0, "fixture no longer conflicts")
+        return added
+
+    def bad_merge_commit(self, tag: bool = True) -> str:
+        """A trunk commit standing in for the squash a failed gate would undo.
+
+        `pi/last-good` is placed on the commit *before* it, so a revert has
+        somewhere to go; with `tag=False` only the `HEAD~1` fallback exists.
+        Returns the sha a revert would move HEAD away from.
+        """
+        if tag:
+            self._git("tag", G.LAST_GOOD_TAG)
+        self._write("merged.txt", "bad work that a revert would discard\n")
+        self._git("add", "-A")
+        self._commit("feat(bad): the merge that failed the gate")
+        return self.head()
+
+    def worktree_texts(self) -> dict[str, str]:
+        """Every tracked-or-untracked file in the worktree, keyed by rel path."""
+        texts: dict[str, str] = {}
+        for p in sorted(self.dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(self.dir)
+            if ".git" in rel.parts:
+                continue
+            texts[str(rel)] = p.read_text()
+        return texts
+
+    # -- the wreck: what the cleanup has to undo --------------------------
+    def test_conflict_wreck_carries_unmerged_entries_and_markers(self):
+        """Premise for the assertions below: the merge really conflicted, the
+        index really holds conflict stages, and the worktree really carries
+        markers — otherwise 'cleaned up' and 'no markers' assert nothing."""
+        self.wrecked_squash()
+
+        self.assertTrue(self.unmerged(), "no unmerged index entries were created")
+        self.assertTrue(G.merge_in_progress(self.dir))
+        self.assertIn("<<<<<<<", self.read("shared.txt"),
+                      "the fixture left no conflict marker to clean up")
+
+    # -- unmerged-index cleanup -------------------------------------------
+    def test_cleanup_clears_every_unmerged_index_entry(self):
+        """`git reset -q` is what clears the conflict stages a squash leaves
+        behind; `merge --abort` cannot be relied on (it writes no `MERGE_HEAD`)."""
+        added = self.wrecked_squash()
+
+        G.abort_merge(self.dir, added)
+
+        self.assertEqual(self.unmerged(), "", "unmerged index entries left behind")
+        self.assertEqual(self.porcelain(), "", f"tree left dirty: {self.porcelain()}")
+        self.assertFalse(G.merge_in_progress(self.dir),
+                         "repo left reporting itself mid-merge")
+
+    # -- known merge-added path removal -----------------------------------
+    def test_cleanup_removes_exactly_the_recorded_merge_added_paths(self):
+        """The recorded list is the allow-list: everything in it goes, its emptied
+        parent goes with it, and nothing that trunk tracks is touched."""
+        added = self.wrecked_squash()
+
+        G.abort_merge(self.dir, added)
+
+        for rel in self.ADDED:
+            self.assertFalse((self.dir / rel).exists(),
+                             f"branch-added path survived cleanup: {rel}")
+        self.assertFalse((self.dir / "feature_dir").exists(),
+                         "directory emptied by the cleanup was not pruned")
+        self.assertEqual(self.read("trunk_only.txt"), "trunk content\n",
+                         "a trunk-tracked file was removed by the cleanup")
+        self.assertEqual(self.porcelain(), "", f"tree left dirty: {self.porcelain()}")
+
+    # -- no conflict markers ----------------------------------------------
+    def test_cleanup_leaves_no_conflict_markers_in_the_worktree(self):
+        """Asserted over every file in the tree, not just the conflicted one: a
+        marker left in any path is a wreck the next session would inherit."""
+        added = self.wrecked_squash()
+
+        G.abort_merge(self.dir, added)
+
+        texts = self.worktree_texts()
+        self.assertIn("shared.txt", texts, "the conflicted file vanished entirely")
+        for rel, text in texts.items():
+            for marker in self.MARKERS:
+                self.assertNotIn(marker, text, f"conflict marker left in {rel}")
+        self.assertEqual(self.read("shared.txt"), "trunk\n",
+                         "worktree not restored to the trunk version")
+
+    # -- unchanged HEAD ----------------------------------------------------
+    def test_cleanup_leaves_head_at_the_pre_merge_trunk_commit(self):
+        """Cleanup moves the index and the worktree and nothing else: no commit,
+        no reset, no branch switch — HEAD is still the trunk commit the merge
+        started from, with the same single-parent history."""
+        added = self.wrecked_squash()
+        commits_before = self._git("rev-list", "--count", "HEAD").strip()
+
+        G.abort_merge(self.dir, added)
+
+        self.assertEqual(self.head(), self.trunk_sha, "HEAD moved during cleanup")
+        self.assertEqual(self._git("rev-parse", "--abbrev-ref", "HEAD").strip(),
+                         self.TRUNK, "cleanup switched branch")
+        self.assertEqual(self._git("rev-list", "--count", "HEAD").strip(),
+                         commits_before, "cleanup created or dropped a commit")
+        self.assertTrue(G.has_branch(self.dir, self.BRANCH),
+                        "cleanup deleted the feature branch")
+
+    # -- dirty revert refusal ---------------------------------------------
+    def test_revert_refuses_an_unstaged_modification(self):
+        """T05: a rollback moves commits, it is never a licence to discard
+        someone's edits. Both facts the operator needs are in the message."""
+        bad_head = self.bad_merge_commit()
+        self._write("merged.txt", "local work that is not committed\n")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            G.revert_to_last_good(self.dir, self.TRUNK)
+
+        msg = str(ctx.exception)
+        self.assertIn("refusing", msg)
+        self.assertIn("merged.txt", msg, "the refusal does not name the dirty path")
+        self.assertIn(f"git -C {self.dir} status", msg,
+                      "the refusal does not give the inspection command")
+        self.assertEqual(self.head(), bad_head, "HEAD moved on a refused revert")
+        self.assertEqual(self.rev(G.LAST_GOOD_TAG), self.trunk_sha,
+                         "pi/last-good moved on a refused revert")
+        self.assertEqual(self.read("merged.txt"),
+                         "local work that is not committed\n",
+                         "the refusal discarded uncommitted work")
+
+    def test_revert_refuses_a_staged_add(self):
+        """Staged work is uncommitted work: `git reset --hard` would drop the
+        index entry as surely as an unstaged edit."""
+        bad_head = self.bad_merge_commit()
+        self._write("staged_work.txt", "staged, never committed\n")
+        self._git("add", "staged_work.txt")
+
+        with self.assertRaises(RuntimeError):
+            G.revert_to_last_good(self.dir, self.TRUNK)
+
+        self.assertEqual(self.head(), bad_head, "HEAD moved on a refused revert")
+        self.assertEqual(self.read("staged_work.txt"), "staged, never committed\n",
+                         "the refusal discarded staged work")
+        self.assertIn("staged_work.txt", self.porcelain(),
+                      "the refused tree was left in a different state")
+
+    def test_revert_refuses_an_untracked_file(self):
+        """`dirty_paths` counts untracked paths too, so a file a concurrent tool
+        dropped in the tree is enough to stop the rollback."""
+        bad_head = self.bad_merge_commit()
+        self._write("written_by_another_tool.txt", "not ours\n")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            G.revert_to_last_good(self.dir, self.TRUNK)
+
+        self.assertIn("written_by_another_tool.txt", str(ctx.exception))
+        self.assertEqual(self.head(), bad_head, "HEAD moved on a refused revert")
+        self.assertTrue((self.dir / "written_by_another_tool.txt").exists(),
+                        "the refusal deleted an untracked file")
+
+    def test_head_parent_fallback_is_refused_on_a_dirty_tree_too(self):
+        """Both `reset --hard` branches sit behind the guard. With no tag the
+        fallback resets to `HEAD~1`, which on a dirty tree would silently eat
+        the wrong commit *and* the local edits."""
+        bad_head = self.bad_merge_commit(tag=False)
+        self._write("merged.txt", "local work, no tag to roll back to\n")
+        self.assertFalse(G.has_tag(self.dir, G.LAST_GOOD_TAG))
+
+        with self.assertRaises(RuntimeError) as ctx:
+            G.revert_to_last_good(self.dir, self.TRUNK)
+
+        self.assertIn("refusing", str(ctx.exception))
+        self.assertEqual(self.head(), bad_head, "HEAD moved on a refused revert")
+        self.assertEqual(self.read("merged.txt"),
+                         "local work, no tag to roll back to\n",
+                         "the fallback discarded uncommitted work")
+
+    def test_revert_runs_once_the_tree_is_clean_again(self):
+        """Control for the four tests above: the same repo, once clean, rolls
+        back — so the refusals above are the guard, not a broken fixture."""
+        self.bad_merge_commit()
+        self._write("merged.txt", "local work\n")
+        with self.assertRaises(RuntimeError):
+            G.revert_to_last_good(self.dir, self.TRUNK)
+
+        self._git("checkout", "--", "merged.txt")   # the operator cleaned up
+        self.assertEqual(self.porcelain(), "", "tree still dirty after the cleanup")
+        reverted_to = G.revert_to_last_good(self.dir, self.TRUNK)
+
+        self.assertEqual(reverted_to, f"tag:{G.LAST_GOOD_TAG}")
+        self.assertEqual(self.head(), self.trunk_sha, "clean revert did not roll back")
+
+    def test_public_revert_entry_point_exposes_no_dirty_bypass(self):
+        """The breaker has no `allow_dirty`: only the human-driven
+        `merge_to_trunk` recovery path may waive the guard, and it propagates
+        that waiver to the revert."""
+        public = inspect.signature(G.revert_to_last_good)
+        guarded = inspect.signature(G._revert_to_last_good)
+
+        self.assertNotIn("allow_dirty", public.parameters,
+                         "the breaker's entry point must not offer a bypass")
+        self.assertIn("allow_dirty", guarded.parameters,
+                         "the human recovery path lost its documented waiver")
+        self.assertIs(guarded.parameters["allow_dirty"].default, False,
+                      "the waiver must default to refusing a dirty tree")
 
 
 if __name__ == "__main__":
