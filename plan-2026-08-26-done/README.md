@@ -31,6 +31,19 @@ remain in `plan-2026-08-26/`.
 
 Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
 
+## Blocked — moved unactioned (1)
+
+- **T61 — queue-audit CLI, NOT executed.** Its whole `Do` is dispatch plus report persistence over
+  `audit_queue(cfg)` / `render_audit(cfg)`, and that report is not in the tree: `harness/workflow/queue_audit.py`
+  is created by T76 and extended by T77, and both leaves are still open in `plan-2026-08-26/`.
+  Verified by grep at move time — no `queue_audit` module, no `audit_queue`/`render_audit`
+  definition, no `cmd_queue_audit`, no `tests/test_queue_audit_inventory.py` or
+  `tests/test_queue_audit_artifacts.py`. T61's own *Out of scope* ("No anomaly logic") rules out
+  writing the audit here, so actioning it would be three features in one session. Unlike the epic
+  archives above this is a real leaf, so the note added to the file deliberately avoids the
+  `DO NOT EXECUTE` phrase the enqueue guard scans for: the card stays enqueueable and becomes
+  actionable once T76 → T77 land. The requirement text is otherwise unmodified.
+
 ## Not moved — caveats
 
 - **T17 — partial, NOT done.** The stderr-drainer code is present in
