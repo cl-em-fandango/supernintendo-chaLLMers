@@ -32,11 +32,19 @@ Implement a pure Python utility file `math_tools.py` in the root of the target r
 
     # Execute harness run-one in container
     res = c.run_harness("run-one", timeout=1800)
-    assert res.returncode == 0, f"Harness run-one failed with rc={res.returncode}:\nStdout: {res.stdout}\nStderr: {res.stderr}"
+    
+    # Check if task reached done
+    if not c.file_exists(f"/workspace/queue/done/{task_id}"):
+        diagnostics = c.get_diagnostic_dump(task_id)
+        pytest.fail(
+            f"Task {task_id} did not land in /workspace/queue/done/.\n"
+            f"Harness execution rc={res.returncode}\n"
+            f"STDOUT:\n{res.stdout}\n"
+            f"STDERR:\n{res.stderr}\n\n"
+            f"DIAGNOSTICS:\n{diagnostics}"
+        )
 
-    # Verify task state in container
     assert not c.file_exists(f"/workspace/queue/active/{task_id}")
-    assert c.file_exists(f"/workspace/queue/done/{task_id}")
     assert c.file_exists(f"/workspace/queue/review/{task_id}.md")
 
     # Verify task.json contents
@@ -83,9 +91,16 @@ Implement a string slugification helper `slug_utils.py` in the root of the targe
     c.write_task(task_id, "Implement String Slugifier", requirements)
 
     res = c.run_harness("run-one", timeout=1800)
-    assert res.returncode == 0, f"Harness run-one failed with rc={res.returncode}:\nStdout: {res.stdout}\nStderr: {res.stderr}"
+    if not c.file_exists(f"/workspace/queue/done/{task_id}"):
+        diagnostics = c.get_diagnostic_dump(task_id)
+        pytest.fail(
+            f"Task {task_id} did not reach done/.\n"
+            f"Harness execution rc={res.returncode}\n"
+            f"STDOUT:\n{res.stdout}\n"
+            f"STDERR:\n{res.stderr}\n\n"
+            f"DIAGNOSTICS:\n{diagnostics}"
+        )
 
-    assert c.file_exists(f"/workspace/queue/done/{task_id}")
     assert c.file_exists("/workspace/target_repo/slug_utils.py")
     assert c.file_exists("/workspace/target_repo/tests/test_slug_utils.py")
 

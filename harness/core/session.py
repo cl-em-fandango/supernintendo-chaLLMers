@@ -100,14 +100,26 @@ class SessionRunner:
         # to aim under; this is the hard stop for a session that ignores it.
         # Handing it down is what makes the check run on every streamed usage
         # value instead of after the session is already over.
-        result = run_pi_session(
-            model=model,
-            workdir=workdir,
-            prompt=full_prompt,
-            out_file=out_file,
-            log=self.log,
-            max_context_tokens=self.cfg.max_prompt_tokens,
-        )
+        import inspect
+        sig = inspect.signature(run_pi_session)
+        kwargs = {
+            "model": model,
+            "workdir": workdir,
+            "prompt": full_prompt,
+            "out_file": out_file,
+            "log": self.log,
+            "max_context_tokens": self.cfg.max_prompt_tokens,
+        }
+        if "ui_context" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            kwargs["ui_context"] = {
+                "task_id": task_id,
+                "stage": stage_value,
+                "slice_id": slice_id,
+                "iteration": iteration,
+                "budget": budget,
+                "model": model,
+            }
+        result = run_pi_session(**kwargs)
         
         # `result.output` is assistant text only (T17 removed the stderr splice),
         # so stderr can never fabricate a verdict here.

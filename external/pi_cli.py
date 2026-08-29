@@ -73,6 +73,132 @@ def _terminate_reap(proc: subprocess.Popen, *, grace_s: float = TERMINATE_GRACE_
         proc.wait()
 
 
+def _format_token_count(n: int) -> str:
+    """Format token count compactly with k suffix if >= 1000."""
+    if n < 1000:
+        return str(n)
+    return f"{n / 1000:.1f}k"
+
+
+def _format_tool_call(e: dict) -> tuple[str, str] | None:
+    """Extract (tool_name, summary) from tool call events."""
+    t = e.get("type")
+    if t not in ("tool_call", "tool_start", "tool_execution"):
+        return None
+
+    tool_name = (
+        e.get("name")
+        or e.get("tool")
+        or e.get("tool_name")
+        or (e.get("call") or {}).get("name")
+        or (e.get("tool_call") or {}).get("name")
+        or "unknown"
+    )
+
+    args = (
+        e.get("input")
+        or e.get("args")
+        or e.get("arguments")
+        or e.get("tool_input")
+        or (e.get("call") or {}).get("args")
+        or (e.get("tool_call") or {}).get("arguments")
+        or {}
+    )
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"raw": args}
+
+    if not isinstance(args, dict):
+        args = {"raw": str(args)}
+
+    summary = ""
+    if "path" in args or "file" in args or "filename" in args:
+        path = args.get("path") or args.get("file") or args.get("filename")
+        summary = f'path="{path}"'
+        if "edits" in args and isinstance(args["edits"], list):
+            summary += f" ({len(args['edits'])} edit{'s' if len(args['edits']) != 1 else ''})"
+    elif "command" in args or "cmd" in args:
+        cmd = str(args.get("command") or args.get("cmd"))
+        if len(cmd) > 60:
+            cmd = cmd[:57] + "..."
+        summary = f'command="{cmd}"'
+    elif "query" in args:
+        summary = f'query="{args["query"]}"'
+    else:
+        items = [f"{k}={str(v)[:20]!r}" for k, v in list(args.items())[:3]]
+        summary = " ".join(items) if items else ""
+
+    return tool_name, summary
+
+
+def _format_tool_result(e: dict) -> tuple[str, str] | None:
+    """Extract (tool_name, summary) from tool result events."""
+    t = e.get("type")
+    if t not in ("tool_result", "tool_end"):
+        return None
+
+    tool_name = (
+        e.get("name")
+        or e.get("tool")
+        or e.get("tool_name")
+        or "tool"
+    )
+
+    res = (
+        e.get("result")
+        or e.get("output")
+        or e.get("content")
+        or e.get("tool_result")
+        or ""
+    )
+
+    is_err = bool(e.get("is_error") or e.get("error"))
+
+    if isinstance(res, list):
+        parts = []
+        for p in res:
+            if isinstance(p, dict) and "text" in p:
+                parts.append(p["text"])
+            else:
+                parts.append(str(p))
+        res = "\n".join(parts)
+    elif not isinstance(res, str):
+        res = str(res)
+
+    lines = res.strip().splitlines()
+    if is_err:
+        summary = f"error: {lines[0][:60] if lines else 'failed'}"
+    elif len(lines) > 1:
+        summary = f"returned {len(lines)} lines"
+    elif lines:
+        summary = lines[0][:60]
+    else:
+        summary = "ok"
+
+    return tool_name, summary
+
+
+def _format_thinking_summary(text: str) -> str | None:
+    """Extract a concise one-line summary from assistant thinking/text."""
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+    if cleaned.upper().startswith("VERDICT:") or cleaned.lower().startswith("## summary") or cleaned.lower().startswith("# summary"):
+        return None
+    cleaned = re.sub(r"^[#*\-\s>]+", "", cleaned)
+    first_line = cleaned.split("\n")[0].strip()
+    if not first_line:
+        return None
+    if first_line.upper().startswith("VERDICT:") or first_line.lower() == "summary":
+        return None
+    if len(first_line) > 80:
+        first_line = first_line[:77] + "..."
+    return f'"{first_line}"'
+
+
 def run_pi_session(
     *,
     model: str,
@@ -81,6 +207,7 @@ def run_pi_session(
     out_file: Path,
     log,
     max_context_tokens: int | None = None,
+    ui_context: dict | None = None,
 ) -> PiSessionResult:
     """Run a pi subprocess and return the raw result.
     
@@ -119,7 +246,13 @@ def run_pi_session(
     over_context_budget = False
 
     # heartbeat state (shared with the heartbeat thread)
-    hb = {"last_event": t0, "events": 0, "peak": 0}
+    hb = {
+        "last_event": t0,
+        "last_heartbeat": t0,
+        "events": 0,
+        "peak": 0,
+        "current_op": "starting",
+    }
     stop_hb = threading.Event()
     stop_stderr = threading.Event()
     stop_watchdog = threading.Event()
@@ -127,11 +260,45 @@ def run_pi_session(
     # wall-clock timeout apart from any other crash.
     killed_by_watchdog = threading.Event()
 
+    spinner_chars = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
     def heartbeat():
-        while not stop_hb.wait(HEARTBEAT_S):
-            idle = time.monotonic() - hb["last_event"]
-            log(f"  … heartbeat: {idle:.0f}s since last event, "
-                 f"{hb['events']} events, peak={hb['peak']} tok")
+        while not stop_hb.wait(0.15):
+            now = time.monotonic()
+            idle = now - hb["last_event"]
+            if now - hb["last_heartbeat"] >= HEARTBEAT_S:
+                hb["last_heartbeat"] = now
+                log(f"  … heartbeat: {idle:.0f}s since last event, "
+                    f"{hb['events']} events, peak={hb['peak']} tok")
+
+            if hasattr(log, "status") and callable(getattr(log, "status", None)):
+                elapsed = now - t0
+                spin_idx = int(elapsed / 0.15) % len(spinner_chars)
+                sp = spinner_chars[spin_idx]
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                time_str = f"{mins:02d}:{secs:02d}"
+
+                ctx_parts = []
+                if ui_context:
+                    if "stage" in ui_context and ui_context["stage"]:
+                        ctx_parts.append(str(ui_context["stage"]).upper())
+                    if "slice_id" in ui_context and ui_context["slice_id"]:
+                        ctx_parts.append(f"slice {ui_context['slice_id']}")
+                prefix = f"[{' '.join(ctx_parts)}] " if ctx_parts else ""
+
+                tok_str = f"peak={_format_token_count(hb['peak'])}"
+                if max_context_tokens:
+                    pct = (hb['peak'] / max_context_tokens * 100) if max_context_tokens else 0
+                    tok_str += f"/{_format_token_count(max_context_tokens)} ({pct:.0f}%)"
+                elif ui_context and ui_context.get("budget"):
+                    b = ui_context["budget"]
+                    pct = (hb['peak'] / b * 100) if b else 0
+                    tok_str += f"/{_format_token_count(b)} ({pct:.0f}%)"
+
+                op = hb["current_op"]
+                status_line = f"{sp} {prefix}{tok_str} | {op} | {time_str}"
+                log.status(status_line)
 
     hb_thread = threading.Thread(target=heartbeat, daemon=True)
     hb_thread.start()
@@ -229,14 +396,39 @@ def run_pi_session(
             if not isinstance(e, dict):
                     continue
             t = e.get("type")
-            if t == "message_end":
+            if t in ("tool_call", "tool_start", "tool_execution"):
+                info = _format_tool_call(e)
+                if info:
+                    tool_name, summary = info
+                    hb["current_op"] = f"tool: {tool_name} {summary}".strip()
+                    log(f"  ⚙ [TOOL:{tool_name}] {summary}")
+            elif t in ("tool_result", "tool_end"):
+                info = _format_tool_result(e)
+                if info:
+                    tool_name, summary = info
+                    hb["current_op"] = "waiting for LLM"
+                    log(f"  ✓ [TOOL:{tool_name}] {summary}")
+            elif t == "message_end":
                 msg = e.get("message") or {}
-                if measure(msg.get("usage")):
+                usage = msg.get("usage")
+                if measure(usage):
                     break
+                if isinstance(usage, dict):
+                    in_tok = int(usage.get("inputTokens") or usage.get("prompt_tokens") or 0)
+                    out_tok = int(usage.get("outputTokens") or usage.get("completion_tokens") or 0)
+                    if in_tok or out_tok:
+                        tot_tok = int(usage.get("totalTokens") or usage.get("total_tokens") or (in_tok + out_tok))
+                        log(f"  • [LLM] in={_format_token_count(in_tok)} out={_format_token_count(out_tok)} tok (turn total={_format_token_count(tot_tok)}, peak={_format_token_count(peak)})")
                 if msg.get("role") == "assistant":
+                    content_text = ""
                     for c in msg.get("content", []):
                         if isinstance(c, dict) and c.get("type") == "text":
-                            text_parts.append(c.get("text", ""))
+                            txt = c.get("text", "")
+                            text_parts.append(txt)
+                            content_text += txt
+                    summary = _format_thinking_summary(content_text)
+                    if summary:
+                        log(f"  • [THINK] {summary}")
             elif t == "agent_end":
                 for m in e.get("messages", []):
                     if measure((m or {}).get("usage")):
@@ -265,6 +457,8 @@ def run_pi_session(
     finally:
         stop_hb.set()
         hb_thread.join(timeout=2)
+        if hasattr(log, "clear_status") and callable(getattr(log, "clear_status", None)):
+            log.clear_status()
         stop_watchdog.set()
         watchdog_thread.join(timeout=WATCHDOG_GRACE_S)
         # The child is reaped by now, so its stderr is at EOF and this join

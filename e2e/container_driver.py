@@ -15,6 +15,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BASE_IMAGE_TAG = "harness-e2e-base:latest"
 STARTPOINT_IMAGE_TAG = "harness-e2e-startpoint:latest"
 
+# Default models matching the pre-configured e2e-test-agent
+DEFAULT_TW_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter"
+DEFAULT_IMP_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer"
+DEFAULT_ASSESSOR_MODEL = "Ornith-1.5-35B-Q6_K"
+
 
 def get_container_engine() -> str:
     """Find podman or docker on PATH."""
@@ -40,11 +45,40 @@ class ContainerExecutionResult:
 class EphemeralContainer:
     """An isolated container instance spawned from the snapshot startpoint."""
 
-    def __init__(self, engine: str, container_id: str, container_name: str):
+    def __init__(
+        self,
+        engine: str,
+        container_id: str,
+        container_name: str,
+        tw_model: str = DEFAULT_TW_MODEL,
+        imp_model: str = DEFAULT_IMP_MODEL,
+        assessor: str = DEFAULT_ASSESSOR_MODEL,
+    ):
         self.engine = engine
         self.container_id = container_id
         self.container_name = container_name
+        self.tw_model = tw_model
+        self.imp_model = imp_model
+        self.assessor = assessor
         self.workspace_dir = "/workspace"
+
+    def is_running(self) -> bool:
+        """Check if the container is currently running."""
+        res = subprocess.run(
+            [self.engine, "inspect", "--format", "{{.State.Running}}", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        return res.returncode == 0 and res.stdout.strip().lower() == "true"
+
+    def get_logs(self) -> str:
+        """Retrieve container runtime stdout/stderr."""
+        res = subprocess.run(
+            [self.engine, "logs", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        return res.stdout + ("\n" + res.stderr if res.stderr else "")
 
     def exec(
         self,
@@ -56,12 +90,29 @@ class EphemeralContainer:
         timeout: int = 1800,
     ) -> ContainerExecutionResult:
         """Execute a command inside the running container."""
+        if not self.is_running():
+            logs = self.get_logs()
+            raise RuntimeError(
+                f"Container '{self.container_name}' is not running. Logs:\n{logs}"
+            )
+
         cmd = [self.engine, "exec"]
         if workdir:
             cmd.extend(["-w", workdir])
+
+        default_env = {
+            "PYTHONPATH": "/opt/harness-frozen",
+            "HARNESS_CONFIG": "/workspace/config.json",
+            "PI_CODING_AGENT_DIR": "/home/harnessuser/.pi/agent",
+            "HOME": "/home/harnessuser",
+            "HARNESS_PI_PROVIDER": "llama-swap",
+            "DISABLE_FIREWALL": "1",
+        }
         if env:
-            for k, v in env.items():
-                cmd.extend(["-e", f"{k}={v}"])
+            default_env.update(env)
+
+        for k, v in default_env.items():
+            cmd.extend(["-e", f"{k}={v}"])
 
         if isinstance(command, str):
             cmd.extend([self.container_name, "bash", "-c", command])
@@ -91,8 +142,9 @@ class EphemeralContainer:
             input=content,
             text=True,
             capture_output=True,
-            check=True,
         )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to write to {container_path}: {proc.stderr}")
 
     def read_file(self, container_path: str) -> str:
         """Read a file from inside the container."""
@@ -103,6 +155,43 @@ class EphemeralContainer:
         """Check if a file exists in the container."""
         res = self.exec(["test", "-e", container_path])
         return res.returncode == 0
+
+    def write_config(
+        self,
+        tw_model: str | None = None,
+        imp_model: str | None = None,
+        assessor: str | None = None,
+    ) -> None:
+        """Write a clean, concrete config.json inside the container."""
+        tw = tw_model or self.tw_model
+        imp = imp_model or self.imp_model
+        a = assessor or self.assessor
+        cfg_dict = {
+            "workDir": "/workspace",
+            "logDir": "/workspace/logs",
+            "statsDir": "/workspace/stats",
+            "queueDir": "/workspace/queue",
+            "tokenBudget": 200000,
+            "maxSpecKickbacks": 3,
+            "maxSliceImplement": 5,
+            "maxSliceTechReview": 5,
+            "maxSliceFuncReview": 5,
+            "maxSliceCheckLoops": 3,
+            "autonomousQueueTarget": 5,
+            "trunkBranch": "pi/trunk",
+            "taskProvider": "directory",
+            "directoryProvider": {
+                "pendingDir": "/workspace/queue/pending",
+                "claimedDir": "/workspace/queue/claimed",
+            },
+            "models": {
+                "technicalWriter": tw,
+                "implementer": imp,
+                "assessor": a,
+            },
+        }
+        self.write_file(f"{self.workspace_dir}/config.json", json.dumps(cfg_dict, indent=2))
+        self.write_file(f"{self.workspace_dir}/target_repo/config.json", json.dumps(cfg_dict, indent=2))
 
     def write_task(self, task_id: str, title: str, requirements: str) -> None:
         """Create a new task in /workspace/queue/pending/<task_id>.md."""
@@ -121,6 +210,24 @@ Target repository: {target_repo}
         cmd = ["python3", "/opt/harness-frozen/harness.py", *args]
         return self.exec(cmd, workdir=self.workspace_dir, check=check, timeout=timeout)
 
+    def get_diagnostic_dump(self, task_id: str) -> str:
+        """Collect diagnostic logs and status for troubleshooting a failed test."""
+        dump_parts = []
+        if self.file_exists("/workspace/logs/harness.log"):
+            dump_parts.append("=== /workspace/logs/harness.log ===")
+            dump_parts.append(self.read_file("/workspace/logs/harness.log"))
+
+        review_path = f"/workspace/queue/review/{task_id}.md"
+        if self.file_exists(review_path):
+            dump_parts.append(f"=== {review_path} ===")
+            dump_parts.append(self.read_file(review_path))
+
+        status_res = self.run_harness("status")
+        dump_parts.append("=== harness.py status ===")
+        dump_parts.append(status_res.stdout)
+
+        return "\n".join(dump_parts)
+
     def destroy(self) -> None:
         """Stop and remove the container instance to revert to clean state."""
         subprocess.run(
@@ -137,77 +244,72 @@ class ContainerLifecycleManager:
         self.engine = engine or get_container_engine()
 
     def build_base_image(self, image_tag: str = BASE_IMAGE_TAG) -> None:
-        """Build the base container image with current codebase version."""
+        """Step 1: Build base container image with current source."""
         dockerfile_path = REPO_ROOT / "docker" / "Dockerfile"
         if not dockerfile_path.exists():
             raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
 
         print(f"==> [E2E] Building base container image '{image_tag}' via {self.engine}...")
-        subprocess.run(
+        proc = subprocess.run(
             [
                 self.engine, "build",
                 "-t", image_tag,
                 "-f", str(dockerfile_path),
                 str(REPO_ROOT),
             ],
-            check=True,
+            capture_output=True,
+            text=True,
         )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to build base container image {image_tag}:\n"
+                f"STDOUT:\n{proc.stdout}\n"
+                f"STDERR:\n{proc.stderr}"
+            )
 
     def create_snapshot_startpoint(
         self,
         base_tag: str = BASE_IMAGE_TAG,
         snapshot_tag: str = STARTPOINT_IMAGE_TAG,
     ) -> None:
-        """Initialize folder structure inside a container and commit as snapshot start point."""
+        """Step 2 & 3: Create folder structure in container, copy agent config, and save snapshot startpoint."""
         temp_builder_name = f"harness-builder-{uuid.uuid4().hex[:8]}"
         print(f"==> [E2E] Creating ephemeral workspace structure in builder container '{temp_builder_name}'...")
 
-        # Run temporary container
-        subprocess.run(
+        # Spawn temporary builder container with host network
+        proc = subprocess.run(
             [
                 self.engine, "run", "-d",
+                "--network", "host",
                 "--name", temp_builder_name,
+                "--entrypoint", "/bin/sh",
                 base_tag,
-                "sleep", "300",
+                "-c", "tail -f /dev/null",
             ],
-            check=True,
             capture_output=True,
+            text=True,
         )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to start builder container: {proc.stderr}")
 
         try:
-            # Script to initialize folder structure and mock target repo
             init_script = """#!/usr/bin/env bash
 set -euo pipefail
 WORKSPACE="/workspace"
 mkdir -p "${WORKSPACE}"/{queue/pending,queue/claimed,queue/active,queue/done,queue/parked,queue/review,queue/failed,logs,stats,target_repo}
+mkdir -p /home/harnessuser/.pi/agent /root/.pi/agent
 
-# Configure config.json
-cat << 'EOF' > "${WORKSPACE}/config.json"
-{
-  "workDir": "/workspace",
-  "logDir": "/workspace/logs",
-  "statsDir": "/workspace/stats",
-  "queueDir": "/workspace/queue",
-  "tokenBudget": 200000,
-  "maxSpecKickbacks": 3,
-  "maxSliceImplement": 5,
-  "maxSliceTechReview": 5,
-  "maxSliceFuncReview": 5,
-  "maxSliceCheckLoops": 3,
-  "autonomousQueueTarget": 5,
-  "trunkBranch": "pi/trunk",
-  "taskProvider": "directory",
-  "directoryProvider": {
-    "pendingDir": "/workspace/queue/pending",
-    "claimedDir": "/workspace/queue/claimed"
-  },
-  "models": {
-    "technicalWriter": "${PI_E2E_MODEL:-qwen2.5-coder:14b}",
-    "implementer": "${PI_E2E_MODEL:-qwen2.5-coder:14b}",
-    "assessor": "${PI_E2E_ASSESSOR:-qwen2.5-coder:14b}"
-  }
-}
-EOF
+# Copy e2e agent config into ~/.pi/agent for both users
+if [ -d /opt/harness-frozen/e2e/e2e-test-agent ]; then
+  cp -r /opt/harness-frozen/e2e/e2e-test-agent/* /home/harnessuser/.pi/agent/
+  cp -r /opt/harness-frozen/e2e/e2e-test-agent/* /root/.pi/agent/
+fi
+
+# Configure global git safety for in-container executions
+git config --global user.name "E2E Tester"
+git config --global user.email "tester@harness.local"
+git config --global init.defaultBranch "pi/trunk"
+git config --global --add safe.directory "*"
 
 # Initialize target_repo as a valid git repository with harness skeleton for gate checks
 cd "${WORKSPACE}/target_repo"
@@ -218,7 +320,6 @@ git config user.email "tester@harness.local"
 cp -r /opt/harness-frozen/harness ./harness
 cp -r /opt/harness-frozen/external ./external
 cp /opt/harness-frozen/harness.py ./harness.py
-cp "${WORKSPACE}/config.json" ./config.json
 echo "# Target Project" > README.md
 if [ -f /opt/harness-frozen/pyproject.toml ]; then
   cp /opt/harness-frozen/pyproject.toml ./pyproject.toml
@@ -228,61 +329,116 @@ git add -A
 git commit -m "chore: initial sandbox project setup"
 git tag -f pi/last-good
 
-chown -R harnessuser:harnessuser "${WORKSPACE}"
+chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
 """
-            subprocess.run(
+            exec_res = subprocess.run(
                 [self.engine, "exec", "-i", temp_builder_name, "bash", "-c", init_script],
-                check=True,
                 capture_output=True,
+                text=True,
             )
+            if exec_res.returncode != 0:
+                raise RuntimeError(
+                    f"Workspace initialization inside builder failed:\n"
+                    f"Stdout: {exec_res.stdout}\nStderr: {exec_res.stderr}"
+                )
 
-            # Commit the configured container as the snapshot startpoint
+            # Step 3: Save container snapshot as start point
             print(f"==> [E2E] Saving container snapshot as '{snapshot_tag}'...")
-            subprocess.run(
+            commit_res = subprocess.run(
                 [self.engine, "commit", temp_builder_name, snapshot_tag],
-                check=True,
                 capture_output=True,
+                text=True,
             )
+            if commit_res.returncode != 0:
+                raise RuntimeError(f"Failed to commit container snapshot: {commit_res.stderr}")
+
         finally:
             subprocess.run([self.engine, "rm", "-f", temp_builder_name], check=False, capture_output=True)
 
     def spawn_ephemeral_container(
         self,
         snapshot_tag: str = STARTPOINT_IMAGE_TAG,
-        model: str = "qwen2.5-coder:14b",
-        assessor: str = "qwen2.5-coder:14b",
+        tw_model: str = DEFAULT_TW_MODEL,
+        imp_model: str = DEFAULT_IMP_MODEL,
+        assessor: str = DEFAULT_ASSESSOR_MODEL,
         provider: str = "llama-swap",
     ) -> EphemeralContainer:
-        """Spawn a fresh ephemeral container instance from the startpoint snapshot."""
+        """Step 4: Spawn fresh ephemeral container instance from the snapshot startpoint."""
         container_name = f"harness-e2e-{uuid.uuid4().hex[:8]}"
 
         flags = [
             "-d",
             "--name", container_name,
-            "--cap-add=NET_ADMIN",
-            "--cap-add=NET_RAW",
             "-e", f"HARNESS_PI_PROVIDER={provider}",
-            "-e", f"PI_E2E_MODEL={model}",
+            "-e", f"PI_E2E_TW_MODEL={tw_model}",
+            "-e", f"PI_E2E_IMP_MODEL={imp_model}",
             "-e", f"PI_E2E_ASSESSOR={assessor}",
+            "-e", "HARNESS_CONFIG=/workspace/config.json",
+            "-e", "PYTHONPATH=/opt/harness-frozen",
+            "-e", "PI_CODING_AGENT_DIR=/home/harnessuser/.pi/agent",
+            "-e", "HOME=/home/harnessuser",
+            "-e", "DISABLE_FIREWALL=1",
         ]
 
-        if self.engine == "podman":
-            flags.extend([
-                "--userns=keep-id",
-                "--add-host=host.containers.internal:host-gateway",
-            ])
-        else:
-            flags.extend([
-                "--add-host=host.docker.internal:host-gateway",
-            ])
+        # Networking configuration: default to host networking for direct access to LAN/host model servers
+        net_mode = os.environ.get("CONTAINER_NETWORK", "host")
+        if net_mode:
+            flags.extend(["--network", net_mode])
+        if net_mode != "host":
+            if self.engine == "podman":
+                flags.extend([
+                    "--add-host=host.containers.internal:host-gateway",
+                ])
+            else:
+                flags.extend([
+                    "--add-host=host.docker.internal:host-gateway",
+                ])
 
-        # Stage writable host ~/.pi credentials if present
-        host_pi_dir = Path.home() / ".pi" / "agent"
-        if host_pi_dir.exists() and (host_pi_dir / "auth.json").exists():
-            flags.extend(["-v", f"{host_pi_dir}:/home/harnessuser/.pi/agent:ro,z"])
+        # Override entrypoint to ensure reliable long-running daemon
+        cmd = [
+            self.engine, "run",
+            *flags,
+            "--entrypoint", "/bin/sh",
+            snapshot_tag,
+            "-c", "tail -f /dev/null",
+        ]
 
-        cmd = [self.engine, "run", *flags, snapshot_tag, "sleep", "3600"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to spawn ephemeral container:\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Error: {proc.stderr}\n"
+                f"Output: {proc.stdout}"
+            )
+
         container_id = proc.stdout.strip()
+        container = EphemeralContainer(
+            self.engine,
+            container_id,
+            container_name,
+            tw_model=tw_model,
+            imp_model=imp_model,
+            assessor=assessor,
+        )
 
-        return EphemeralContainer(self.engine, container_id, container_name)
+        # Wait up to 5 seconds to confirm container is healthy and running
+        running = False
+        for _ in range(10):
+            if container.is_running():
+                running = True
+                break
+            time.sleep(0.5)
+
+        if not running:
+            logs = container.get_logs()
+            container.destroy()
+            raise RuntimeError(
+                f"Container '{container_name}' failed to stay running after start.\n"
+                f"Container logs:\n{logs}"
+            )
+
+        # Write concrete config.json inside the running container with resolved models
+        container.write_config(tw_model=tw_model, imp_model=imp_model, assessor=assessor)
+
+        return container

@@ -125,6 +125,46 @@ class LogSinkTest(unittest.TestCase):
         warnings = [ln for ln in err.getvalue().splitlines() if "WARNING" in ln]
         self.assertEqual(len(warnings), 1, f"expected one warning, got {warnings}")
 
+    def test_status_on_tty_writes_in_place_without_file_record(self):
+        sink = LogSink(self.log, echo=True, force_tty=True)
+        self.addCleanup(sink.close)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            sink.status("working on slice 1.1")
+        self.assertEqual(out.getvalue(), "\r\033[Kworking on slice 1.1")
+        self.assertFalse(self.log.exists(), "status line must not be written to log file")
+
+    def test_status_on_non_tty_is_silent_noop(self):
+        sink = LogSink(self.log, echo=True, force_tty=False)
+        self.addCleanup(sink.close)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            sink.status("working on slice 1.1")
+        self.assertEqual(out.getvalue(), "")
+        self.assertFalse(self.log.exists())
+
+    def test_log_line_clears_active_statusline_on_tty(self):
+        sink = LogSink(self.log, echo=True, force_tty=True)
+        self.addCleanup(sink.close)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            sink.status("transient spinner")
+            sink("permanent log line")
+        self.assertEqual(out.getvalue(), "\r\033[Ktransient spinner\r\033[Kpermanent log line\n")
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith("permanent log line"))
+
+    def test_clear_status_erases_line_on_tty(self):
+        sink = LogSink(self.log, echo=True, force_tty=True)
+        self.addCleanup(sink.close)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            sink.status("transient spinner")
+            sink.clear_status()
+        self.assertEqual(out.getvalue(), "\r\033[Ktransient spinner\r\033[K")
+        self.assertFalse(self.log.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

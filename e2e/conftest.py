@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import os
-import shutil
-from pathlib import Path
 from typing import Generator
 
 import pytest
 
 from .container_driver import (
     BASE_IMAGE_TAG,
+    DEFAULT_ASSESSOR_MODEL,
+    DEFAULT_IMP_MODEL,
+    DEFAULT_TW_MODEL,
     STARTPOINT_IMAGE_TAG,
     ContainerLifecycleManager,
     EphemeralContainer,
@@ -31,7 +32,7 @@ def e2e_container_snapshot(container_engine: str) -> str:
     """Session fixture: Builds the base image, sets up the workspace structure, and commits snapshot.
 
     Step 1: Create container and add current version of source.
-    Step 2: Create folder structure in container.
+    Step 2: Create folder structure in container and copy agent config to ~/.pi/agent.
     Step 3: Save container snapshot as 'start point' for each test in the e2e suite.
     """
     manager = ContainerLifecycleManager(engine=container_engine)
@@ -57,14 +58,16 @@ def ephemeral_container(
 
     Step 4: Execute test in the container, report result, then revert container to clean by destroying instance.
     """
-    model = os.environ.get("PI_E2E_MODEL", "qwen2.5-coder:14b")
-    assessor = os.environ.get("PI_E2E_ASSESSOR", model)
+    tw_model = os.environ.get("PI_E2E_TW_MODEL", os.environ.get("PI_E2E_MODEL", DEFAULT_TW_MODEL))
+    imp_model = os.environ.get("PI_E2E_IMP_MODEL", os.environ.get("PI_E2E_MODEL", DEFAULT_IMP_MODEL))
+    assessor = os.environ.get("PI_E2E_ASSESSOR", DEFAULT_ASSESSOR_MODEL)
     provider = os.environ.get("HARNESS_PI_PROVIDER", "llama-swap")
 
     manager = ContainerLifecycleManager(engine=container_engine)
     container = manager.spawn_ephemeral_container(
         snapshot_tag=e2e_container_snapshot,
-        model=model,
+        tw_model=tw_model,
+        imp_model=imp_model,
         assessor=assessor,
         provider=provider,
     )

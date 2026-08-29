@@ -30,19 +30,54 @@ class LogSink:
     """
 
     def __init__(self, path: Path | None, echo: bool = True,
-                 max_bytes: int = DEFAULT_MAX_BYTES) -> None:
+                 max_bytes: int = DEFAULT_MAX_BYTES,
+                 force_tty: bool | None = None) -> None:
         self.path = path
         self.echo = echo
         self.max_bytes = max_bytes
+        self._force_tty = force_tty
+        self._has_status = False
         self._handle = None
         self._warned = False
+
+    def _is_tty(self) -> bool:
+        if self._force_tty is not None:
+            return self._force_tty
+        return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def status(self, line: str = "") -> None:
+        """Update the ephemeral in-place statusline on TTY. No-op on non-TTY."""
+        if not self.echo or not self._is_tty():
+            return
+        try:
+            sys.stdout.write(f"\r\033[K{line}")
+            sys.stdout.flush()
+            self._has_status = bool(line)
+        except OSError as exc:
+            self._warn(exc)
+
+    def clear_status(self) -> None:
+        """Erase any active ephemeral statusline from the terminal."""
+        if not self.echo or not self._is_tty() or not self._has_status:
+            return
+        try:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+            self._has_status = False
+        except OSError as exc:
+            self._warn(exc)
 
     def __call__(self, line: str = "") -> None:
         """Echo `line` and append it, timestamped, to the log file."""
         record = f"[{self._timestamp()}] {line}\n".encode(LOG_ENCODING)
         if self.echo:
             try:
-                print(line, flush=True)
+                if self._is_tty() and self._has_status:
+                    sys.stdout.write(f"\r\033[K{line}\n")
+                    sys.stdout.flush()
+                    self._has_status = False
+                else:
+                    print(line, flush=True)
             except OSError as exc:
                 self._warn(exc)
         self._append(record)
