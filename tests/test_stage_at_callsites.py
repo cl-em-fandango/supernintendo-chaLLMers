@@ -147,7 +147,7 @@ class RecordingRunner:
         self.stages.append(stage)
         out_file = Path(workdir) / f".pi-session-{stage}-{len(self.stages)}.out"
         out_file.write_text("VERDICT: done")
-        return SessionResult(ok=True, verdict="done", peak_tokens=0,
+        return SessionResult(ok=True, verdict=Verdict.PASS, peak_tokens=0,
                              duration_s=0.0, output="VERDICT: done",
                              out_file=out_file, crashed=False)
 

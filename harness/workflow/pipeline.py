@@ -457,6 +457,7 @@ class Pipeline:
                 # `_implement`'s "keep the first note" guard stick (T56).
                 feedback = (ctx.task_dir / "artifacts" / "progress"
                             / f"slice-{sid}-review.md")
+                feedback.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(r.out_file, feedback)
                 # A fix session is a code edit, so it runs on the implementer
                 # regardless of which review asked for it (T55). `model` above
