@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -23,6 +24,238 @@ WATCHDOG_GRACE_S = 5      # kill-then-reap grace for the wall-clock watchdog
 TERMINATE_GRACE_S = 5     # SIGTERM-then-SIGKILL grace in the shared stop helper
 TIMEOUT_ERR_PREFIX = "wall-clock timeout"  # err prefix that marks a timeout exit
 OVER_CAP_ERR_PREFIX = "over context cap"   # err prefix that marks an over-cap stop
+
+# Concurrency limit and child process tracking (belt and braces)
+DEFAULT_MAX_CONCURRENT_PI: int = 1
+_max_concurrent_pi: int = int(os.environ.get("HARNESS_MAX_CONCURRENT_PI", DEFAULT_MAX_CONCURRENT_PI))
+_spawn_lock = threading.RLock()
+
+
+@dataclass
+class SpawnedPiProcess:
+    """Metadata for a spawned pi child process."""
+    pid: int
+    proc: subprocess.Popen
+    started_at: float
+    cmd: list[str]
+    workdir: Path
+    model: str = ""
+
+
+_TRACKED_PI_PROCESSES: dict[int, SpawnedPiProcess] = {}
+
+
+def get_max_concurrent_pi() -> int:
+    """Get the current hard limit on concurrent pi instances."""
+    return _max_concurrent_pi
+
+
+def set_max_concurrent_pi(limit: int) -> None:
+    """Set the hard limit on concurrent pi instances (minimum 1)."""
+    global _max_concurrent_pi
+    _max_concurrent_pi = max(1, int(limit))
+
+
+def register_pi_process(
+    proc: subprocess.Popen,
+    *,
+    cmd: list[str],
+    workdir: str | Path,
+    model: str = "",
+) -> SpawnedPiProcess:
+    """Register a newly spawned pi child process in the active tracker."""
+    with _spawn_lock:
+        sp = SpawnedPiProcess(
+            pid=proc.pid,
+            proc=proc,
+            started_at=time.monotonic(),
+            cmd=list(cmd),
+            workdir=Path(workdir),
+            model=model,
+        )
+        _TRACKED_PI_PROCESSES[proc.pid] = sp
+        return sp
+
+
+def unregister_pi_process(pid: int) -> None:
+    """Unregister a pi child process when finished."""
+    with _spawn_lock:
+        _TRACKED_PI_PROCESSES.pop(pid, None)
+
+
+def get_active_pi_processes() -> list[SpawnedPiProcess]:
+    """Return all currently active tracked pi child processes, pruning exited ones."""
+    with _spawn_lock:
+        active = []
+        for pid, sp in list(_TRACKED_PI_PROCESSES.items()):
+            if sp.proc.poll() is None:
+                active.append(sp)
+            else:
+                _TRACKED_PI_PROCESSES.pop(pid, None)
+        return active
+
+
+def get_child_pi_pids() -> list[int]:
+    """Return PIDs of all currently active tracked pi child processes."""
+    return [p.pid for p in get_active_pi_processes()]
+
+
+def find_child_pi_pids(parent_pid: int | None = None) -> list[int]:
+    """Find PIDs of direct child processes of the current process running `pi`.
+
+    Inspects /proc on Linux to identify all child processes whose executable or
+    arguments match `pi`. Falls back to tracked child PIDs if /proc is unavailable.
+    """
+    if parent_pid is None:
+        parent_pid = os.getpid()
+    child_pids: list[int] = []
+    proc_dir = Path("/proc")
+    if proc_dir.exists():
+        try:
+            for entry in proc_dir.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                pid = int(entry.name)
+                try:
+                    stat_file = entry / "stat"
+                    content = stat_file.read_text()
+                    rparen = content.rfind(")")
+                    if rparen == -1:
+                        continue
+                    fields = content[rparen + 1:].split()
+                    ppid = int(fields[1])
+                    if ppid != parent_pid:
+                        continue
+
+                    comm_file = entry / "comm"
+                    comm = comm_file.read_text().strip() if comm_file.exists() else ""
+
+                    cmdline_file = entry / "cmdline"
+                    cmdline = cmdline_file.read_bytes().split(b"\x00") if cmdline_file.exists() else []
+                    args = [c.decode("utf-8", errors="replace") for c in cmdline if c]
+
+                    is_pi = (
+                        comm == "pi"
+                        or any(Path(arg).name == "pi" for arg in args)
+                    )
+                    if is_pi:
+                        child_pids.append(pid)
+                except (OSError, ValueError, IndexError):
+                    continue
+            return child_pids
+        except OSError:
+            pass
+
+    return get_child_pi_pids()
+
+
+def _terminate_pid(pid: int, *, grace_s: float = TERMINATE_GRACE_S) -> None:
+    """Terminate an untracked child process by PID: SIGTERM first, then SIGKILL."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+    t_end = time.monotonic() + grace_s
+    while time.monotonic() < t_end:
+        try:
+            res, _ = os.waitpid(pid, os.WNOHANG)
+            if res != 0:
+                return
+        except ChildProcessError:
+            return
+        except OSError:
+            pass
+        time.sleep(0.05)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
+
+
+def identify_spurious_pi_processes(
+    expected_pid: int | None = None,
+    max_allowed: int | None = None,
+) -> list[int]:
+    """Identify PIDs of any spurious or excess pi instances.
+
+    A process is spurious if:
+    1. It is a child pi process on the system not in our active tracked registry.
+    2. An `expected_pid` is specified and the process PID != `expected_pid`.
+    3. The number of active running pi instances exceeds `max_allowed` (default: `get_max_concurrent_pi()`),
+       in which case surplus instances (beyond the expected or oldest allowed) are spurious.
+    """
+    if max_allowed is None:
+        max_allowed = get_max_concurrent_pi()
+
+    with _spawn_lock:
+        active = get_active_pi_processes()
+        tracked_pids = {p.pid for p in active}
+        system_child_pids = set(find_child_pi_pids())
+
+        spurious: list[int] = []
+
+        # 1. Any system child pi process not in tracked processes is spurious
+        for pid in system_child_pids:
+            if pid not in tracked_pids:
+                spurious.append(pid)
+
+        # 2. If expected_pid is specified, anything else is spurious
+        if expected_pid is not None:
+            for p in active:
+                if p.pid != expected_pid and p.pid not in spurious:
+                    spurious.append(p.pid)
+        else:
+            # 3. If tracked count > max_allowed, newest surplus ones are spurious
+            if len(active) > max_allowed:
+                sorted_by_start = sorted(active, key=lambda x: x.started_at)
+                for excess in sorted_by_start[max_allowed:]:
+                    if excess.pid not in spurious:
+                        spurious.append(excess.pid)
+
+        return spurious
+
+
+def shut_spurious_pi_processes(
+    expected_pid: int | None = None,
+    max_allowed: int | None = None,
+    log=None,
+) -> list[int]:
+    """Identify and terminate any spurious or excess pi instances.
+
+    Returns the list of PIDs that were terminated.
+    """
+    with _spawn_lock:
+        spurious_pids = identify_spurious_pi_processes(
+            expected_pid=expected_pid,
+            max_allowed=max_allowed,
+        )
+        terminated: list[int] = []
+        for pid in spurious_pids:
+            sp = _TRACKED_PI_PROCESSES.get(pid)
+            if sp is not None:
+                _terminate_reap(sp.proc)
+                unregister_pi_process(pid)
+            else:
+                _terminate_pid(pid)
+            terminated.append(pid)
+            if log and callable(log):
+                log(f"  ⚠ terminated spurious pi process (pid={pid})")
+        return terminated
+
+
+def enforce_pi_process_limit(
+    expected_pid: int | None = None,
+    max_allowed: int | None = None,
+    log=None,
+) -> list[int]:
+    """Belt-and-braces check to ensure the pi process limit is strictly respected."""
+    return shut_spurious_pi_processes(expected_pid=expected_pid, max_allowed=max_allowed, log=log)
 
 
 @dataclass
@@ -343,14 +576,23 @@ def run_pi_session(
         "--model", model,
         "--no-session", "--mode", "json", "-p", prompt,
     ])
+
+    proc: subprocess.Popen | None = None
+    watchdog_thread: threading.Thread | None = None
+
     try:
-        proc = subprocess.Popen(
-            pi_cmd,
-            cwd=workdir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        with _spawn_lock:
+            # Belt and braces: eliminate any spurious / excess pi instances before spawn
+            shut_spurious_pi_processes(max_allowed=get_max_concurrent_pi() - 1, log=log)
+            proc = subprocess.Popen(
+                pi_cmd,
+                cwd=workdir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            register_pi_process(proc, cmd=pi_cmd, workdir=workdir, model=model)
+
         assert proc.stdout is not None
         assert proc.stderr is not None
 
@@ -377,6 +619,8 @@ def run_pi_session(
             # sleep is on the stop event (heartbeat shape) so shutdown stays
             # prompt.
             while proc.poll() is None:
+                # Belt and braces: terminate spurious instances if any appear at any time
+                shut_spurious_pi_processes(expected_pid=proc.pid, max_allowed=get_max_concurrent_pi(), log=log)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     killed_by_watchdog.set()
@@ -485,12 +729,15 @@ def run_pi_session(
     except FileNotFoundError as e:
         rc, err, crashed = 127, f"failed to spawn pi: {e}", True
     finally:
+        if proc is not None:
+            unregister_pi_process(proc.pid)
         stop_hb.set()
         hb_thread.join(timeout=2)
         if hasattr(log, "clear_status") and callable(getattr(log, "clear_status", None)):
             log.clear_status()
         stop_watchdog.set()
-        watchdog_thread.join(timeout=WATCHDOG_GRACE_S)
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=WATCHDOG_GRACE_S)
         # The child is reaped by now, so its stderr is at EOF and this join
         # returns as soon as the buffer is drained. The stop event is only the
         # safety valve for a wedged child that keeps the pipe open past the
