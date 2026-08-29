@@ -1,1 +1,0 @@
-FAILED tests/test_slice_checkpoint.py::SliceCheckpointTest::test_resume_skips_checkpointed_slices_and_runs_the_rest
