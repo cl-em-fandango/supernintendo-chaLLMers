@@ -302,7 +302,7 @@ class PiSubprocessTest(unittest.TestCase):
                  junk[1], junk[2], junk[3], junk[4], junk[5],
                  _message_end_event("VERDICT: done", 999),
                  _agent_end_event(456)]
-        body = "\n".join(f"print({json.dumps(line)!r})" for line in lines)
+        body = "\n".join(f"print({line!r})" for line in lines)
         fake_pi(body, self.bin_dir)
 
         r = self._run_session()
@@ -312,7 +312,7 @@ class PiSubprocessTest(unittest.TestCase):
         # Both good message_end texts survive in order (joined with "\n" by the
         # module, so the trailing space of the first one is part of the text); the
         # junk lines are dropped.
-        self.assertEqual(r.output, "first halfVERDICT: done")
+        self.assertEqual(r.output, "first half \nVERDICT: done")
         # The empty `{"type": "message_end"}` line parses but carries no usage,
         # so it contributes nothing rather than raising on a missing key.
         self.assertEqual(r.peak_tokens, 999)

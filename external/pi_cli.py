@@ -226,6 +226,8 @@ def run_pi_session(
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(e, dict):
+                    continue
             t = e.get("type")
             if t == "message_end":
                 msg = e.get("message") or {}
