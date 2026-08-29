@@ -76,6 +76,7 @@ def _cfg(work_dir: Path) -> Config:
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,
+        max_slice_tech_review=5,
         max_slice_func_review=5,
         max_slice_check_loops=3,
         autonomous_queue_target=5,
