@@ -77,10 +77,12 @@ class TaskProvider(ABC):
         return []
 
     def requeue_claim(self, name_or_task: "str | Task",
-                      owner: str | None = None) -> str | None:
+                      owner: str | None = None,
+                      force: bool = False) -> str | None:
         """Hand one claim back to the pending pool. Returns the new path, or
         None when this provider cannot requeue (no claim lifecycle) or `owner`
-        does not hold it."""
+        does not hold it. `force` is the operator override documented on
+        `DirectoryTaskProvider.requeue_claim`; a run never sets it."""
         return None
 
     def requeue_all_claims(self, owner: str | None = None) -> list[str]:
@@ -118,7 +120,9 @@ class DirectoryTaskProvider(TaskProvider):
     Ownership is opt-in per fetch: `fetch_pending(claim=True, owner=id)` writes
     a sidecar beside each claimed file (see `claim_metadata.py`), and a requeue
     that names an `owner` only moves claims recorded against that owner. A
-    requeue with no `owner` is the pre-ownership call and checks nothing.
+    requeue with no `owner` is the pre-ownership call and checks nothing; a
+    forced requeue skips the gate on an operator's authority, which is a
+    decision no run invocation gets to make (see `requeue_claim`).
 
     Files the enqueue guard refuses (plan parents marked `DO NOT EXECUTE`) are
     never fetched and never claimed: they stay untouched in pending/ as the
@@ -191,7 +195,8 @@ class DirectoryTaskProvider(TaskProvider):
                 for f in sorted(self.claimed_dir.glob("*.md"))]
 
     def requeue_claim(self, name_or_task: "str | Task",
-                      owner: str | None = None) -> str | None:
+                      owner: str | None = None,
+                      force: bool = False) -> str | None:
         """Move one claimed file back to pending/, by filename or Task.
 
         Returns the new path as a string, or None when there is no such claim
@@ -202,11 +207,19 @@ class DirectoryTaskProvider(TaskProvider):
         hand back only claims its own invocation took. Claims whose sidecar is
         missing or corrupt read as `OWNER_UNKNOWN` and are refused too — an
         operator, not a run, decides what happens to them.
+
+        `force=True` skips that gate. It exists for the one caller holding an
+        operator's authority rather than an owner id — `harness.py
+        requeue-claims` — and it is what lets an unattributable claim be handed
+        back at all. A run command must never set it: a forced requeue can move
+        a claim another live invocation is working on, which is the whole thing
+        ownership was added to prevent. The caller reads the sidecar itself
+        (`list_owned_claims()`) and prints the owner it overrode.
         """
         src = self._claim_path(name_or_task)
         if src is None:
             return None
-        if owner is not None and not self._owner_matches(src, owner):
+        if not force and owner is not None and not self._owner_matches(src, owner):
             self.log(f"  ⚠ not requeueing {src.name}: held by "
                      f"{read_metadata(src).owner}, not {owner}")
             return None

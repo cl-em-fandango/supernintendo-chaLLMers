@@ -12,6 +12,7 @@ from ..workflow.autonomous import AutonomousGenerator
 from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
+from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.providers import Task
 from ..core.stats import render_report
 from ..composition import build
@@ -80,14 +81,15 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
     named by the cleanup, so the hand-back can only ever move this run's own
     claims. Claims that were already sitting in claimed/ when the run started
     are left untouched unless the stale-claim guard was switched on
-    (`requeue_stale` / `autoRequeueStaleClaims`) — see `_requeue_stale_claims`
-    for why it is off.
+    (`requeue_stale` / `autoRequeueStaleClaims`), and even then the guard is
+    scoped to this invocation's id, so it cannot move a peer's claim or an
+    unattributable one — see `_requeue_stale_claims` for why it is off.
     """
     cfg, store, runner, provider, pipeline, log = build()
     owner = _new_owner_id("run")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
-                          log=log)
+                          log=log, owner=owner)
     claimed: list[Task] = []
     try:
         if continue_:
@@ -171,13 +173,15 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> i
     the supervisor call site. Every claim this loop takes is recorded against
     one owner id generated for this invocation, and the hand-back of the claims
     it did not process names that same id, so another run's claim is never
-    moved here. Stale claims: `_requeue_stale_claims`.
+    moved here. The stale-claim guard is scoped to that same id, so it reclaims
+    only this invocation's own aged claims and leaves a peer's — and any claim
+    nobody can be shown to hold — where they are: `_requeue_stale_claims`.
     """
     cfg, store, runner, provider, pipeline, log = build()
     owner = _new_owner_id("run-task-loop")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
-                          log=log)
+                          log=log, owner=owner)
     if continue_:
         resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     while True:
@@ -195,13 +199,16 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> i
 
 @dataclass(frozen=True)
 class StaleClaim:
-    """One claim selected for requeue, with the age that selected it.
+    """One claim selected for requeue, with the age and the owner it was selected on.
 
-    The age is read once, at selection, so the report line shows the age the
-    decision was made on rather than whatever the clock says after the move.
+    The age and the recorded owner are read once, at selection, so a report line
+    shows what the decision was made on rather than whatever the clock or the
+    sidecar says after the move. `owner` is `OWNER_UNKNOWN` for a claim with no
+    readable sidecar — the state that only an explicit operator force may move.
     """
     claim: Task
     age_hours: float
+    owner: str = OWNER_UNKNOWN
 
     @property
     def label(self) -> str:
@@ -213,15 +220,18 @@ def _silent(line: str = "") -> None:
 
 
 def _stale_claims(provider, older_hours: float) -> list[StaleClaim]:
-    """The provider's claims aged `older_hours` or more.
+    """The provider's claims aged `older_hours` or more, with who holds each.
 
     A claim the provider cannot age (-1.0) is skipped, never read as old.
+    Ownership comes from `list_owned_claims()` rather than the plain task view,
+    so every selection carries the recorded owner both reclaim policies read.
     """
     stale = []
-    for claim in provider.list_claims():
-        age = provider.claim_age_hours(claim.id)
+    for claim in provider.list_owned_claims():
+        age = provider.claim_age_hours(claim.task.id)
         if age >= 0 and age >= older_hours:
-            stale.append(StaleClaim(claim=claim, age_hours=age))
+            stale.append(StaleClaim(claim=claim.task, age_hours=age,
+                                    owner=claim.owner))
     return stale
 
 
@@ -239,14 +249,25 @@ def _requeue_stale_enabled(cfg, requeue_stale: bool) -> bool:
 
 
 def _requeue_stale_claims(provider, older_hours: float, enabled: bool,
-                          log=None) -> int:
+                          log=None, owner: str | None = None) -> int:
     """Hand every claim aged `older_hours`+ back to pending/. Off unless enabled.
 
     Deliberately opt-in (decision D4): the entries sitting in claimed/ are the
     input to the human review pass, and an always-on guard would empty the
     directory on the first loop. A claim younger than `older_hours` is left
     alone either way — that is a concurrent run's, not garbage.
-    Returns the number of claims moved (0 when disabled).
+
+    Naming an `owner` makes the sweep ownership-aware, which is how the run
+    commands call it: a stale claim is reclaimed only when its sidecar names
+    that same owner. A stale claim held by another invocation is left for its
+    holder, and a claim with no readable owner — an absent or a corrupt sidecar,
+    both of which read `OWNER_UNKNOWN` — is left for an operator, because age
+    alone cannot tell a dead run's orphan from a live one's work. Each skip is
+    logged with the recorded owner so there is something to act on.
+
+    With no `owner` the sweep is the pre-ownership call and checks nothing: that
+    is an operator's authority, not a run's. Returns the number of claims moved
+    (0 when disabled).
     """
     if log is None:
         log = _silent
@@ -254,7 +275,16 @@ def _requeue_stale_claims(provider, older_hours: float, enabled: bool,
         return 0
     moved = 0
     for item in _stale_claims(provider, older_hours):
-        if provider.requeue_claim(item.claim) is not None:
+        if owner is not None and item.owner != owner:
+            if item.owner == OWNER_UNKNOWN:
+                log(f"  ⚠ not reclaiming {item.label}: no readable owner, so "
+                    f"nothing here can prove it is abandoned; an explicit "
+                    f"operator requeue is required")
+            else:
+                log(f"  ⚠ not reclaiming {item.label}: held by {item.owner}, "
+                    f"not {owner}")
+            continue
+        if provider.requeue_claim(item.claim, owner=owner) is not None:
             moved += 1
             log(f"  reclaimed stale claim: {item.label}")
     if moved:
@@ -262,27 +292,47 @@ def _requeue_stale_claims(provider, older_hours: float, enabled: bool,
     return moved
 
 
-def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False) -> int:
+def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
+                       force: bool = False) -> int:
     """Recover stranded claims: move claimed-but-unprocessed files back to pending/.
 
     `--older-than` bounds the sweep (default 0.0 = every claim); `--dry-run`
     prints the plan and touches nothing. An empty claimed/ is the healthy
     case, not an error, so this returns 0 either way.
+
+    Every requeue names the claim's recorded owner, so each line says whose
+    claim is being handed back — this command acts on an operator's authority,
+    not on an owner id of its own. A claim with no readable owner names nobody,
+    and it is refused until the command is forced: an unattributable claim is
+    evidence about some invocation, and only an explicit operator decision may
+    move it. `force` is that decision, and it reaches no further than
+    `older_than` — a young claim is somebody's live work whatever the flags.
+
+    The override is this command's alone: `provider.requeue_claim(force=True)`
+    is documented for it, and no run path passes it. It is a handler parameter
+    for now — the CLI flag is parser work this leaf does not own.
     """
     _, _, _, provider, _, log = build()
     total = len(provider.list_claims())
     stale = _stale_claims(provider, older_than)
+    moved = refused = 0
+    for item in stale:
+        if not force and item.owner == OWNER_UNKNOWN:
+            refused += 1
+            log(f"  ⚠ not requeueing {item.label}: owner is unknown, so an "
+                f"explicit force is required to hand it back")
+            continue
+        if dry_run:
+            log(f"would requeue {item.label} owner={item.owner}")
+            continue
+        result = provider.requeue_claim(item.claim, owner=item.owner, force=force)
+        if result is not None:
+            moved += 1
+            log(f"requeued {item.label} owner={item.owner}")
     if dry_run:
-        for item in stale:
-            log(f"would requeue {item.label}")
-        log(f"dry run: {len(stale)} of {total} claim(s) at or over "
+        log(f"dry run: {len(stale) - refused} of {total} claim(s) at or over "
             f"{older_than:g}h would move to pending/")
         return 0
-    moved = 0
-    for item in stale:
-        if provider.requeue_claim(item.claim) is not None:
-            moved += 1
-            log(f"requeued {item.label}")
     log(f"requeued {moved} of {len(stale)}")
     return 0
 
