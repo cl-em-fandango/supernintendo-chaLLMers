@@ -100,9 +100,11 @@ class FakeRunner:
             _git(workdir, "add", "-A")
             _git(workdir, "-c", "user.email=t@t", "-c", "user.name=t",
                  "commit", "-m", f"slice work {len(self.calls)}")
-        return SessionResult(ok=True, verdict=verdict, peak_tokens=0,
-                             duration_s=0.0, output="VERDICT: " + verdict,
-                             out_file=out_file, crashed=False)
+        from harness.core.enums import Verdict
+        return SessionResult(ok=True, verdict=Verdict.parse(verdict) or Verdict.UNKNOWN,
+                             peak_tokens=0, duration_s=0.0,
+                             output="VERDICT: " + verdict, out_file=out_file,
+                             crashed=False)
 
 
 def _cfg(queue_dir: Path) -> Config:
