@@ -201,6 +201,7 @@ class Pipeline:
             return "parked"
 
         ctx = StageContext(task.id, task_dir, workdir)
+        outcome = "parked"
         try:
             for stage in STAGE_SEQUENCE:
                 if stage in state.checkpointed_stages:
@@ -209,9 +210,11 @@ class Pipeline:
                 self.lifecycle.set_stage(task.id, stage)
                 self.log(f"  ▶ {stage.value}")
                 if not getattr(self, _STAGE_FUNCTIONS[stage])(ctx):
-                    return self._stage_failed(task.id, stage, task_dir)
+                    outcome = self._stage_failed(task.id, stage, task_dir)
+                    return outcome
                 self.lifecycle.checkpoint(task.id, stage)
-            return self.stage_holistic(ctx)
+            outcome = self.stage_holistic(ctx)
+            return outcome
         except OverContextBudget as e:
             # The one catch site (T74). Crossing the cap is neither a content
             # verdict nor a process death, so it parks whatever stage it
@@ -236,14 +239,36 @@ class Pipeline:
                     checkpointed_stages=list(state.checkpointed_stages),
                     checkpointed_slices=list(state.checkpointed_slices),
                 ))
-            return "parked"
+            outcome = "parked"
+            return outcome
         except AllAttemptsCrashed as e:
             # The one catch site (T57). A stage that lost every attempt to a
             # dead process is a process failure, not a content verdict, so it
             # parks whatever stage it happened on — including the holistic one,
             # where a merge must not be attempted on unreviewed work.
             self.lifecycle.park(task.id, str(e))
-            return "parked"
+            outcome = "parked"
+            return outcome
+        finally:
+            self._persist_journey_readout(task.id, task_dir)
+
+    def _persist_journey_readout(self, task_id: str, task_dir: Path) -> None:
+        """Persist static workflow journey graph and log the summary readout."""
+        if not hasattr(self.runner, "store") or self.runner.store is None:
+            return
+        try:
+            from ..core.stats import render_task_journey
+            rows = self.runner.store.for_task(task_id)
+            if not rows:
+                return
+            journey_text = render_task_journey(rows, task_id=task_id)
+            self.runner.store.write_task_journey(task_id)
+            art_dir = task_dir / "artifacts"
+            if art_dir.exists():
+                (art_dir / "journey.txt").write_text(journey_text)
+            self.log(f"\n{journey_text}")
+        except Exception as e:
+            self.log(f"  ⚠ could not persist workflow journey readout: {e}")
 
     def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
         """Per-stage terminal return contract (F2.1): feasibility failure is

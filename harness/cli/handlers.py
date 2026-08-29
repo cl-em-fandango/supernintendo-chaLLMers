@@ -14,7 +14,7 @@ from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
 from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.providers import Task
-from ..core.stats import render_report
+from ..core.stats import render_report, render_task_journey
 from ..composition import build
 
 # Shown under the status table while claims exist. Names the command that
@@ -387,6 +387,42 @@ def cmd_status() -> int:
 def cmd_report() -> int:
     _, store, *_ = build()
     print(render_report(store.all()))
+    return 0
+
+
+def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
+    """Print the static workflow journey graph and diagnostics for a task."""
+    cfg, store, *_ = build()
+    all_rows = store.all()
+    if not all_rows:
+        print("No sessions recorded yet in stats.")
+        return 0
+
+    if not task_id:
+        # Find the most recently recorded task_id
+        for r in reversed(all_rows):
+            tid = r.get("task_id")
+            if tid and tid != "None":
+                task_id = tid
+                break
+
+    if not task_id:
+        print("No specific task found in stats. Showing journey for all recorded sessions:")
+        print(render_task_journey(all_rows, task_id="all"))
+        return 0
+
+    rows = store.for_task(task_id)
+    if not rows:
+        print(f"No sessions found for task '{task_id}'.")
+        return 1
+
+    text = render_task_journey(rows, task_id=task_id)
+    print(text)
+
+    if save:
+        path = store.write_task_journey(task_id)
+        print(f"\n[Saved journey graph to {path}]")
+
     return 0
 
 

@@ -59,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
     
     # report
     subparsers.add_parser("report", help="Print the stats report")
+
+    # journey
+    journey_parser = subparsers.add_parser("journey", help="Show static workflow journey graph and bottleneck analysis")
+    journey_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
+    journey_parser.add_argument("--save", dest="save", action="store_true", default=False,
+                                help="Save journey graph to <statsDir>/journeys/<task_id>-journey.txt")
     
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a task from its last checkpoint")

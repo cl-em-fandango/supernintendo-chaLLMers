@@ -11,6 +11,7 @@ Usage — subcommands and flags exactly as cli/parser.py defines them:
   harness.py autonomous          Generate tasks until queue has N
   harness.py status              Show queue + stats
   harness.py report              Print the stats report
+  harness.py journey [task_id]   Show workflow journey graph & bottleneck analysis
   harness.py resume <task_id>    Resume a task from its last checkpoint
                                  (--yes / -y)
   harness.py unpark <task_id>    Move a parked/failed task back to pending
@@ -60,6 +61,8 @@ def main() -> int:
         return handlers.cmd_status()
     elif args.command == "report":
         return handlers.cmd_report()
+    elif args.command == "journey":
+        return handlers.cmd_journey(task_id=args.task_id, save=args.save)
     elif args.command == "resume":
         return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh)
     elif args.command in ("unpark", "requeue"):
