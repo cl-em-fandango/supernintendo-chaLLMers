@@ -70,7 +70,8 @@ class SquashCommitFailureTest(unittest.TestCase):
         return self.dir / ".git"
 
     # -- tests ------------------------------------------------------------
-    def test_commit_failure_is_cleaned_up(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_commit_failure_is_cleaned_up(self, mock_gate):
         self.failing_hook()
         with self.assertRaises(RuntimeError) as ctx:
             G.merge_to_trunk(self.dir, "good", "pi/trunk", "title")
@@ -90,7 +91,8 @@ class SquashCommitFailureTest(unittest.TestCase):
                          "HEAD moved on a failed commit")
         self.assertFalse(G.merge_in_progress(self.dir))
 
-    def test_cleanup_failure_raises_and_preserves_evidence(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_cleanup_failure_raises_and_preserves_evidence(self, mock_gate):
         self.failing_hook()
         with mock.patch.object(G, "abort_merge", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
@@ -111,7 +113,8 @@ class SquashCommitFailureTest(unittest.TestCase):
         self.assertTrue((self.dir / "f.txt").read_text().startswith("base + feature"),
                         "worktree was destroyed instead of preserved")
 
-    def test_successful_commit_still_lands(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_successful_commit_still_lands(self, mock_gate):
         with mock.patch.object(G, "verify_harness", return_value=(True, "ok")):
             G.merge_to_trunk(self.dir, "good", "pi/trunk", "title")
         log = self._git("log", "--oneline")
