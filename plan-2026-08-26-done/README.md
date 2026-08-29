@@ -31,11 +31,21 @@ remain in `plan-2026-08-26/`.
 
 Gate at move time: 120 tests OK, imports ok, `harness.py status` rc=0.
 
-## Blocked — moved unactioned (1)
+## Blocked — moved unactioned (2)
 
+- **T77 — queue artifact/claim anomalies + operator footer, NOT executed.** Every check in its `Do`
+  is an addition to `audit_queue(cfg)` / `render_audit(cfg)`, and that report is not in the tree:
+  `harness/workflow/queue_audit.py` is created by T76, still open in `plan-2026-08-26/`. Verified by
+  grep at move time — no `queue_audit` module, no `audit_queue`/`render_audit` definition, no
+  `tests/test_queue_audit_inventory.py`. Its own *Out of scope* assigns the directory counts, task
+  rows, status/state anomalies and `.git` detection to T76, so actioning it here would be T76 + T77
+  in one session and a test module asserting against code it would have to author. Same treatment as
+  T61 below: a note recording the blocker, no `DO NOT EXECUTE` marker, so the leaf stays enqueueable
+  and becomes actionable once T76 lands. Requirement text otherwise unmodified.
 - **T61 — queue-audit CLI, NOT executed.** Its whole `Do` is dispatch plus report persistence over
   `audit_queue(cfg)` / `render_audit(cfg)`, and that report is not in the tree: `harness/workflow/queue_audit.py`
-  is created by T76 and extended by T77, and both leaves are still open in `plan-2026-08-26/`.
+  is created by T76 and extended by T77 — T76 is still open in `plan-2026-08-26/` and T77 is archived
+  immediately above, also unlanded.
   Verified by grep at move time — no `queue_audit` module, no `audit_queue`/`render_audit`
   definition, no `cmd_queue_audit`, no `tests/test_queue_audit_inventory.py` or
   `tests/test_queue_audit_artifacts.py`. T61's own *Out of scope* ("No anomaly logic") rules out

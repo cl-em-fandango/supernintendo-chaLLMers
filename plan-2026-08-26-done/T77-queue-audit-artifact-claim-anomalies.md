@@ -2,6 +2,17 @@
 
 **Depends:** T76 · **Leaf ticket** (second leaf of the re-sliced T60)
 
+> **BLOCKED — MOVED UNACTIONED (dependency not landed).** Every check in this leaf is an addition to a
+> report that is not in the tree: `harness/workflow/queue_audit.py` (`audit_queue(cfg)`,
+> `render_audit(cfg)`) is created by T76, and T76 is still open in `plan-2026-08-26/`. Verified by
+> grep at move time: no `queue_audit` module, no `audit_queue`/`render_audit` definition, and no
+> `tests/test_queue_audit_inventory.py`. Its own *Out of scope* gives the directory counts, task rows,
+> status/state anomalies and `.git` detection to T76, so actioning this card now would mean writing
+> T76's module here too — two features in one session, and a `tests/test_queue_audit_artifacts.py`
+> that cannot assert anything about a module it would have to author. **Enqueue T76 first, then
+> re-enqueue this file unchanged** — the requirement below is intact and becomes actionable the moment
+> T76 lands.
+
 ## Context
 The second half of the split described in T76: the anomalies that need something other than the
 task-dir walk — stray session outputs, the same slug in two lifecycle locations, claim ownership
