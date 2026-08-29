@@ -157,6 +157,11 @@ class Pipeline:
                          f"re-derived from original.md")
                 self.lifecycle.record_workdir(task_dir)
                 state = self.lifecycle.load_state(task.id)
+            elif not (task_dir / "original.md").exists():
+                # EC13: original.md missing after a partial crash; re-resolve
+                # the workdir so it falls back to the task dir.
+                self.lifecycle.record_workdir(task_dir)
+                state = self.lifecycle.load_state(task.id)
         else:
             task_dir = self.lifecycle.intake(task)
             state = self.lifecycle.load_state(task.id)
