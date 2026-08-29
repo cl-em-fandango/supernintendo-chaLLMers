@@ -225,6 +225,43 @@ class ResumeCliTest(unittest.TestCase):
         self.assertTrue((self.queue_dir / "done" / "t1" / "task.json").exists())
 
     # ------------------------------------------------------------------
+    # T54: --fresh drops checkpoints, normal resume preserves them
+    # ------------------------------------------------------------------
+    def test_resume_fresh_drops_checkpoints(self):
+        """resume --fresh deletes the task dir and restarts from scratch."""
+        self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY,
+                                 CheckpointStage.SLICING)
+        self.runner = FakeRunner()
+        self.pipeline.runner = self.runner
+        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+                         pipeline=self.pipeline, lifecycle=self.lifecycle,
+                         log=self.lines.append, fresh=True)
+        self.assertEqual(rc, 0)
+        # all stages re-run: spec_author was checkpointed but fresh drops it
+        self.assertIn("spec_author", self.runner.calls)
+        self.assertIn("feasibility", self.runner.calls)
+        self.assertIn("slicing", self.runner.calls)
+        # task reached done/
+        self.assertTrue((self.queue_dir / "done" / "t1" / "task.json").exists())
+
+    def test_resume_parked_preserves_checkpoints(self):
+        """Normal resume (no --fresh) on a parked task preserves checkpoints."""
+        self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY)
+        self.lifecycle.park("t1", "slicing failed (verdict=fail)")
+        self.runner = FakeRunner()
+        self.pipeline.runner = self.runner
+        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+                         pipeline=self.pipeline, lifecycle=self.lifecycle,
+                         log=self.lines.append, fresh=False)
+        self.assertEqual(rc, 0)
+        # checkpointed stages are skipped
+        self.assertNotIn("spec_author", self.runner.calls)
+        self.assertNotIn("feasibility", self.runner.calls)
+        # remaining stages run
+        self.assertIn("slicing", self.runner.calls)
+        self.assertIn("slice_implement", self.runner.calls)
+
+    # ------------------------------------------------------------------
     # F3.5: task reconstruction (body from original.md, source from task.json)
     # ------------------------------------------------------------------
     def test_task_reconstruction_from_dir(self):

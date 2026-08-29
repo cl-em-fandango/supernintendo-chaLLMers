@@ -383,11 +383,11 @@ def cmd_report() -> int:
     return 0
 
 
-def cmd_resume(task_id: str, yes: bool = False) -> int:
+def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False) -> int:
     """Resume a task from its last checkpoint (spec FR3)."""
     cfg, store, runner, provider, pipeline, log = build()
     return resume_task(task_id, yes, cfg, pipeline,
-                       lifecycle=pipeline.lifecycle, log=log)
+                       lifecycle=pipeline.lifecycle, log=log, fresh=fresh)
 
 
 def cmd_unpark(task_id: str) -> int:

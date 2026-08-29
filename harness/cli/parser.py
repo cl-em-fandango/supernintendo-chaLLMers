@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("task_id", help="Task ID to resume")
     resume_parser.add_argument("--yes", "-y", dest="yes", action="store_true",
                               default=False, help="Skip the confirmation prompt")
+    resume_parser.add_argument("--fresh", dest="fresh", action="store_true",
+                               default=False,
+                               help="Drop all checkpoints and restart from scratch")
 
     # unpark (with requeue alias)
     unpark_parser = subparsers.add_parser("unpark", help="Move a parked/failed task back to pending")

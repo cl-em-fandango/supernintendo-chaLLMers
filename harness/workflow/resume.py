@@ -11,7 +11,8 @@ from pathlib import Path
 
 from ..core.config import Config
 from ..core.enums import CheckpointStage, Stage
-from .continue_fresh import task_from_dir
+from ..core.providers import Task
+from .continue_fresh import fresh_restart, task_from_dir
 from .pipeline import STAGE_SEQUENCE
 from .task_lifecycle import QUEUE_LOCATIONS, TaskLifecycle
 
@@ -69,7 +70,8 @@ def confirm_resume(task_id: str, yes: bool, log=print, input_fn=input) -> bool:
 
 
 def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
-               lifecycle: TaskLifecycle, log=print, input_fn=input) -> int:
+               lifecycle: TaskLifecycle, log=print, input_fn=input,
+               fresh: bool = False) -> int:
     """Run the full `resume <task_id>` flow (F3.2-F3.6). Returns the exit code."""
     # F3.2: search queue subdirs in order; first dir containing <id>/ wins.
     where = None
@@ -85,6 +87,23 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
 
     if where == "done":
         log(f"{task_id} is already complete (merged to trunk); nothing to resume")
+        return 0
+
+    if fresh:
+        original = task_dir / "original.md"
+        body = original.read_text() if original.exists() else ""
+        source = "resume"
+        if lifecycle.task_json_path(task_id, where).exists():
+            try:
+                state = lifecycle.load_state(task_id, where=where)
+                source = state.source or "resume"
+            except Exception:
+                pass
+        fresh_restart(task_id, cfg, log=log)
+        if where != "active":
+            shutil.rmtree(task_dir)
+            log(f"  --fresh: deleted {where}/{task_id}")
+        pipeline.process(Task(id=task_id, body=body, source=source))
         return 0
 
     _print_plan(task_id, where, lifecycle, log)

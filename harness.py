@@ -61,7 +61,7 @@ def main() -> int:
     elif args.command == "report":
         return handlers.cmd_report()
     elif args.command == "resume":
-        return handlers.cmd_resume(args.task_id, args.yes)
+        return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh)
     elif args.command in ("unpark", "requeue"):
         return handlers.cmd_unpark(args.task_id)
     elif args.command == "requeue-claims":
