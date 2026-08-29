@@ -95,10 +95,10 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
         if continue_:
             resume_in_flight(pipeline.lifecycle, pipeline, log=log)
         while True:
-            tasks = provider.fetch_pending(claim=True, limit=1, owner=owner)
-            if not tasks:
+            if not provider.count_pending():
                 log("pending queue empty")
                 break
+            tasks = provider.fetch_pending(claim=True, limit=1, owner=owner)
             task = tasks[0]
             claimed.extend(tasks)
             log(f"processing {task.id}")
