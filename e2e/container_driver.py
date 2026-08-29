@@ -87,7 +87,7 @@ class EphemeralContainer:
         workdir: str | None = None,
         check: bool = False,
         env: dict[str, str] | None = None,
-        timeout: int = 1800,
+        timeout: int = 3600,
     ) -> ContainerExecutionResult:
         """Execute a command inside the running container."""
         if not self.is_running():
@@ -105,7 +105,7 @@ class EphemeralContainer:
             "HARNESS_CONFIG": "/workspace/config.json",
             "PI_CODING_AGENT_DIR": "/home/harnessuser/.pi/agent",
             "HOME": "/home/harnessuser",
-            "HARNESS_PI_PROVIDER": "llama-swap",
+            "HARNESS_PI_PROVIDER": os.environ.get("HARNESS_PI_PROVIDER", ""),
             "DISABLE_FIREWALL": "1",
         }
         if env:
@@ -205,7 +205,7 @@ Target repository: {target_repo}
 """
         self.write_file(f"{self.workspace_dir}/queue/pending/{task_id}.md", content)
 
-    def run_harness(self, *args: str, check: bool = False, timeout: int = 1800) -> ContainerExecutionResult:
+    def run_harness(self, *args: str, check: bool = False, timeout: int = 3600) -> ContainerExecutionResult:
         """Invoke harness.py inside the container."""
         cmd = ["python3", "/opt/harness-frozen/harness.py", *args]
         return self.exec(cmd, workdir=self.workspace_dir, check=check, timeout=timeout)
@@ -361,7 +361,7 @@ chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
         tw_model: str = DEFAULT_TW_MODEL,
         imp_model: str = DEFAULT_IMP_MODEL,
         assessor: str = DEFAULT_ASSESSOR_MODEL,
-        provider: str = "llama-swap",
+        provider: str = "",
     ) -> EphemeralContainer:
         """Step 4: Spawn fresh ephemeral container instance from the snapshot startpoint."""
         container_name = f"harness-e2e-{uuid.uuid4().hex[:8]}"

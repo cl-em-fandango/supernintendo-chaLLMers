@@ -88,5 +88,27 @@ class DynamicStreamingEventsTest(unittest.TestCase):
         self.assertIsNone(P._format_thinking_summary("## Summary\nAll completed."))
 
 
+    def test_extract_text_from_message_various_formats(self):
+        # 1. Standard text list
+        m1 = {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}
+        self.assertEqual(P._extract_text_from_message(m1), "hello")
+
+        # 2. Plain string content
+        m2 = {"role": "assistant", "content": "hello string"}
+        self.assertEqual(P._extract_text_from_message(m2), "hello string")
+
+        # 3. Content with text field without type
+        m3 = {"role": "assistant", "content": [{"text": "text only"}]}
+        self.assertEqual(P._extract_text_from_message(m3), "text only")
+
+        # 4. Message root text field
+        m4 = {"role": "assistant", "text": "root text"}
+        self.assertEqual(P._extract_text_from_message(m4), "root text")
+
+        # 5. List of strings
+        m5 = {"role": "assistant", "content": ["line 1", "line 2"]}
+        self.assertEqual(P._extract_text_from_message(m5), "line 1\nline 2")
+
+
 if __name__ == "__main__":
     unittest.main()

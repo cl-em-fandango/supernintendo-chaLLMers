@@ -1,174 +1,370 @@
-# Autonomous Workflow Harness
+# SuperNintendoChaLLMers - Autonomous Workflow Harness
 
-A self-driving pipeline that turns freeform task descriptions into reviewed,
-merged features — using fresh, token-budgeted pi sessions at every step.
+A local first self-driving pipeline that turns freeform task descriptions into reviewed,
+merged features — using fresh, token-budgeted `pi` sessions at every step. 
 
-## The pipeline (per task)
+Working with local LLMs can be a grind. The trade off with the lower model quality, smaller context, and painfully slow performance can make working with it a nightmare. Thats where ChaLLMers hopes to make life a little easier. It prescribes a workflow designed for models that run slow and have hard context limitations, without sacrificing quality or your sanity.   Intended to be long-running and accomodating of slow models by design, it can take an idea from a sentence to a squashed merge with no human input - so long as you're not in a hurry. Each "generative" stage is checked or double checked, and can be thrown back to its author for changes. Its like a real life scrum team all in one, from a lousy ticket on JIRA to a n-th degree reviewed PR.
 
+## Installation
+
+The project has two key dependencies - Pi and llama swap. 
+
+- Clone this repo
+- Install Pi harness and the llama-swap plugin
+- Setup pi - get it talking to your local setup and pulling the model list from llama swap
+- Setup your config json and map in the models you wish to use for each phase of the workflow. These should match the names served by llama-swap.
+- Give it a whirl! You can run one cli invocation = one feature, or point it at a queue and say go! Or, if you're lacking imagination, you can let it build features your AI thinks would be useful. What could possibly go wrong?
+
+---
+
+## Holistic System Architecture
+
+```mermaid
+flowchart TD
+    subgraph TaskSources["Task Intake & Queue Layer"]
+        P[Pending Queue: queue/pending/*.md]
+        C[Claimed Queue: queue/claimed/*.md]
+        A[Active Workspace: queue/active/<task_id>/]
+    end
+
+    subgraph Pipeline["5-Stage Waterfall Pipeline"]
+        S1["Stage 1: Specification & Multi-Assessor Review"]
+        S2["Stage 2: Feasibility Assessment"]
+        S3["Stage 3: Slicing & Session Fit Check"]
+        S4["Stage 4: Per-Slice Implementation & Dual-Review Loop"]
+        S5["Stage 5: Holistic Review & Trunk Merge"]
+    end
+
+    subgraph TerminalStates["Terminal States & Outputs"]
+        Done[queue/done/<task_id>/ + Squash Merge to pi/trunk]
+        Parked[queue/parked/<task_id>/ + Review Summary]
+        Failed[queue/failed/<task_id>/ + Rejection Note]
+        Review[queue/review/<task_id>.md]
+    end
+
+    subgraph AutonomousMode["Autonomous Feature Generation"]
+        AutoProp["Propose Task Idea (fastPool Model A)"]
+        AutoVeto["Veto / Accept Proposal (fastPool Model B)"]
+    end
+
+    P -->|Claim Task| C
+    C -->|Intake & Branch Setup| A
+    A --> S1
+    S1 -->|Spec Approved| S2
+    S2 -->|Feasible| S3
+    S2 -->|Feasibility Kickout| Failed
+    S3 -->|Slices Checked| S4
+    S4 -->|All Slices Verified| S5
+    S5 -->|Holistic Pass & Gate Clean| Done
+    S5 -->|Holistic Fail / Gate Refusal| Parked
+
+    S1 -.->|Crash / Cap / Max Loops| Parked
+    S2 -.->|Unresolved Kickback| Parked
+    S3 -.->|Fit Loop Exceeded| Parked
+    S4 -.->|Review Loop Exceeded| Parked
+
+    Done --> Review
+    Parked --> Review
+    Failed --> Review
+
+    P -.->|Queue Empty| AutoProp
+    AutoProp --> AutoVeto
+    AutoVeto -->|Accepted| P
 ```
-pending/  ──▶  SPECIFICATION
-                1a. TechnicalWriter  : author functional spec
-                1b. Ornith (assessor): assess + amend  ─┐ kickback (max 3)
-                1c. TechnicalWriter  : check vs. original ─┘
-              ──▶  FEASIBILITY  (Implementer)
-                    pass | kickback→spec | kickout→failed/
-              ──▶  SLICING  (Implementer)
-                    vertical atomic slices, each ≤ 1 session at the model's
-                    working budget + recursive fit-check (fresh session per check)
-              ──▶  PER-SLICE (on branch pi/<task>)
-                    implement (≤5 iters, progress notes between sessions)
-                    → tech review (≤5, Implementer)
-                    → func review (≤5, TechnicalWriter)
-                    → commit
-              ──▶  HOLISTIC REVIEW  (TechnicalWriter)
-                    pass → squash-merge to pi/trunk → done/
-                    fail → parked/ (branch kept, not merged)
+
+---
+
+## Detailed Pipeline Stages & Subsystems
+
+Every stage runs fresh `pi` sessions with explicit token budgets, communicating solely through persisted disk artifacts and strict `VERDICT: <value>` wire protocols.
+
+---
+
+### Stage 1: Specification & Multi-Assessor Review
+
+Authors a comprehensive functional spec and validates it against both technical soundness and fidelity to the original requirement.
+
+```mermaid
+flowchart TD
+    Start(["Task Intake: original.md"]) --> Author["1. Author Spec\nModel: models.technicalWriter\nArtifact: artifacts/spec.md"]
+    Author --> CheckAuthorVerdict{Author Verdict?}
+    CheckAuthorVerdict -->|DONE| OrnithReview["2. Technical Soundness Review\nModel: models.assessor (Ornith)\nAmends spec.md in-place"]
+    CheckAuthorVerdict -->|Not DONE| RetryAuthor[Retry Authoring 1x]
+    RetryAuthor -->|Not DONE| ParkAuthor[Park: Author failed]
+
+    OrnithReview --> CheckOrnith{Ornith Verdict?}
+    CheckOrnith -->|PASS| TWReview["3. Requirement Coverage Review\nModel: models.technicalWriter\nChecks spec.md vs original.md"]
+    CheckOrnith -->|KICKBACK| SpecKickback1[Increment Kickback Count\nCopy kickback_ornith_N.md]
+    CheckOrnith -->|Other / Unknown| ParkOrnith[Park: Invalid Ornith verdict]
+
+    TWReview --> CheckTW{TW Verdict?}
+    CheckTW -->|PASS| SpecApproved([Checkpoint Stage: spec\nProceed to Feasibility])
+    CheckTW -->|KICKBACK| SpecKickback2[Increment Kickback Count\nCopy kickback_tw_N.md]
+    CheckTW -->|Other / Unknown| ParkTW[Park: Invalid TW verdict]
+
+    SpecKickback1 --> CheckKickbackLimit{Kickbacks > maxSpecKickbacks?}
+    SpecKickback2 --> CheckKickbackLimit
+    CheckKickbackLimit -->|No| Author
+    CheckKickbackLimit -->|"Yes (Default: 3)"| ParkKickback["Park: Spec kickback loop exceeded"]
 ```
 
-Every stage is checkpointed (`spec`, `feasibility`, `slicing`, `slices`, plus a
-`merge` marker) in `active/<task>/task.json`, so `resume` restarts from the last
-completed stage rather than from the beginning.
+---
 
-When the queue is empty → **autonomous mode**: random models from
-`models.fastPool` (falling back to `models.randomPool`) propose features, a
-second random model vetoes the dumb ones, survivors land in `pending/` until the
-queue has `autonomousQueueTarget` tasks.
+### Stage 2: Feasibility Assessment
 
-## Design principles
+Explores the codebase to confirm architectural compatibility and implementation viability.
 
-- **Fresh context every session.** No session resume. Continuity lives in
-  explicit artifacts (spec.md, slices.md, progress notes), never in model memory.
-  Pi's own session store is disabled (`pi --no-session`).
-- **Working cap vs. real window.** `maxPromptTokens` is the prompt cap; a session
-  that crosses it is parked and handed off. `modelContext` maps each model to its
-  real window, and the per-model budget is
-  `max(4096, min(maxPromptTokens, window - 8192))` — the 8192 is output headroom.
-- **Verdict protocol.** Every session ends with `VERDICT: <value>`; the harness
-  routes on it. No NLP guessing.
-- **Adapter pattern** for task sources (`harness/core/providers.py`). The
-  pipeline only talks to the `TaskProvider` interface — swap in GitHub, an API, a
-  DB without touching the pipeline.
-- **Unified stats store.** Every session is one JSONL row in
-  `work/stats/sessions.jsonl` with model, stage, verdict, tokens, duration.
-  `harness.py report` answers: which model gets rejected most, which is
-  consistently poor, where work bounces, speed and token cost per stage/task.
+```mermaid
+flowchart TD
+    SpecDone([spec.md approved]) --> Feas["Assess Feasibility\nModel: models.implementer\nPrompt: feasibility(spec.md)"]
+    Feas --> CheckFeas{Implementer Verdict?}
+    CheckFeas -->|PASS| FeasDone([Checkpoint Stage: feasibility\nProceed to Slicing])
+    CheckFeas -->|KICKOUT| FailTask[Move to queue/failed/\nTask rejected at feasibility]
+    CheckFeas -->|KICKBACK| FeasKickback[Save feasibility_kickback.md\nReturn to Stage 1: Spec]
+    CheckFeas -->|Other / Unknown| ParkFeas[Park: Feasibility verdict unclear]
 
-## Layout
-
+    FeasKickback --> ReSpec[Re-run Stage 1 Spec Loop]
+    ReSpec --> ReFeas["Recheck Feasibility\nModel: models.implementer"]
+    ReFeas --> CheckReFeas{Recheck Verdict?}
+    CheckReFeas -->|PASS| FeasDone
+    CheckReFeas -->|Not PASS| ParkReFeas[Park: Feasibility still failing after spec revision]
 ```
+
+---
+
+### Stage 3: Slicing & Session Fit Verification
+
+Decomposes the specification into atomic, vertically-sliced increments that each fit inside a single model context window.
+
+```mermaid
+flowchart TD
+    FeasApproved([Feasibility Approved]) --> Slicing["1. Slicing Decomposition\nModel: models.implementer\nArtifact: artifacts/slices.md"]
+    Slicing --> CheckSlicing{Slicing Verdict?}
+    CheckSlicing -->|DONE| FitCheckLoop["2. Recursive Fit-Check Loop\nModel: models.fastPool[0] or implementer\nMax Iterations: maxSliceCheckLoops (3)"]
+    CheckSlicing -->|Not DONE| ParkSlicing[Park: Slicing failed]
+
+    FitCheckLoop --> CheckFit{Fit-Check Verdict?}
+    CheckFit -->|PASS| SlicingDone([Checkpoint Stage: slicing\nProceed to Slice Execution])
+    CheckFit -->|RESLICED| CheckLoopCount{Iteration <= maxSliceCheckLoops?}
+    CheckLoopCount -->|Yes| FitCheckLoop
+    CheckLoopCount -->|No| ParkFit[Park: Slice fit check loop exceeded]
+```
+
+---
+
+### Stage 4: Per-Slice Implementation & Dual-Review Loop
+
+Executes on a dedicated task branch (`pi/<task_id>`). Each slice must complete implementation, pass independent technical review, pass functional requirement review, and resolve any requested fixes before advancing.
+
+```mermaid
+flowchart TD
+    ParseSlices([Parse Slices from slices.md]) --> SliceIter{Next Slice in slices?}
+    SliceIter -->|Yes: slice N| CheckCheckpoint{Slice N Checkpointed?}
+    CheckCheckpoint -->|Yes| SliceIter
+    CheckCheckpoint -->|No| Implement["1. Implement Slice N\nModel: models.implementer\nMax Iter: maxSliceImplement (5)"]
+
+    Implement --> CheckImp{Implementer Verdict?}
+    CheckImp -->|PROGRESS| SaveNote[Save artifacts/progress/slice-N.md] --> Implement
+    CheckImp -->|DONE| TechReview["2. Technical Code Review\nModel: models.implementer\nMax Iter: maxSliceTechReview (5)"]
+    CheckImp -->|Not DONE after 5 iters| ParkImp[Park: Slice not delivered in max iterations]
+
+    TechReview --> CheckTech{Tech Review Verdict?}
+    CheckTech -->|PASS| FuncReview["3. Functional Spec Review\nModel: models.technicalWriter\nMax Iter: maxSliceFuncReview (5)"]
+    CheckTech -->|KICKBACK| SaveTechFeedback[Save artifacts/progress/slice-N-review.md] --> FixTech["Fix Technical Issues\nModel: models.implementer\nStage: SLICE_FIX"]
+    FixTech --> TechReview
+    CheckTech -->|Failed after 5 iters| ParkTech[Park: Failed technical review]
+
+    FuncReview --> CheckFunc{Func Review Verdict?}
+    FuncReview -->|PASS| CommitSlice["Checkpoint Slice N in task.json\nCommit to branch pi/<task_id>"]
+    FuncReview -->|KICKBACK| SaveFuncFeedback[Save artifacts/progress/slice-N-review.md] --> FixFunc["Fix Functional Issues\nModel: models.implementer\nStage: SLICE_FIX"]
+    FixFunc --> FuncReview
+    FuncReview -->|Failed after 5 iters| ParkFunc[Park: Failed functional review]
+
+    CommitSlice --> SliceIter
+    SliceIter -->|No more slices| SlicesDone([Checkpoint Stage: slices\nProceed to Holistic Review])
+```
+
+---
+
+### Stage 5: Holistic Review, Gate Verification & Squash-Merge
+
+Validates the integrated change across the whole repository before merging into `pi/trunk`.
+
+```mermaid
+flowchart TD
+    SlicesComplete([All Slices Checkpointed]) --> CheckAlreadyMerged{Already Merged in task.json?}
+    CheckAlreadyMerged -->|Yes| Cleanup[Cleanup pi/<task_id> branch] --> DoneComplete([Move to queue/done/])
+    CheckAlreadyMerged -->|No| Holistic["Holistic Final Review\nModel: models.technicalWriter\nChecks entire diff & test suite"]
+
+    Holistic --> CheckHolistic{Holistic Verdict?}
+    CheckHolistic -->|PASS| RunGate["Merge Gate Validation\nRun pre-merge test suite & checks"]
+    CheckHolistic -->|Not PASS| ParkHolistic[Park: Holistic review failed]
+
+    RunGate --> CheckGate{Gate Result?}
+    CheckGate -->|Passed| SquashMerge["git squash-merge to pi/trunk\nRecord merge checkpoint in task.json"]
+    CheckGate -->|GateNotApplicable / Error| ParkGate[Park: Merge gate refusal or git error]
+
+    SquashMerge --> Cleanup
+    Cleanup --> DoneComplete
+```
+
+---
+
+## Model Configuration & LLM Call Mapping
+
+The harness maps dedicated model roles in `config.json` to optimize accuracy, domain specialization, context utilization, and execution speed.
+
+### Model Roles
+
+| Config Key | Intended Role | Typical Assigned Model | Context Window |
+| :--- | :--- | :--- | :--- |
+| `models.technicalWriter` | Spec authoring, spec assessment vs requirement, functional reviews, holistic review | `Qwen3.8-DFLASH2-TechnicalWriter` | 131,072 |
+| `models.implementer` | Feasibility analysis, vertical slice planning, code implementation, technical review, code fixes | `Qwen3.8-DFLASH2-Implementer` | 131,072 |
+| `models.assessor` | Independent technical soundness and quality review of functional specifications | `Ornith-1.5-35B-Q6_K.gguf` | 131,072 |
+| `models.fastPool` | High-speed recursive slice fit checking and autonomous feature ideation/veto | `QwenOptimised32k`, `QwenOptimised64k`, `Qwen3.8-27B-Q4_K_M` | 32,768 – 131,072 |
+| `models.randomPool` | Fallback pool for autonomous feature generation | Full roster of verified models | Variable |
+
+### Stage-by-Stage LLM Call Configuration
+
+| Pipeline Stage | Sub-Stage / Action | Model Role Used | Prompt Builder | Working Context Budget | Max Retries / Loops |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Stage 1: Spec** | `SPEC_AUTHOR` | `models.technicalWriter` | `prompts.spec_author` | `min(maxPromptTokens, ctx - 8192)` | 2 attempts |
+| | `SPEC_ASSESS_ORNITH` | `models.assessor` | `prompts.spec_assess(..., "ornith")` | `min(maxPromptTokens, ctx - 8192)` | Shared `maxSpecKickbacks` (3) |
+| | `SPEC_ASSESS_TW` | `models.technicalWriter` | `prompts.spec_assess(..., "tw")` | `min(maxPromptTokens, ctx - 8192)` | Shared `maxSpecKickbacks` (3) |
+| **Stage 2: Feasibility** | `FEASIBILITY` | `models.implementer` | `prompts.feasibility` | `min(maxPromptTokens, ctx - 8192)` | 1 retry after spec revision |
+| **Stage 3: Slicing** | `SLICING` | `models.implementer` | `prompts.slice` | `min(maxPromptTokens, ctx - 8192)` | 1 author attempt |
+| | `SLICE_CHECK` | `models.fastPool[0]` (or implementer) | `prompts.slice_check` | `min(maxPromptTokens, ctx - 8192)` | `maxSliceCheckLoops` (3) |
+| **Stage 4: Slices** | `SLICE_IMPLEMENT` | `models.implementer` | `prompts.implement_slice` | `min(maxPromptTokens, ctx - 8192)` | `maxSliceImplement` (5) |
+| | `TECH_REVIEW` | `models.implementer` | `prompts.tech_review` | `min(maxPromptTokens, ctx - 8192)` | `maxSliceTechReview` (5) |
+| | `FUNC_REVIEW` | `models.technicalWriter` | `prompts.func_review` | `min(maxPromptTokens, ctx - 8192)` | `maxSliceFuncReview` (5) |
+| | `SLICE_FIX` | `models.implementer` | `prompts.fix_slice` | `min(maxPromptTokens, ctx - 8192)` | Interleaved with review loops |
+| **Stage 5: Holistic** | `HOLISTIC` | `models.technicalWriter` | `prompts.holistic_review` | `min(maxPromptTokens, ctx - 8192)` | 1 attempt $\rightarrow$ merge to trunk |
+| **Autonomous** | `AUTONOMOUS_SUGGEST` | Random model A from `fastPool` | `prompts.autonomous_suggest` | `min(maxPromptTokens, ctx - 8192)` | Target queue depth (5) |
+| | `AUTONOMOUS_REVIEW` | Random model B from `fastPool` ($B \neq A$) | `prompts.autonomous_review` | `min(maxPromptTokens, ctx - 8192)` | Target queue depth (5) |
+
+---
+
+## Configuration Reference (`config.json`)
+
+```json
+{
+  "workDir": "/home/donald/work",
+  "trunkBranch": "pi/trunk",
+  "taskProvider": "directory",
+  "directoryProvider": {
+    "pendingDir": "/home/donald/work/queue/pending"
+  },
+  "tokenBudget": 60000,
+  "maxPromptTokens": 60000,
+  "maxCrashRetries": 2,
+  "maxSpecKickbacks": 3,
+  "maxSliceCheckLoops": 3,
+  "maxSliceImplement": 5,
+  "maxSliceTechReview": 5,
+  "maxSliceFuncReview": 5,
+  "autonomousQueueTarget": 5,
+  "models": {
+    "technicalWriter": "Qwen3.8-DFLASH2-TechnicalWriter",
+    "implementer": "Qwen3.8-DFLASH2-Implementer",
+    "assessor": "Ornith-1.5-35B-Q6_K.gguf",
+    "fastPool": [
+      "QwenOptimised32k",
+      "QwenOptimised64k",
+      "OrinthOptimised32k",
+      "Ornith-1.5-35B-Q6_K.gguf",
+      "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
+      "Qwen3.8-27B-UD-Q8_K_XL",
+      "Qwen3.8-27B-Q4_K_M"
+    ],
+    "randomPool": [
+      "QwenOptimised32k",
+      "QwenOptimised64k",
+      "QwenOptimised128k",
+      "OrinthOptimised32k",
+      "Ornith-1.5-35B-Q6_K.gguf",
+      "Qwen3.8-27B-Q4_K_M",
+      "Qwen3.8-27B-UD-Q4_K_XL",
+      "Qwen3.8-27B-UD-Q8_K_XL",
+      "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
+      "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P",
+      "Qwen3.8-DFLASH2-Implementer",
+      "Qwen3.8-DFLASH2-TechnicalWriter"
+    ]
+  },
+  "modelContext": {
+    "OrinthOptimised32k": 32768,
+    "Ornith-1.5-35B-Q6_K.gguf": 131072,
+    "Qwen3.8-27B-Q4_K_M": 131072,
+    "Qwen3.8-27B-UD-Q4_K_XL": 131072,
+    "Qwen3.8-27B-UD-Q8_K_XL": 131072,
+    "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2": 131072,
+    "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P": 131072,
+    "Qwen3.8-DFLASH2-Implementer": 131072,
+    "Qwen3.8-DFLASH2-TechnicalWriter": 131072,
+    "QwenOptimised128k": 131072,
+    "QwenOptimised32k": 32768,
+    "QwenOptimised64k": 65536
+  }
+}
+```
+
+---
+
+## Directory & Queue Structure
+
+```text
 work/
-  harness/            this repo (the engine)
+  harness/            Engine repository
   queue/
-    pending/          drop .md task files here
-    claimed/          a run's in-flight claims (sidecar names the owning run)
-    active/           task currently in flight (state + artifacts)
-    review/           one exec-summary .md per finished task
-    done/  failed/  parked/
-  stats/sessions.jsonl
+    pending/          Incoming task cards (.md)
+    claimed/          In-flight task claims (locked per runner PID)
+    active/           Currently executing tasks (state + session artifacts)
+      <task_id>/
+        task.json     Checkpoint status, recorded workdir, slice progress
+        original.md   Initial task card
+        artifacts/    spec.md, slices.md, review logs, progress notes
+    review/           Executive summaries (.md) generated for every terminal task
+    done/             Successfully merged tasks
+    failed/           Tasks rejected at feasibility (kickout)
+    parked/           Tasks halted due to budget overruns or review/crash limits
+  stats/
+    sessions.jsonl    Unified JSONL telemetry per session
   logs/
-    harness.log       every harness log line (+ harness.log.1 after rotation)
-    supervisor.log    supervisor loop (+ supervisor.log.1 after rotation)
-    supervisor.pid    single-instance lockfile
-    children/         <UTC ts>-<subcommand>.log per supervised child (stdout+stderr)
-  STOP                touch this to halt the supervisor gracefully
+    harness.log       Full pipeline execution log (rotated at 5MB)
+    supervisor.log    Supervisor lifecycle log
+    children/         Raw stdout/stderr capture per child process
 ```
 
-`work/queue/*`, `work/logs/` and `work/stats/sessions.jsonl` are created by the
-composition root (`harness/composition.py`) on every command.
+---
 
-## Usage
-
-Subcommands and flags are defined in `harness/cli/parser.py`; each one answers
-`python3 harness.py <cmd> --help`.
+## CLI Usage
 
 ```bash
-cd work/harness
-python3 harness.py run                 # all pending, one claim at a time, then autonomous
-                                       # --continue, --requeue-stale
-python3 harness.py run-task <file.md>  # one task  --continue, --fresh
-python3 harness.py run-one             # claim and process exactly one pending task
-python3 harness.py run-task-loop       # pending until empty, then exit
-                                       # --continue, --requeue-stale
-python3 harness.py autonomous          # just generate tasks
-python3 harness.py status              # queue (all seven dirs) + stats
-python3 harness.py report              # stats only
-python3 harness.py resume <task_id>    # resume from the last checkpoint
-                                       # --yes/-y, --fresh
-python3 harness.py unpark <task_id>    # parked/ or failed/ → pending/ (alias: requeue)
-python3 harness.py requeue-claims      # hand stranded claimed/ files back to pending
-                                       # --older-than HOURS, --dry-run
+# Process all pending tasks, then enter autonomous generation mode
+python3 harness.py run [--continue] [--requeue-stale]
+
+# Process a single specific task card
+python3 harness.py run-task <file.md> [--fresh] [--continue]
+
+# Claim and process exactly one task from pending/
+python3 harness.py run-one
+
+# Process pending tasks in a loop until empty, then exit
+python3 harness.py run-task-loop [--continue] [--requeue-stale]
+
+# Autonomous mode: generate and validate tasks until queue target is met
+python3 harness.py autonomous
+
+# Inspect queue distribution and session performance metrics
+python3 harness.py status
+python3 harness.py report
+
+# Resume a parked/active task from its latest checkpoint
+python3 harness.py resume <task_id> [--yes] [--fresh]
+
+# Requeue a parked or failed task back to pending
+python3 harness.py unpark <task_id>
+
+# Reclaim orphaned claims from stranded processes
+python3 harness.py requeue-claims [--older-than HOURS] [--dry-run]
 ```
-
-- `--continue` resumes in-flight tasks in `active/` before the pending queue is
-  worked; `--fresh` deletes an existing `active/` dir and restarts that task from
-  scratch (`run-task`, `resume`).
-- `--requeue-stale` (`run`, `run-task-loop`) reclaims this invocation's own claims
-  older than `CLAIM_STALE_HOURS` at startup. Off unless flagged, or
-  `"autoRequeueStaleClaims": true` in `config.json`.
-- `requeue-claims` is the operator command for claims a dead run left behind
-  (`--dry-run` to preview, `--older-than HOURS` to bound it). A claim with no
-  readable owner sidecar is refused, not moved.
-
-## Supervisor
-
-`supervisor.py` (pure Python) keeps the harness
-running in bounded cycles. It decides each cycle from `pending/`, `active/` and
-`claimed/`, spawns one child (`run-task-loop --continue`, or `autonomous` when
-there is nothing to work), and backs off when a cycle changes no task identity.
-
-```bash
-cd work/harness
-python3 supervisor.py start     # daemonize and run
-python3 supervisor.py status    # is it running?
-python3 supervisor.py stop      # SIGTERM the supervisor and its child tree
-python3 supervisor.py run       # the loop in the foreground
-touch ../STOP                   # alternative graceful stop
-```
-
-Unknown or missing arguments print the module docstring; `supervisor.py` has no
-`--help` flag.
-
-## Configuration (`config.json`)
-
-| key | default | meaning |
-|-----|---------|---------|
-| `workDir` | — | root of `queue/`, `stats/`, `logs/` |
-| `maxPromptTokens` | 60000 | prompt cap; crossing it parks the task |
-| `tokenBudget` | 60000 | legacy spelling of `maxPromptTokens` (fallback only) |
-| `maxSpecKickbacks` | 3 | spec kickback rounds before the stage fails |
-| `maxSliceImplement` | 5 | implement iterations per slice |
-| `maxSliceTechReview` | 5 | tech-review iterations per slice |
-| `maxSliceFuncReview` | 5 | func-review iterations per slice |
-| `maxSliceCheckLoops` | 3 | recursive slice fit-check loops |
-| `maxCrashRetries` | 2 | retries after a crashed/timed-out session before parking |
-| `autonomousQueueTarget` | 5 | pending depth autonomous mode fills to |
-| `trunkBranch` | `pi/trunk` | merge target; also the branch the breaker rolls back |
-| `modelContext` | {} | model → real context window (tokens); an unmapped name whose suffix says 32k/64k/128k uses that, anything else falls back to 131072 |
-| `taskProvider` | `directory` | which `TaskProvider` to build |
-| `directoryProvider.pendingDir` | `<workDir>/queue/pending` | where task files are read from |
-| `models.technicalWriter` / `implementer` / `assessor` | — | role → model for the pipeline stages |
-| `models.fastPool` | — | high-volume, low-stakes stages (autonomous suggest/review) |
-| `models.randomPool` | — | full proposal pool; also the fastPool fallback |
-| `autoRequeueStaleClaims` | false | opt-in startup stale-claim reclaim for `run`/`run-task-loop` |
-
-Environment overrides: `HARNESS_CONFIG` (config path), `CLAIM_STALE_HOURS`
-(6.0), `HARNESS_PI_PROVIDER` (`llama-swap`), and for the supervisor `SLEEP_S`
-(60), `SUPERVISOR_MAX_SLEEP_S` (900), `MAX_CYCLES` (0 = unlimited),
-`FAIL_LIMIT` (3), `SUPERVISOR_MAX_LOG_BYTES` (5000000),
-`SUPERVISOR_MAX_CHILD_LOGS` (50).
-
-## Models (llama-swap)
-
-| role              | model                          |
-|-------------------|--------------------------------|
-| technical writer  | Qwen3.8-DFLASH2-TechnicalWriter|
-| implementer       | Qwen3.8-DFLASH2-Implementer    |
-| assessor          | Ornith-1.5-35B-Q6_K.gguf       |
-| autonomous pool   | `models.fastPool` (7 models), falling back to `models.randomPool` (12) |
-
-## Adding a task provider
-
-Subclass `TaskProvider` in `harness/core/providers.py`, implement
-`fetch_pending()` (and optionally `submit()`), and register it in
-`create_provider()` in the same file. Set `taskProvider` in `config.json` to its
-name.

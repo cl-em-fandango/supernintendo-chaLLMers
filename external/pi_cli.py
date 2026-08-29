@@ -73,6 +73,30 @@ def _terminate_reap(proc: subprocess.Popen, *, grace_s: float = TERMINATE_GRACE_
         proc.wait()
 
 
+def _extract_text_from_message(msg: dict) -> str:
+    """Extract all text content from an assistant message regardless of schema."""
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    parts = []
+    if isinstance(content, list):
+        for c in content:
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, dict):
+                if c.get("type") == "text" and "text" in c:
+                    parts.append(str(c["text"]))
+                elif "text" in c:
+                    parts.append(str(c["text"]))
+                elif "content" in c and isinstance(c["content"], str):
+                    parts.append(str(c["content"]))
+    elif "text" in msg and isinstance(msg["text"], str):
+        parts.append(msg["text"])
+    return "\n".join(parts)
+
+
 def _format_token_count(n: int) -> str:
     """Format token count compactly with k suffix if >= 1000."""
     if n < 1000:
@@ -308,15 +332,20 @@ def run_pi_session(
     # somebody reads, which would otherwise stall stdout, then the reap, forever.
     drain_thread: threading.Thread | None = None
 
-    # Provider is overridable for tests / alternative backends (e.g. openrouter);
-    # production default stays llama-swap.
-    provider = os.environ.get("HARNESS_PI_PROVIDER", "llama-swap")
+    # Provider is overridable for tests / alternative backends (e.g. openrouter).
+    # When empty, unset, or 'none', --provider is omitted so pi resolves models
+    # directly by name from configured endpoints (e.g. models-store.json).
+    provider = os.environ.get("HARNESS_PI_PROVIDER", "")
+    pi_cmd = ["pi"]
+    if provider and provider.lower() not in ("none", "null", "disabled", "unset"):
+        pi_cmd.extend(["--provider", provider])
+    pi_cmd.extend([
+        "--model", model,
+        "--no-session", "--mode", "json", "-p", prompt,
+    ])
     try:
         proc = subprocess.Popen(
-            [
-                "pi", "--provider", provider, "--model", model,
-                "--no-session", "--mode", "json", "-p", prompt,
-            ],
+            pi_cmd,
             cwd=workdir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -420,19 +449,20 @@ def run_pi_session(
                         tot_tok = int(usage.get("totalTokens") or usage.get("total_tokens") or (in_tok + out_tok))
                         log(f"  • [LLM] in={_format_token_count(in_tok)} out={_format_token_count(out_tok)} tok (turn total={_format_token_count(tot_tok)}, peak={_format_token_count(peak)})")
                 if msg.get("role") == "assistant":
-                    content_text = ""
-                    for c in msg.get("content", []):
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            txt = c.get("text", "")
-                            text_parts.append(txt)
-                            content_text += txt
-                    summary = _format_thinking_summary(content_text)
-                    if summary:
-                        log(f"  • [THINK] {summary}")
+                    content_text = _extract_text_from_message(msg)
+                    if content_text:
+                        text_parts.append(content_text)
+                        summary = _format_thinking_summary(content_text)
+                        if summary:
+                            log(f"  • [THINK] {summary}")
             elif t == "agent_end":
                 for m in e.get("messages", []):
                     if measure((m or {}).get("usage")):
                         break
+                    if not text_parts and isinstance(m, dict) and m.get("role") == "assistant":
+                        txt = _extract_text_from_message(m)
+                        if txt:
+                            text_parts.append(txt)
                 if over_context_budget:
                     break
         # stdout closed (or we broke). Reap the process.

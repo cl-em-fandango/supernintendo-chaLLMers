@@ -61,7 +61,7 @@ def ephemeral_container(
     tw_model = os.environ.get("PI_E2E_TW_MODEL", os.environ.get("PI_E2E_MODEL", DEFAULT_TW_MODEL))
     imp_model = os.environ.get("PI_E2E_IMP_MODEL", os.environ.get("PI_E2E_MODEL", DEFAULT_IMP_MODEL))
     assessor = os.environ.get("PI_E2E_ASSESSOR", DEFAULT_ASSESSOR_MODEL)
-    provider = os.environ.get("HARNESS_PI_PROVIDER", "llama-swap")
+    provider = os.environ.get("HARNESS_PI_PROVIDER", "")
 
     manager = ContainerLifecycleManager(engine=container_engine)
     container = manager.spawn_ephemeral_container(
