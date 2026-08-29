@@ -20,11 +20,24 @@ from . import prompts
 from .config import Config, DEFAULT_CONTEXT_WINDOW
 from .enums import Stage, Verdict
 from .stats import SessionRecord, StatsStore
-from external.pi_cli import run_pi_session, _extract_verdict, _now
+from external.pi_cli import (
+    PiSessionResult,
+    run_pi_session,
+    _extract_verdict,
+    _now,
+)
 
 
 @dataclass
 class SessionResult:
+    """A finished session.
+
+    `over_context_budget` is the streamed over-cap stop (T48) lifted into this
+    layer: usage went strictly over `context_limit` and the child was stopped for
+    that reason. It is deliberately not folded into `crashed` — a session we
+    stopped on purpose and a child that died stay tellable apart, and the child's
+    own return code stays in the row's `rc` either way.
+    """
     ok: bool
     verdict: Verdict
     peak_tokens: int
@@ -32,6 +45,8 @@ class SessionResult:
     output: str
     out_file: Path
     crashed: bool = False
+    over_context_budget: bool = False
+    context_limit: int | None = None
 
 
 class SessionRunner:
@@ -78,13 +93,20 @@ class SessionRunner:
         # ceiling (smaller for 32k/64k models, ~100k for 128k models).
         full_prompt = prompts.CONTEXT_BUDGET_NOTE.format(budget_k=budget // 1000) + prompt
 
-        # Run the pi subprocess using the external module
+        # Run the pi subprocess using the external module.
+        # The ceiling handed to the stream is the configured cap
+        # (`maxPromptTokens`), the one threshold decision D2 names — not the
+        # per-model `budget` above. The budget is what the prompt tells the model
+        # to aim under; this is the hard stop for a session that ignores it.
+        # Handing it down is what makes the check run on every streamed usage
+        # value instead of after the session is already over.
         result = run_pi_session(
             model=model,
             workdir=workdir,
             prompt=full_prompt,
             out_file=out_file,
             log=self.log,
+            max_context_tokens=self.cfg.max_prompt_tokens,
         )
         
         # `result.output` is assistant text only (T17 removed the stderr splice),
@@ -108,7 +130,7 @@ class SessionRunner:
             prompt_chars=len(prompt),
             slice=slice_id,
             iteration=iteration,
-            notes=notes + (f" [crashed: {result.err[:120]}]" if result.crashed else ""),
+            notes=_row_notes(notes, result),
         ))
         self.log(f"  ◀ {stage_value} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
@@ -128,10 +150,29 @@ class SessionRunner:
             output=result.output,
             out_file=result.out_file,
             crashed=result.crashed,
+            over_context_budget=result.over_context_budget,
+            context_limit=result.context_limit,
         )
 
 
 
+
+
+def _row_notes(notes: str, result: PiSessionResult) -> str:
+    """Fold the run's anomalies into the one `notes` string of one stats row.
+
+    Built before the row is appended, so a session stays exactly one row: an
+    over-cap stop and a dead child are both annotations on the same record,
+    never a second append and never a rewrite of the JSONL. The over-cap
+    annotation carries both numbers because the row is what an operator reads
+    afterwards — the measured peak and the ceiling that stopped the session.
+    """
+    if result.over_context_budget:
+        notes += (f" over-cap peak={result.peak_tokens}"
+                  f" limit={result.context_limit}")
+    if result.crashed:
+        notes += f" [crashed: {result.err[:120]}]"
+    return notes
 
 
 def _outcome(verdict: str) -> str:

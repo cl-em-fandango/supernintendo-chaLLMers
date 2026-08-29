@@ -67,7 +67,11 @@ def _cfg(work_dir: Path, model_context_map: dict | None = None) -> Config:
 def _fake_pi(output: str):
     """Stand in for `external.pi_cli.run_pi_session`: no subprocess, fixed text."""
 
-    def run(*, model, workdir, prompt, out_file, log) -> PiSessionResult:
+    # `max_context_tokens` is the cap T49 hands to the stream layer; this double
+    # takes it and ignores it — the cap itself is asserted in
+    # tests/test_over_cap_session.py.
+    def run(*, model, workdir, prompt, out_file, log,
+            max_context_tokens=None) -> PiSessionResult:
         Path(out_file).write_text(output)
         return PiSessionResult(rc=0, crashed=False, err="", peak_tokens=7,
                                duration_s=0.1, output=output,
