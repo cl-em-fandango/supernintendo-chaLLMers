@@ -364,6 +364,9 @@ class RunTaskLoopOwnershipTest(_RunFixture):
         self.provider.claims.clear()
         self.provider.requeues.clear()
         self.pipeline.raises = None
+        # Owner B needs its own work to claim: the crashed run's 001-a.md is in
+        # claimed/, so pending/ is empty and a run over it would claim nothing.
+        self._seed("002-b.md")
         self.assertEqual(handlers.cmd_run(), 0)
 
         owner_b = self._claim_owners()[0]
