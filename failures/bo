@@ -1,0 +1,1 @@
+FAILED tests/test_resume_cli.py::ResumeCliTest::test_resume_parked_task_yes_flag_skips_prompt

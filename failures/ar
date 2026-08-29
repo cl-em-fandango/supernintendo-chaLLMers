@@ -1,0 +1,1 @@
+FAILED tests/test_merge_checkpoint.py::MergeCheckpointTest::test_merge_is_checkpointed_before_complete

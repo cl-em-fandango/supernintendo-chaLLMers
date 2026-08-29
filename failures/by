@@ -1,0 +1,1 @@
+FAILED tests/test_stats.py::RenderReportTest::test_stage_lines_match_stage_report

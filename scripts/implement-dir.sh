@@ -19,7 +19,7 @@ RENDER="${RENDER:-1}"
 FEATURE_DIR="${1:?usage: implement-dir.sh <feature_dir>}"
 [ -d "$FEATURE_DIR" ] || { echo "not a directory: $FEATURE_DIR" >&2; exit 1; }
 
-MODEL="Qwen3.8-Flash-Next-UD-Q4_K_XL"
+MODEL="Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L"
 PROVIDER="${PROVIDER:-${HARNESS_PI_PROVIDER:-llama-swap}}"
 GLOB="${GLOB:-*.md}"
 LOG_DIR="${LOG_DIR:-.pi-implement-dir}"
@@ -50,7 +50,7 @@ for spec in "${FILES[@]}"; do
             --provider "$PROVIDER" \
             ${MODEL:+--model "$MODEL"} \
             --no-session --mode json -p \
-            "Implement exactly one feature in this repository: read the file $spec and do what it asks. Do not start any other feature. Follow CODING_STANDARDS.md - DO NOT RUN THE TESTS. commit your work, and end your final message with a line 'VERDICT: done' (or 'VERDICT: failed' with the reason). You are to move the task to the directory plan-2026-08-26-for-test/ so the next agent doesn't waste time checking it. IF A TASK IS NON-ACTIONABLE, DO NOT ACTION IT AND EXIT WITH 'VERDICT: no action' and move it into plan-2026-08-26-done/. DO NOT EXECUTE ANY PYTHON. DO NOT EXECUTE A PI INSTANCE. "  \
+            "Fix the broken test: read the file $spec and fix the test failure. Do not address any other file. Run only the failing test to verify the fix. Follow CODING_STANDARDS.md - DO NOT RUN THE FULL TEST SUITE. commit your work, and end your final message with a line 'VERDICT: done' (or 'VERDICT: failed' with the reason). You are to move the task to the directory fixed/ so another agent doesn't waste time on it. If the test is already passing, consider it as fixed and move the file and exit. "  \
             </dev/null 2>&1 | tee "$log" | "${render[@]}"
     then
         echo "--- $name ok"
