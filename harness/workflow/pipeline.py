@@ -52,6 +52,39 @@ class AllAttemptsCrashed(Exception):
                          f"{_stage_value(stage)} (task {task_id})")
 
 
+class OverContextBudget(Exception):
+    """One session was stopped for crossing the context cap (T74).
+
+    The trip itself happens in the stream (`external/pi_cli.py`) and is lifted
+    onto `SessionResult.over_context_budget` by `SessionRunner`; this exception
+    is the *routing* of that trip. `_run` raises it before the crash-retry
+    branch, so an over-cap session is never retried — re-running a session that
+    already proved too big for the window would only burn the same context
+    again — and its partial verdict never reaches a stage.
+
+    It carries everything a handoff needs, because the session that tripped is
+    the only place those values exist: the stage, slice id and iteration the
+    call site asked for, the measured peak, the cap that stopped it, and the
+    path of the partial session output. `Pipeline.process` catches it once and
+    parks with `str(exc)`; the structured fields are for the handoff rendering
+    that reads them off the caught exception.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str, *,
+                 slice_id: str | None, iteration: int,
+                 peak_tokens: int, context_limit: int | None,
+                 out_file: Path | None):
+        self.task_id = task_id
+        self.stage = stage
+        self.slice_id = slice_id
+        self.iteration = iteration
+        self.peak_tokens = peak_tokens
+        self.context_limit = context_limit
+        self.out_file = out_file
+        super().__init__(f"over context budget: peak={peak_tokens} "
+                         f"limit={context_limit}")
+
+
 class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
         self.cfg = cfg
@@ -70,13 +103,29 @@ class Pipeline:
         `AllAttemptsCrashed` is raised (T57) and the task is parked by
         `process`; the crashed result is never returned to a stage.
 
+        An over-cap stop is checked first (T74) and raises `OverContextBudget`
+        on the spot: it outranks the crash path — a session we stopped on
+        purpose is not a child that died and gets no retry at all — and the
+        result is never returned, so a stage cannot route on the partial
+        verdict a stopped session left behind.
+
         Call sites pass a `Stage` member (T30); `SessionRunner` converts it at
         the stats edge, so the value travelling through here stays whatever the
-        caller handed over.
+        caller handed over. `slice_id` and `iteration` travel in `kw` and are
+        read back out of it for the exception payload, with the same defaults
+        `SessionRunner.run` uses.
         """
         for attempt in range(self.max_crash_retries + 1):
             r = self.runner.run(model, workdir, prompt, task_id=task_id,
                                 stage=stage, **kw)
+            if r.over_context_budget:
+                raise OverContextBudget(
+                    task_id, stage,
+                    slice_id=kw.get("slice_id"),
+                    iteration=kw.get("iteration", 1),
+                    peak_tokens=r.peak_tokens,
+                    context_limit=r.context_limit,
+                    out_file=r.out_file)
             if not r.crashed:
                 return r
             if attempt < self.max_crash_retries:
@@ -158,6 +207,14 @@ class Pipeline:
                     return self._stage_failed(task.id, stage, task_dir)
                 self.lifecycle.checkpoint(task.id, stage)
             return self.stage_holistic(ctx)
+        except OverContextBudget as e:
+            # The one catch site (T74). Crossing the cap is neither a content
+            # verdict nor a process death, so it parks whatever stage it
+            # happened on — and it is caught here rather than in a stage for
+            # the same reason as T57: no stage may route on the partial output
+            # of a session that was stopped mid-work.
+            self.lifecycle.park(task.id, str(e))
+            return "parked"
         except AllAttemptsCrashed as e:
             # The one catch site (T57). A stage that lost every attempt to a
             # dead process is a process failure, not a content verdict, so it
