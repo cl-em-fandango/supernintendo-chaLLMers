@@ -30,8 +30,10 @@ Implement a pure Python utility file `math_tools.py` in the root of the target r
 """
     c.write_task(task_id, "Implement Math Tools (power and is_even)", requirements)
 
+    print(f"\n==> [E2E Test] Starting harness run-one for task '{task_id}'...")
     # Execute harness run-one in container (allowing up to 3600s for full multi-stage local inference)
     res = c.run_harness("run-one", timeout=3600)
+    print(f"==> [E2E Test] Harness run-one exited with code {res.returncode}")
     
     # Check if task reached done
     if not c.file_exists(f"/workspace/queue/done/{task_id}"):
@@ -90,7 +92,9 @@ Implement a string slugification helper `slug_utils.py` in the root of the targe
 """
     c.write_task(task_id, "Implement String Slugifier", requirements)
 
+    print(f"\n==> [E2E Test] Starting harness run-one for task '{task_id}'...")
     res = c.run_harness("run-one", timeout=3600)
+    print(f"==> [E2E Test] Harness run-one exited with code {res.returncode}")
     if not c.file_exists(f"/workspace/queue/done/{task_id}"):
         diagnostics = c.get_diagnostic_dump(task_id)
         pytest.fail(

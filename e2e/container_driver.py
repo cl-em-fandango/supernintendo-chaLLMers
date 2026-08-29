@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -88,6 +90,7 @@ class EphemeralContainer:
         check: bool = False,
         env: dict[str, str] | None = None,
         timeout: int = 3600,
+        stream: bool = True,
     ) -> ContainerExecutionResult:
         """Execute a command inside the running container."""
         if not self.is_running():
@@ -107,6 +110,7 @@ class EphemeralContainer:
             "HOME": "/home/harnessuser",
             "HARNESS_PI_PROVIDER": os.environ.get("HARNESS_PI_PROVIDER", ""),
             "DISABLE_FIREWALL": "1",
+            "PYTHONUNBUFFERED": "1",
         }
         if env:
             default_env.update(env)
@@ -120,20 +124,60 @@ class EphemeralContainer:
             cmd.append(self.container_name)
             cmd.extend(command)
 
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if check and proc.returncode != 0:
-            raise RuntimeError(
-                f"Container exec failed (rc={proc.returncode}):\n"
-                f"Command: {command}\n"
-                f"Stdout: {proc.stdout}\n"
-                f"Stderr: {proc.stderr}"
+        if not stream:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
-        return ContainerExecutionResult(proc.returncode, proc.stdout, proc.stderr)
+            stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
+        else:
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+
+            def read_stderr():
+                for line in proc.stderr:
+                    stderr_parts.append(line)
+                    sys.stderr.write(line)
+                    sys.stderr.flush()
+
+            err_thread = threading.Thread(target=read_stderr, daemon=True)
+            err_thread.start()
+
+            try:
+                for line in proc.stdout:
+                    stdout_parts.append(line)
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            finally:
+                err_thread.join(timeout=2)
+
+            rc = proc.returncode
+            stdout = "".join(stdout_parts)
+            stderr = "".join(stderr_parts)
+
+        if check and rc != 0:
+            raise RuntimeError(
+                f"Container exec failed (rc={rc}):\n"
+                f"Command: {command}\n"
+                f"Stdout: {stdout}\n"
+                f"Stderr: {stderr}"
+            )
+        return ContainerExecutionResult(rc, stdout, stderr)
 
     def write_file(self, container_path: str, content: str) -> None:
         """Write content to a file inside the container."""
@@ -351,6 +395,7 @@ chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
             )
             if commit_res.returncode != 0:
                 raise RuntimeError(f"Failed to commit container snapshot: {commit_res.stderr}")
+            print(f"==> [E2E] Container snapshot '{snapshot_tag}' committed successfully.")
 
         finally:
             subprocess.run([self.engine, "rm", "-f", temp_builder_name], check=False, capture_output=True)
@@ -365,6 +410,7 @@ chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
     ) -> EphemeralContainer:
         """Step 4: Spawn fresh ephemeral container instance from the snapshot startpoint."""
         container_name = f"harness-e2e-{uuid.uuid4().hex[:8]}"
+        print(f"==> [E2E] Spawning ephemeral container '{container_name}' from snapshot '{snapshot_tag}'...")
 
         flags = [
             "-d",
