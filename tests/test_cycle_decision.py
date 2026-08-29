@@ -21,8 +21,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.workflow.cycle import (CycleAction,  # noqa: E402
-                                    backoff_seconds, command_for_action,
-                                    cycle_summary, decide_cycle_action,
+                                    CycleSnapshot, backoff_seconds,
+                                    command_for_action, cycle_summary,
+                                    decide_cycle_action, made_progress,
                                     next_fail_state, subcommand_for_action)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -345,6 +346,138 @@ class NextFailStateTest(unittest.TestCase):
             next_fail_state(failcount=-1, rc=1, limit=3)
         with self.assertRaises(ValueError):
             next_fail_state(failcount=0, rc=1, limit=0)
+
+
+class CycleSnapshotIdentityTest(unittest.TestCase):
+    """T47 (hardening review F6): progress is task identity, not three numbers.
+
+    T15 compared `(pending, in_flight, claims)` before and after a child. A
+    cycle that swaps one task for another keeps all three counts equal, so the
+    count compare called real work a stall and backed off over it. `CycleSnapshot`
+    holds the ids, `made_progress` compares them.
+    """
+
+    def test_equal_counts_with_changed_ids_is_progress(self):
+        """The exact false stall T15 could not see, now progress."""
+        before = CycleSnapshot(("a",), (), ())
+        after = CycleSnapshot(("b",), (), ())
+        self.assertEqual(before.counts, after.counts,
+                         "the case must keep every count equal")
+        self.assertTrue(made_progress(before, after))
+
+    def test_identical_identities_are_not_progress(self):
+        """The same tasks in the same places: an idle cycle, streak grows."""
+        snapshot = CycleSnapshot(("a",), ("b",), ("c",))
+        self.assertFalse(made_progress(snapshot, snapshot))
+        self.assertFalse(made_progress(
+            snapshot, CycleSnapshot(("a",), ("b",), ("c",))))
+
+    def test_a_replacement_in_any_queue_is_progress(self):
+        """Pending, in-flight and claimed ids all count."""
+        base = CycleSnapshot(("a",), ("b",), ("c",))
+        for other in (CycleSnapshot(("z",), ("b",), ("c",)),
+                      CycleSnapshot(("a",), ("z",), ("c",)),
+                      CycleSnapshot(("a",), ("b",), ("z",))):
+            with self.subTest(other=other):
+                self.assertEqual(base.counts, other.counts)
+                self.assertTrue(made_progress(base, other))
+
+    def test_a_task_moving_between_queues_is_progress(self):
+        """One task leaving pending/ for active/ at equal totals."""
+        before = CycleSnapshot(("a", "b"), (), ())
+        after = CycleSnapshot(("a",), ("b",), ())
+        self.assertEqual(before.counts.pending + before.counts.in_flight,
+                         after.counts.pending + after.counts.in_flight)
+        self.assertTrue(made_progress(before, after))
+
+    def test_build_sorts_so_scan_order_is_not_progress(self):
+        """The same tasks listed in another order are the same queue."""
+        before = CycleSnapshot.build(["b", "a"], ["d", "c"], ["f", "e"])
+        after = CycleSnapshot.build(["a", "b"], ["c", "d"], ["e", "f"])
+        self.assertEqual(before, after)
+        self.assertFalse(made_progress(before, after))
+        self.assertEqual(before.pending, ("a", "b"))
+        self.assertEqual(before.in_flight, ("c", "d"))
+        self.assertEqual(before.claims, ("e", "f"))
+
+    def test_counts_are_the_snapshot_lengths(self):
+        """The logged numbers are derived from the ids, never scanned separately."""
+        snapshot = CycleSnapshot.build(["a", "b"], ["c"], ["d", "e", "f"])
+        self.assertEqual((snapshot.counts.pending, snapshot.counts.in_flight,
+                          snapshot.counts.claims), (2, 1, 3))
+
+    def test_an_empty_snapshot_is_all_empty(self):
+        empty = CycleSnapshot((), (), ())
+        self.assertEqual(empty.counts.pending, 0)
+        self.assertFalse(made_progress(empty, CycleSnapshot.build([], [], [])))
+
+    def test_a_snapshot_cannot_be_mutated(self):
+        """Frozen: the before-snapshot cannot be edited into 'progress'."""
+        snapshot = CycleSnapshot(("a",), (), ())
+        with self.assertRaises(Exception):
+            snapshot.pending = ("b",)  # type: ignore[misc]
+
+    def test_unsorted_ids_are_rejected(self):
+        """Unsorted ids would report progress from scan order alone."""
+        with self.assertRaises(ValueError) as ctx:
+            CycleSnapshot(("b", "a"), (), ())
+        self.assertIn("pending", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            CycleSnapshot((), ("d", "c"), ())
+        with self.assertRaises(ValueError):
+            CycleSnapshot((), (), ("f", "e"))
+
+
+class SupervisorProgressContractTest(unittest.TestCase):
+    """T47's seam in the loop's source, proven with `ast` — no import, no exec.
+
+    The loop must decide and log from one snapshot's derived counts and ask
+    `made_progress` whether the cycle moved anything: a second scan for the
+    numbers, or a hand-written compare of the pair, is where the count-only
+    stall would creep back in.
+    """
+
+    def test_run_loop_reads_its_counts_from_one_snapshot(self):
+        calls = [n for n in ast.walk(_run_loop())
+                 if isinstance(n, ast.Call)
+                 and _call_name(n) in ("decide_cycle_action", "cycle_summary")]
+        self.assertTrue(calls, "run_loop() no longer decides from the counts")
+        for call in calls:
+            for arg in call.args[:3]:
+                self.assertIsInstance(
+                    arg, ast.Attribute,
+                    "a count passed to the decision is not a snapshot field")
+                self.assertIsInstance(arg.value, ast.Name)
+                self.assertEqual(
+                    arg.value.id, "counts",
+                    "a count was read from somewhere other than the "
+                    "snapshot's derived `counts`")
+
+    def test_run_loop_asks_made_progress_and_compares_nothing_itself(self):
+        loop = _run_loop()
+        self.assertTrue(
+            any(isinstance(n, ast.Call) and _call_name(n) == "made_progress"
+                for n in ast.walk(loop)),
+            "run_loop() never calls cycle.made_progress()")
+        for node in ast.walk(loop):
+            if isinstance(node, ast.Compare) and \
+                    any(isinstance(op, ast.NotEq) for op in node.ops):
+                self.assertFalse({"before", "after"} & _names(node),
+                                 "run_loop() compares the snapshots itself "
+                                 "instead of asking made_progress()")
+
+    def test_the_snapshot_is_built_from_ids_not_from_lengths(self):
+        """`_queue_snapshot()` returns identities; counts come from the snapshot."""
+        node = next((n for n in ast.walk(ast.parse(SUPERVISOR_SRC))
+                     if isinstance(n, ast.FunctionDef)
+                     and n.name == "_queue_snapshot"), None)
+        self.assertIsNotNone(node, "supervisor.py no longer defines _queue_snapshot()")
+        self.assertTrue(
+            any(isinstance(n, ast.Call) and _call_name(n) == "build"
+                for n in ast.walk(node)),
+            "_queue_snapshot() no longer builds a CycleSnapshot")
+        self.assertNotIn("len", _names(node),
+                         "_queue_snapshot() counts again instead of reading ids")
 
 
 class BackoffShapeTest(unittest.TestCase):

@@ -19,13 +19,16 @@ version:
     claim count, and idles through the same backoff. Spawning
     "run-task-loop --continue" for it could only ever be a no-op child, because
     that command consumes active/ and pending/ and stale reclaim is opt-in (D4).
-  - No-progress backoff: the same three counts are read again after the child
-    exits, and a cycle that left them exactly as it found them accomplished
-    nothing, so the sleep doubles (SLEEP_S, 2x, 4x, ... up to MAX_SLEEP_S,
-    default 900s) and the streak is logged. Any state change resets the sleep
-    to SLEEP_S. A wedged task or an unreachable model endpoint therefore stops
-    costing a full probe-and-spawn every SLEEP_S forever. The sleep is still
-    the interruptible _sleep(), so a stop is honoured mid-backoff.
+  - No-progress backoff: the queue is read again after the child exits as the
+    same identity snapshot the cycle decided from, and a cycle that left every
+    task id exactly as it found it accomplished nothing, so the sleep doubles
+    (SLEEP_S, 2x, 4x, ... up to MAX_SLEEP_S, default 900s) and the streak is
+    logged. Any change of identity resets the sleep to SLEEP_S — including a
+    task replaced by a different one while all three counts stayed put, which
+    three counts alone could not see (T47). A wedged task or an unreachable
+    model endpoint therefore stops costing a full probe-and-spawn every SLEEP_S
+    forever. The sleep is still the interruptible _sleep(), so a stop is
+    honoured mid-backoff.
   - Tracks the child pi process and kills the whole process tree on stop,
     so a hung session can't orphan a model.
   - Circuit breaker: if the harness fails to launch N times in a row, revert
@@ -77,9 +80,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness.core.config import load            # noqa: E402
 from harness.core.providers import TaskProvider, create_provider  # noqa: E402
 from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
-from harness.workflow.cycle import (CycleAction, QueueCounts,  # noqa: E402
-                                    backoff_seconds, command_for_action,
-                                    cycle_summary, decide_cycle_action,
+from harness.workflow.cycle import (CycleAction,  # noqa: E402
+                                    CycleSnapshot, backoff_seconds,
+                                    command_for_action, cycle_summary,
+                                    decide_cycle_action, made_progress,
                                     subcommand_for_action)
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 from external.git_cli import revert_to_last_good  # noqa: E402
@@ -282,17 +286,22 @@ class ChildTracker:
 # the loop
 # ---------------------------------------------------------------------------
 def _queue_snapshot(provider: TaskProvider,
-                    lifecycle: TaskLifecycle) -> QueueCounts:
-    """Read the three counts one cycle's decision is made from.
+                    lifecycle: TaskLifecycle) -> CycleSnapshot:
+    """Read which tasks sit in the three queue directories.
 
     Read-only: `claim=False` is spelled out because a call that only counts must
     never be one default-flip away from moving the queue. The supervisor takes
-    one snapshot before the cycle's child runs and another after it exits;
-    `QueueCounts` compares by value, so the pair is the progress test (T15).
+    one snapshot before the cycle's child runs and another after it exits, and
+    `made_progress` compares the pair by task identity (T47): a queue whose
+    counts are unchanged but whose ids are not is a queue that moved. The
+    logged counts come off the snapshot (`CycleSnapshot.counts`), so the cycle
+    line and the progress test cannot disagree.
     """
-    return QueueCounts(pending=len(provider.fetch_pending(claim=False)),
-                       in_flight=len(in_flight_task_dirs(lifecycle)),
-                       claims=len(provider.list_claims()))
+    return CycleSnapshot.build(
+        pending=(task.id for task in provider.fetch_pending(claim=False)),
+        in_flight=(d.name for d in in_flight_task_dirs(lifecycle)),
+        claims=(claim.id for claim in provider.list_claims()),
+    )
 
 
 def run_loop() -> int:
@@ -356,10 +365,11 @@ def run_loop() -> int:
 
             # --- decide: in-flight beats pending beats claims beats generate ---
             before = _queue_snapshot(provider, lifecycle)
-            action = decide_cycle_action(before.pending, before.in_flight,
-                                         before.claims)
-            summary = cycle_summary(before.pending, before.in_flight,
-                                    before.claims, action)
+            counts = before.counts
+            action = decide_cycle_action(counts.pending, counts.in_flight,
+                                         counts.claims)
+            summary = cycle_summary(counts.pending, counts.in_flight,
+                                    counts.claims, action)
             log(f"── cycle {cycle}: {summary} ──")
             if action is CycleAction.BLOCKED:
                 # The D4 state, now named instead of chased (T44): claims are
@@ -367,7 +377,7 @@ def run_loop() -> int:
                 # requeue is opt-in. One line naming what to run and how many
                 # claims it would move; nothing here fails, moves or requeues a
                 # claim, and the backoff below bounds what the wait costs.
-                log(f"  ⚠ blocked: {before.claims} claim(s) in claimed/ with "
+                log(f"  ⚠ blocked: {counts.claims} claim(s) in claimed/ with "
                     "pending/ and active/ empty — no child can work them; "
                     "preview the operator recovery with "
                     "harness.py requeue-claims --dry-run")
@@ -382,11 +392,13 @@ def run_loop() -> int:
                     log(f"  {action.value} child exited rc={rc}")
 
             # --- sleep: SLEEP_S after progress, doubling backoff after none ---
-            # A blocked cycle ran no child, so its counts cannot move and it
-            # lands on this same path: idle, not an error. The sleep stays the
-            # interruptible _sleep(), so a stop is honoured mid-backoff.
+            # A blocked cycle ran no child, so its tasks cannot move and it
+            # lands on this same path: idle, not an error. The test is identity,
+            # not the three counts (T47), so a swapped-in task resets the streak.
+            # The sleep stays the interruptible _sleep(), so a stop is honoured
+            # mid-backoff.
             after = _queue_snapshot(provider, lifecycle)
-            progressed = after != before
+            progressed = made_progress(before, after)
             idle_streak = 0 if progressed else idle_streak + 1
             if idle_streak >= 1:
                 secs = backoff_seconds(idle_streak, SLEEP_S, MAX_SLEEP_S)

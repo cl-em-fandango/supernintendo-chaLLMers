@@ -27,6 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import supervisor as S  # noqa: E402
+from harness.core.providers import Task  # noqa: E402
 
 CLAIMS = 3
 
@@ -44,12 +45,12 @@ class _FakeProvider:
         self.claims = claims
 
     def fetch_pending(self, claim: bool = False,
-                      limit: int | None = None) -> list[str]:
+                      limit: int | None = None) -> list[Task]:
         assert claim is False, "a counting call must never claim the queue"
-        return ["task"] * self.pending
+        return [Task(id=f"pending-{n}", body="") for n in range(self.pending)]
 
-    def list_claims(self) -> list[str]:
-        return ["claim"] * self.claims
+    def list_claims(self) -> list[Task]:
+        return [Task(id=f"claim-{n}", body="") for n in range(self.claims)]
 
     def requeue_claim(self, task) -> None:
         raise AssertionError(

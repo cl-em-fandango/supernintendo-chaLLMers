@@ -1,13 +1,15 @@
 """T15 — the loop backs off when a cycle changed nothing, and resets when it did.
 
-`run_loop()` re-reads the same three queue counts after the child exits that it
-decided from before the child started: identical counts mean a cycle that
-accomplished nothing, so the sleep doubles from `SLEEP_S` via
-`backoff_seconds` and the streak is logged; any state change puts the sleep back
-to exactly `SLEEP_S`. The breaker keeps its own `_sleep(stop, SLEEP_S)` and its
-own reset (T06), so a failing-launch cycle stays out of the idle count. A
-wedged task or an unreachable endpoint is idle, not an error: the loop backs
-off, it never fails a task for sitting still.
+`run_loop()` re-reads the queue after the child exits as the same identity
+snapshot it decided from before the child started: identical task ids mean a
+cycle that accomplished nothing, so the sleep doubles from `SLEEP_S` via
+`backoff_seconds` and the streak is logged; any change of identity puts the
+sleep back to exactly `SLEEP_S` — including a task replaced by a different one
+at unchanged counts, which the three numbers T15 compared could not see (T47).
+The breaker keeps its own `_sleep(stop, SLEEP_S)` and its own reset (T06), so a
+failing-launch cycle stays out of the idle count. A wedged task or an
+unreachable endpoint is idle, not an error: the loop backs off, it never fails a
+task for sitting still.
 """
 from __future__ import annotations
 
@@ -24,30 +26,40 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import supervisor as S  # noqa: E402
+from harness.core.providers import Task  # noqa: E402
 
 
 class _Queue:
-    """The three counts, mutable so a fake child can stand in for progress."""
+    """The three queues as task-id lists, mutable so a fake child can move work.
+
+    The constructor keeps the count shorthand — `pending=1` is one task named
+    `pending-0` — because the backoff cases care about volume. A case that
+    needs identity rather than volume (T47) replaces the lists outright.
+    """
 
     def __init__(self, pending: int = 1, in_flight: int = 0, claims: int = 0):
-        self.pending = pending
-        self.in_flight = in_flight
-        self.claims = claims
+        self.pending = [f"pending-{n}" for n in range(pending)]
+        self.in_flight = [f"active-{n}" for n in range(in_flight)]
+        self.claims = [f"claim-{n}" for n in range(claims)]
 
 
 class _FakeProvider:
-    """Provider stub: only the read-only counting calls the loop makes."""
+    """Provider stub: only the read-only id-listing calls the loop makes.
+
+    Returns real `Task`s because the snapshot reads `Task.id`; a bare string
+    here would stand in for a task the production provider cannot produce.
+    """
 
     def __init__(self, queue: _Queue):
         self.queue = queue
 
     def fetch_pending(self, claim: bool = False,
-                      limit: int | None = None) -> list[str]:
+                      limit: int | None = None) -> list[Task]:
         assert claim is False, "a counting call must never claim the queue"
-        return ["task"] * self.queue.pending
+        return [Task(id=tid, body="") for tid in self.queue.pending]
 
-    def list_claims(self) -> list[str]:
-        return ["claim"] * self.queue.claims
+    def list_claims(self) -> list[Task]:
+        return [Task(id=tid, body="") for tid in self.queue.claims]
 
 
 class _FakeTracker:
@@ -97,7 +109,8 @@ class LoopBackoffTest(unittest.TestCase):
                               lambda cfg: _FakeProvider(self.queue)),
             mock.patch.object(S, "TaskLifecycle", lambda cfg, log=None: None),
             mock.patch.object(S, "in_flight_task_dirs",
-                              lambda lifecycle: ["task"] * self.queue.in_flight),
+                              lambda lifecycle: [Path(name)
+                                                 for name in self.queue.in_flight]),
             mock.patch.object(S, "SLEEP_S", 60),
             mock.patch.object(S, "MAX_SLEEP_S", 900),
             mock.patch.object(S, "FAIL_LIMIT", 99),
@@ -115,14 +128,20 @@ class LoopBackoffTest(unittest.TestCase):
         return out.getvalue()
 
     def _scripted_progress(self, progressing_cycles: set[int]):
-        """Make the work child move one task pending->active on the given cycles."""
+        """Make the work child move work into `active/` on the given cycles.
+
+        With something pending it claims one task; with nothing left it stands
+        for the in-flight task advancing to a new checkpoint — either way a new
+        id appears in `active/`, which is all the loop's progress test reads.
+        """
         seen = {"n": 0}
 
         def work() -> None:
             seen["n"] += 1
             if seen["n"] in progressing_cycles:
-                self.queue.pending -= 1
-                self.queue.in_flight += 1
+                if self.queue.pending:
+                    self.queue.pending.pop(0)
+                self.queue.in_flight.append(f"active-{seen['n']}")
 
         self.on_work = work
 
@@ -150,11 +169,51 @@ class LoopBackoffTest(unittest.TestCase):
         self.queue = _Queue(pending=0, in_flight=0, claims=0)
 
         def generate() -> None:
-            self.queue.pending += 1
+            self.queue.pending.append(f"generated-{len(self.queue.pending)}")
 
         self.on_work = generate
         self._run(2)
         self.assertEqual(self.slept, [60, 60])
+
+    def test_a_replacement_at_unchanged_counts_resets_the_streak(self):
+        """T47 (F6): same three counts, different tasks — that is progress.
+
+        Every cycle swaps all three queues for identically-sized queues of
+        other ids, so the counts T15 compared never move and only the task
+        identities do. The sleep stays at `SLEEP_S` instead of doubling.
+        """
+        self.queue = _Queue(pending=1, in_flight=1, claims=1)
+        seen = {"n": 0}
+
+        def swap() -> None:
+            seen["n"] += 1
+            tag = str(seen["n"])
+            self.queue.pending = [f"pending-{tag}"]
+            self.queue.in_flight = [f"active-{tag}"]
+            self.queue.claims = [f"claim-{tag}"]
+
+        self.on_work = swap
+        out = self._run(3)
+        self.assertEqual(self.slept, [60, 60, 60])
+        self.assertNotIn("no progress", out)
+
+    def test_an_unchanged_queue_of_the_same_tasks_still_idles(self):
+        """Identical identities, counts included: the streak keeps doubling."""
+        self.queue = _Queue(pending=1, in_flight=1, claims=1)
+        out = self._run(2)
+        self.assertEqual(self.slept, [120, 240])
+        self.assertIn("no progress (streak 1); sleeping 120s", out)
+
+    def test_the_logged_counts_are_the_snapshot_lengths(self):
+        """One source for both numbers and identity (T47 item 3).
+
+        The cycle line has to report exactly as many tasks as the snapshot
+        holds ids for, so a count can never describe a queue the progress test
+        did not see.
+        """
+        self.queue = _Queue(pending=2, in_flight=1, claims=3)
+        out = self._run(1)
+        self.assertIn("pending=2 in_flight=1 claimed=3 action=resume", out)
 
     def test_backoff_sleep_gets_the_loops_stop_flag(self):
         """SIGTERM and the STOP file stay responsive: `_sleep` gets the flag."""

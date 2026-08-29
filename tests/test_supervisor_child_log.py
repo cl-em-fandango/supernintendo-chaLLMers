@@ -28,6 +28,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import supervisor as S  # noqa: E402
+from harness.core.providers import Task  # noqa: E402
 from harness.workflow.cycle import (CycleAction, command_for_action,  # noqa: E402
                                     subcommand_for_action)
 
@@ -142,12 +143,15 @@ class LabelIsTheSubcommandTest(unittest.TestCase):
                 pass
 
         class _Provider:
-            def fetch_pending(self, claim: bool = False,
-                              limit: int | None = None) -> list[str]:
-                return ["task"] * pending
+            """Ids, not bare strings: the cycle's snapshot reads `Task.id`."""
 
-            def list_claims(self) -> list[str]:
-                return list(claims)
+            def fetch_pending(self, claim: bool = False,
+                              limit: int | None = None) -> list[Task]:
+                return [Task(id=f"pending-{n}", body="")
+                        for n in range(pending)]
+
+            def list_claims(self) -> list[Task]:
+                return [Task(id=name, body="") for name in claims]
 
         with tempfile.TemporaryDirectory(prefix="t08-label-") as tmp:
             for patch in (
@@ -160,7 +164,8 @@ class LabelIsTheSubcommandTest(unittest.TestCase):
                 mock.patch.object(S, "create_provider", lambda cfg: _Provider()),
                 mock.patch.object(S, "TaskLifecycle", lambda cfg, log=None: None),
                 mock.patch.object(S, "in_flight_task_dirs",
-                                  lambda lifecycle: ["t"] * in_flight),
+                                  lambda lifecycle: [Path(f"active-{n}")
+                                                     for n in range(in_flight)]),
                 mock.patch.object(S, "ChildTracker", _RecordingTracker),
                 mock.patch.object(S, "_sleep", lambda stop, seconds: None),
                 mock.patch.object(S, "MAX_CYCLES", 1),

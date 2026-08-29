@@ -1,15 +1,16 @@
 """The pure cycle decision: in-flight, then pending, then blocked claims (F1, T44).
 
-Three ints in, one `CycleAction` out. This module imports `dataclasses`, `enum`,
-`typing` and nothing else on purpose: `supervisor.py` loads the config and
-`WORK_DIR` at import time, so importing it from a test reads real config and
-touches real directories. Keeping the decision, the backoff math and the circuit
+Three ints in, one `CycleAction` out; a pair of `CycleSnapshot`s in, one bool
+out. This module imports `dataclasses`, `enum`, `typing` and nothing else on
+purpose: `supervisor.py` loads the config and `WORK_DIR` at import time, so
+importing it from a test reads real config and touches real directories.
+Keeping the decision, the progress identity, the backoff math and the circuit
 breaker's counting here, import-clean, is what makes them testable. T14 wires
-the decision into the loop, T15 the backoff.
+the decision into the loop, T15 the backoff, T47 the identity test.
 """
 from dataclasses import dataclass
 from enum import Enum
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 
 class CycleAction(str, Enum):
@@ -63,18 +64,84 @@ def decide_cycle_action(pending: int, in_flight: int, claims: int) -> CycleActio
 
 @dataclass(frozen=True)
 class QueueCounts:
-    """A read-only snapshot of the three queue directories.
+    """How many tasks sit in each of the three queue directories.
 
-    It exists so the loop's progress test has a name and a shape instead of a
-    loose 3-tuple: two snapshots compare by value, so `after != before` is the
-    whole test — any state change (claim→active, active→done/parked, new
-    pending from generation) moves at least one number, and a cycle that moved
-    nothing is a cycle that accomplished nothing.
+    It exists so the cycle's decision and its log line have a name and a shape
+    instead of a loose 3-tuple, and it compares by value. It is the count
+    projection of a `CycleSnapshot` (`CycleSnapshot.counts`) and nothing more:
+    a task replaced by a different one leaves all three numbers where they
+    were, so the loop's progress test reads the snapshot's identities (T47)
+    and this only says how much work there is to decide between.
     """
 
     pending: int
     in_flight: int
     claims: int
+
+
+@dataclass(frozen=True)
+class CycleSnapshot:
+    """The task *identities* in the three queue directories (T47).
+
+    `QueueCounts` says how much work there is; this says which work. Two
+    snapshots with the same numbers and different ids describe different
+    queues — a task swapped for another one is a state change, and a progress
+    test built on counts alone cannot see it: the swap leaves all three numbers
+    where they were and read as a stalled cycle.
+
+    Ids are sorted tuples, so equality is set equality and a scan that lists
+    the same tasks in another order is the same queue. Build one with
+    `CycleSnapshot.build()` from any iterable of ids; the constructor checks
+    the ordering instead of quietly fixing it, so a caller that pre-sorts can
+    never disagree with one that does not.
+    """
+
+    pending: tuple[str, ...]
+    in_flight: tuple[str, ...]
+    claims: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Reject ids that are not sorted — such a snapshot would report
+        progress on every cycle from scan order alone."""
+        for name, ids in (("pending", self.pending),
+                          ("in_flight", self.in_flight),
+                          ("claims", self.claims)):
+            if list(ids) != sorted(ids):
+                raise ValueError(f"{name} ids must be sorted; "
+                                 "build the snapshot with CycleSnapshot.build()")
+
+    @classmethod
+    def build(cls, pending: Iterable[str], in_flight: Iterable[str],
+              claims: Iterable[str]) -> "CycleSnapshot":
+        """Snapshot three iterables of task ids, each sorted into canonical form."""
+        return cls(pending=tuple(sorted(pending)),
+                   in_flight=tuple(sorted(in_flight)),
+                   claims=tuple(sorted(claims)))
+
+    @property
+    def counts(self) -> QueueCounts:
+        """This queue as three numbers, read off these ids.
+
+        The loop logs counts and compares identity, so the numbers have to come
+        from the snapshot and not from a second scan: derived here, the logged
+        line and the progress test cannot describe different queues.
+        """
+        return QueueCounts(pending=len(self.pending),
+                           in_flight=len(self.in_flight),
+                           claims=len(self.claims))
+
+
+def made_progress(before: CycleSnapshot, after: CycleSnapshot) -> bool:
+    """Whether a cycle moved the queue, judged by task identity (T47).
+
+    Any difference at all — a task claimed, resumed, finished, generated, or
+    replaced by a different task while every count stayed put — is progress;
+    an identical pair of snapshots is not. Counts are deliberately not
+    consulted: they are a lossy projection of the snapshot, and the cycle that
+    swaps one pending task for another is exactly the case that projection
+    reported as a stall (hardening review F6).
+    """
+    return before != after
 
 
 def backoff_seconds(idle_streak: int, base: int, cap: int) -> int:
