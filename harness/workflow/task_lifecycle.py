@@ -12,10 +12,11 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 from ..core.config import Config
-from ..core.enums import CheckpointStage, TaskStatus
+from ..core.enums import CheckpointStage, Stage, TaskStatus
 
 # Queue subdirectories that may hold a task dir.
 QUEUE_LOCATIONS = ("active", "parked", "failed", "done")
@@ -69,6 +70,76 @@ class TaskState:
             "last_updated": self.last_updated,
             "workdir": self.workdir,
         }, indent=2)
+
+
+@dataclass
+class Handoff:
+    """What a parked over-cap task hands to the next agent (T75).
+
+    The shape of the `## Handoff` section `TaskLifecycle.park` renders into the
+    review file when a session was stopped for crossing the context cap. Every
+    field except the two checkpointed lists comes off the caught
+    `OverContextBudget` — the session that tripped is the only place those
+    values exist — while `checkpointed_stages` and `checkpointed_slices` are
+    the task's resume position read from `task.json` at the park site, so the
+    next agent can see how far the run got before it stopped.
+
+    Rendering lives in `_handoff_section`, not here (CODING_STANDARDS §2): this
+    is the data shape only.
+    """
+    stage: Stage | str
+    slice_id: str | None = None
+    iteration: int = 1
+    peak_tokens: int = 0
+    context_limit: int | None = None
+    output_path: Path | None = None
+    checkpointed_stages: list = field(default_factory=list)
+    checkpointed_slices: list = field(default_factory=list)
+
+
+def _handoff_value(value) -> str:
+    """One handoff field as text: an enum member renders its wire value, `None`
+    renders `none` (never the literal `None`), anything else its `str`."""
+    if value is None:
+        return "none"
+    if isinstance(value, Enum):
+        return value.value
+    return str(value)
+
+
+def _handoff_list(values) -> str:
+    """A checkpointed list as one line: empty renders `none`, otherwise the
+    members' wire values joined in order."""
+    if not values:
+        return "none"
+    return ", ".join(_handoff_value(v) for v in values)
+
+
+def _handoff_section(handoff: Handoff) -> str:
+    """The `## Handoff` + `## Next agent should` block appended to a parked
+    over-cap review file (T75), one line per field.
+
+    A park with no handoff renders none of this — the plain review file stays
+    byte-identical to what it rendered before T75.
+    """
+    lines = [
+        "## Handoff",
+        "",
+        f"- stage: {_handoff_value(handoff.stage)}",
+        f"- slice: {_handoff_value(handoff.slice_id)}",
+        f"- iteration: {_handoff_value(handoff.iteration)}",
+        f"- peak: {_handoff_value(handoff.peak_tokens)}",
+        f"- cap: {_handoff_value(handoff.context_limit)}",
+        f"- output: {_handoff_value(handoff.output_path)}",
+        f"- checkpointed_stages: {_handoff_list(handoff.checkpointed_stages)}",
+        f"- checkpointed_slices: {_handoff_list(handoff.checkpointed_slices)}",
+        "",
+        "## Next agent should",
+        "",
+        "re-split the work or reduce its context before resume",
+        "",
+    ]
+    return "\n" + "\n".join(lines)
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -233,8 +304,13 @@ class TaskLifecycle:
         self.record_workdir(task_dir)
         return task_dir
 
-    def park(self, task_id: str, reason: str) -> None:
-        self._terminal_move(task_id, TaskStatus.PARKED, "parked", "PARKED", reason)
+    def park(self, task_id: str, reason: str,
+             handoff: Handoff | None = None) -> None:
+        """Park a task. `handoff` (T75) is passed only by the over-cap park site
+        in `Pipeline.process`; when present its sections are appended to the
+        review file. A park without one renders exactly what it rendered before."""
+        self._terminal_move(task_id, TaskStatus.PARKED, "parked", "PARKED", reason,
+                            handoff=handoff)
         self.log(f"  task {task_id} PARKED: {reason}")
 
     def fail(self, task_id: str, reason: str) -> None:
@@ -246,7 +322,8 @@ class TaskLifecycle:
         self.log(f"  task {task_id} DONE")
 
     def _terminal_move(self, task_id: str, status: TaskStatus, where: str,
-                       summary_status: str, text: str) -> None:
+                       summary_status: str, text: str,
+                       handoff: Handoff | None = None) -> None:
         """Move a task dir into its terminal queue subdirectory, then record it.
 
         The move is the lifecycle authority, so it runs first and its failures
@@ -271,7 +348,7 @@ class TaskLifecycle:
                      f"on {self.task_json_path(task_id, where)}: {exc}; "
                      f"task.json was not updated")
         try:
-            self._exec_summary(task_id, summary_status, text, where)
+            self._exec_summary(task_id, summary_status, text, where, handoff=handoff)
         except OSError as exc:
             self.log(f"  ⚠ {task_id} is in {where}/ but the review summary write "
                      f"failed on {self.review_summary_path(task_id)}: {exc}; "
@@ -300,14 +377,19 @@ class TaskLifecycle:
         state.last_updated = _now()
         self.save_state(state, where)
 
-    def _exec_summary(self, task_id: str, status: str, text: str, where: str) -> None:
+    def _exec_summary(self, task_id: str, status: str, text: str, where: str,
+                      handoff: Handoff | None = None) -> None:
         """Write the review summary for a task already in `where`. I/O failures
-        propagate to `_terminal_move`, which decides."""
+        propagate to `_terminal_move`, which decides.
+
+        When `handoff` is present (an over-cap park, T75) its sections are
+        appended after the artifacts block; when it is `None` the file is
+        byte-identical to the pre-T75 summary."""
         td = self.cfg.queue_dir / where / task_id
         original = (td / "original.md").read_text() if (td / "original.md").exists() else ""
         review_dir = self.cfg.queue_dir / "review"
         review_dir.mkdir(parents=True, exist_ok=True)
-        self.review_summary_path(task_id).write_text(f"""# Task: {task_id}
+        body = f"""# Task: {task_id}
 
 **Status:** {status}
 **Date:** {_now()}
@@ -325,7 +407,10 @@ class TaskLifecycle:
 - spec: `{td}/artifacts/spec.md`
 - slices: `{td}/artifacts/slices.md`
 - session outputs: `{td}/artifacts/*.out`
-""")
+"""
+        if handoff is not None:
+            body += _handoff_section(handoff)
+        self.review_summary_path(task_id).write_text(body)
         self.log(f"  exec summary: {self.review_summary_path(task_id)}")
 
     def record_workdir(self, task_dir: Path, where: str = "active") -> Path:

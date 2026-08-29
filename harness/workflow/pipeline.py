@@ -14,7 +14,7 @@ from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
 from .params import StageContext
 from .spec_assessment import SpecAssessment, assess_spec
-from .task_lifecycle import TaskLifecycle
+from .task_lifecycle import Handoff, TaskLifecycle
 
 # The four stages that have a `stage_*` function to run, in pipeline order
 # (F2.1). Deliberately not derived from CHECKPOINT_ORDER: `MERGE` is a
@@ -213,7 +213,24 @@ class Pipeline:
             # happened on — and it is caught here rather than in a stage for
             # the same reason as T57: no stage may route on the partial output
             # of a session that was stopped mid-work.
-            self.lifecycle.park(task.id, str(e))
+            #
+            # The handoff (T75) carries the fields off the caught exception —
+            # the only place they exist — plus the resume position read from
+            # `task.json` while the task is still in active/, so the next agent
+            # can see how far the run got before it was stopped.
+            state = self.lifecycle.load_state(task.id)
+            self.lifecycle.park(
+                task.id, str(e),
+                handoff=Handoff(
+                    stage=e.stage,
+                    slice_id=e.slice_id,
+                    iteration=e.iteration,
+                    peak_tokens=e.peak_tokens,
+                    context_limit=e.context_limit,
+                    output_path=e.out_file,
+                    checkpointed_stages=list(state.checkpointed_stages),
+                    checkpointed_slices=list(state.checkpointed_slices),
+                ))
             return "parked"
         except AllAttemptsCrashed as e:
             # The one catch site (T57). A stage that lost every attempt to a
