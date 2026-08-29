@@ -234,36 +234,59 @@ class TaskLifecycle:
         return task_dir
 
     def park(self, task_id: str, reason: str) -> None:
-        src = self.task_dir(task_id)
-        dst = self.cfg.queue_dir / "parked" / task_id
-        if src.exists():
-            shutil.move(str(src), str(dst))
-        self._stamp_status(task_id, TaskStatus.PARKED, "parked")
-        self._exec_summary(task_id, "PARKED", reason, "parked")
+        self._terminal_move(task_id, TaskStatus.PARKED, "parked", "PARKED", reason)
         self.log(f"  task {task_id} PARKED: {reason}")
 
     def fail(self, task_id: str, reason: str) -> None:
-        src = self.task_dir(task_id)
-        dst = self.cfg.queue_dir / "failed" / task_id
-        if src.exists():
-            shutil.move(str(src), str(dst))
-        self._stamp_status(task_id, TaskStatus.FAILED, "failed")
-        self._exec_summary(task_id, "KICKED OUT", reason, "failed")
+        self._terminal_move(task_id, TaskStatus.FAILED, "failed", "KICKED OUT", reason)
         self.log(f"  task {task_id} FAILED: {reason}")
 
     def complete(self, task_id: str, summary: str) -> None:
+        self._terminal_move(task_id, TaskStatus.DONE, "done", "DONE", summary)
+        self.log(f"  task {task_id} DONE")
+
+    def _terminal_move(self, task_id: str, status: TaskStatus, where: str,
+                       summary_status: str, text: str) -> None:
+        """Move a task dir into its terminal queue subdirectory, then record it.
+
+        The move is the lifecycle authority, so it runs first and its failures
+        propagate untouched: a task that never moved is not terminal, and
+        writing bookkeeping somewhere else would create a false terminal record.
+
+        Once the move has succeeded the task *is* terminal, whatever the writes
+        do next. A bookkeeping failure is therefore logged and swallowed — an
+        exception escaping here would let a caller read the task as still active
+        and attempt a second terminal transition (T45). The two steps are
+        guarded separately so a failed `task.json` does not also lose the review
+        summary, and vice versa.
+        """
         src = self.task_dir(task_id)
-        dst = self.cfg.queue_dir / "done" / task_id
+        dst = self.cfg.queue_dir / where / task_id
         if src.exists():
             shutil.move(str(src), str(dst))
-        self._stamp_status(task_id, TaskStatus.DONE, "done")
-        self._exec_summary(task_id, "DONE", summary, "done")
-        self.log(f"  task {task_id} DONE")
+        try:
+            self._stamp_status(task_id, status, where)
+        except OSError as exc:
+            self.log(f"  ⚠ {task_id} is in {where}/ but the status write failed "
+                     f"on {self.task_json_path(task_id, where)}: {exc}; "
+                     f"task.json was not updated")
+        try:
+            self._exec_summary(task_id, summary_status, text, where)
+        except OSError as exc:
+            self.log(f"  ⚠ {task_id} is in {where}/ but the review summary write "
+                     f"failed on {self.review_summary_path(task_id)}: {exc}; "
+                     f"no review summary was written")
+
+    def review_summary_path(self, task_id: str) -> Path:
+        """The review summary file for `task_id` (one path, two users: the
+        writer below and the failure log in `_terminal_move`)."""
+        return self.cfg.queue_dir / "review" / f"{task_id}.md"
 
     def _stamp_status(self, task_id: str, status: TaskStatus, where: str) -> None:
         """Rewrite `task.json` at its *new* location so `status` agrees with the
         directory it landed in. Called only after the move succeeded. A missing
-        or corrupt file yields a minimal valid state instead of raising."""
+        or corrupt file yields a minimal valid state instead of raising; an I/O
+        failure on the write propagates to `_terminal_move`, which decides."""
         try:
             state = self.load_state(task_id, where)
         except FileNotFoundError:
@@ -278,11 +301,13 @@ class TaskLifecycle:
         self.save_state(state, where)
 
     def _exec_summary(self, task_id: str, status: str, text: str, where: str) -> None:
+        """Write the review summary for a task already in `where`. I/O failures
+        propagate to `_terminal_move`, which decides."""
         td = self.cfg.queue_dir / where / task_id
         original = (td / "original.md").read_text() if (td / "original.md").exists() else ""
         review_dir = self.cfg.queue_dir / "review"
         review_dir.mkdir(parents=True, exist_ok=True)
-        (review_dir / f"{task_id}.md").write_text(f"""# Task: {task_id}
+        self.review_summary_path(task_id).write_text(f"""# Task: {task_id}
 
 **Status:** {status}
 **Date:** {_now()}
@@ -301,7 +326,7 @@ class TaskLifecycle:
 - slices: `{td}/artifacts/slices.md`
 - session outputs: `{td}/artifacts/*.out`
 """)
-        self.log(f"  exec summary: {review_dir / (task_id + '.md')}")
+        self.log(f"  exec summary: {self.review_summary_path(task_id)}")
 
     def record_workdir(self, task_dir: Path, where: str = "active") -> Path:
         """Resolve the workdir and persist it in `task.json` (F7).
