@@ -7,6 +7,7 @@ issues, a database, an API, ...) can be added without touching the pipeline.
 Interface:
     fetch_pending() -> list[Task]     # tasks ready to work on
     list_claims() -> list[Task]       # tasks held claimed but not yet processed
+    list_owned_claims() -> list[Claim]  # same claims, with who holds each
     requeue_all_claims() -> list[str] # hand every claim back to the pending pool
     submit(task: Task) -> None        # (optional) push results back upstream
 
@@ -14,6 +15,9 @@ A claim is a fetch side effect, so recovering from one is the provider's job:
 sources with no claim concept inherit empty defaults and stay valid adapters.
 
 Task is a plain dataclass: id + freeform markdown body + optional source hint.
+Claim is one held task plus its ownership record; ownership metadata lives in
+`claim_metadata.py` and is what keeps one invocation's cleanup from handing
+back another invocation's claim.
 """
 from __future__ import annotations
 
@@ -23,6 +27,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .claim_metadata import (
+    OWNER_UNKNOWN,
+    ClaimMetadataError,
+    metadata_path,
+    read_metadata,
+    remove_metadata,
+    write_metadata,
+)
 from .enqueue_guard import check_enqueue
 
 
@@ -32,6 +44,22 @@ class Task:
     body: str
     source: str = ""            # e.g. "directory", "github:owner/repo#123"
     meta: dict = field(default_factory=dict)
+
+
+@dataclass
+class Claim:
+    """One held claim: the task, the file it was claimed from, and who holds it.
+
+    `owner` is `OWNER_UNKNOWN` when the claim carries no readable ownership
+    sidecar — a claim taken before ownership existed, or one whose sidecar was
+    lost or corrupted.
+    """
+
+    task: Task
+    filename: str
+    owner: str = OWNER_UNKNOWN
+    claimed_at: float = 0.0
+    meta_path: Path | None = None
 
 
 class TaskProvider(ABC):
@@ -48,13 +76,21 @@ class TaskProvider(ABC):
         claim lifecycle have none, so the default is empty."""
         return []
 
-    def requeue_claim(self, name_or_task: "str | Task") -> str | None:
+    def requeue_claim(self, name_or_task: "str | Task",
+                      owner: str | None = None) -> str | None:
         """Hand one claim back to the pending pool. Returns the new path, or
-        None when this provider cannot requeue (no claim lifecycle)."""
+        None when this provider cannot requeue (no claim lifecycle) or `owner`
+        does not hold it."""
         return None
 
-    def requeue_all_claims(self) -> list[str]:
-        """Hand every claim back to the pending pool. Returns the moved names."""
+    def requeue_all_claims(self, owner: str | None = None) -> list[str]:
+        """Hand every claim back to the pending pool. Returns the moved names.
+        With an `owner`, only that owner's claims move."""
+        return []
+
+    def list_owned_claims(self) -> list[Claim]:
+        """Held claims with their recorded ownership. Sources without a claim
+        lifecycle have none, so the default is empty."""
         return []
 
     def claim_age_hours(self, name: str) -> float:
@@ -79,6 +115,11 @@ class DirectoryTaskProvider(TaskProvider):
     too: `list_claims()`, `requeue_claim()`, `requeue_all_claims()` and
     `claim_age_hours()` see and undo claims without touching the queue layout.
 
+    Ownership is opt-in per fetch: `fetch_pending(claim=True, owner=id)` writes
+    a sidecar beside each claimed file (see `claim_metadata.py`), and a requeue
+    that names an `owner` only moves claims recorded against that owner. A
+    requeue with no `owner` is the pre-ownership call and checks nothing.
+
     Files the enqueue guard refuses (plan parents marked `DO NOT EXECUTE`) are
     never fetched and never claimed: they stay untouched in pending/ as the
     requirement archives they are, and each skip is logged with the leaf ids to
@@ -99,13 +140,19 @@ class DirectoryTaskProvider(TaskProvider):
         self.claimed_dir.mkdir(parents=True, exist_ok=True)
 
     def fetch_pending(self, claim: bool = False,
-                      limit: int | None = None) -> list[Task]:
+                      limit: int | None = None,
+                      owner: str | None = None) -> list[Task]:
         """List pending tasks. With claim=True, move each pending/X.md into
         claimed/ so it is not seen again until explicitly requeued.
 
         `limit` caps how many tasks are returned, so a caller that asks for
         one claim gets one instead of the whole queue; whatever it did not
         take stays in pending/. Default None is every task, as before.
+
+        With a non-empty `owner`, every claim taken here is recorded against
+        that owner id. If a sidecar cannot be written the markdown is moved
+        back to pending/ and `ClaimMetadataError` is raised — a claim nobody
+        owns is worse than no claim, because no cleanup would reclaim it.
 
         A file the enqueue guard refuses is skipped: it costs no `limit` slot,
         is not moved into claimed/, and its skip is logged once per fetch.
@@ -127,6 +174,14 @@ class DirectoryTaskProvider(TaskProvider):
                 except OSError:
                     # already claimed by a concurrent run; skip
                     continue
+                if owner:
+                    try:
+                        write_metadata(dest, owner)
+                    except ClaimMetadataError:
+                        if self._move_to_pending(dest) is None:
+                            self.log(f"  ⚠ {dest.name} is claimed with no owner "
+                                     f"and could not be rolled back")
+                        raise
             tasks.append(Task(id=tid, body=body, source=f"directory:{f.name}"))
         return tasks
 
@@ -135,25 +190,58 @@ class DirectoryTaskProvider(TaskProvider):
         return [Task(id=_slug(f.stem), body=f.read_text(), source=f"claimed:{f.name}")
                 for f in sorted(self.claimed_dir.glob("*.md"))]
 
-    def requeue_claim(self, name_or_task: "str | Task") -> str | None:
+    def requeue_claim(self, name_or_task: "str | Task",
+                      owner: str | None = None) -> str | None:
         """Move one claimed file back to pending/, by filename or Task.
 
-        Returns the new path as a string, or None when there is no such claim.
-        A pending/ name collision gets a `-requeued` suffix; nothing is
-        ever overwritten.
+        Returns the new path as a string, or None when there is no such claim
+        or `owner` does not hold it. A pending/ name collision gets a
+        `-requeued` suffix; nothing is ever overwritten.
+
+        Naming an `owner` makes the requeue ownership-checked: a caller may
+        hand back only claims its own invocation took. Claims whose sidecar is
+        missing or corrupt read as `OWNER_UNKNOWN` and are refused too — an
+        operator, not a run, decides what happens to them.
         """
         src = self._claim_path(name_or_task)
         if src is None:
             return None
+        if owner is not None and not self._owner_matches(src, owner):
+            self.log(f"  ⚠ not requeueing {src.name}: held by "
+                     f"{read_metadata(src).owner}, not {owner}")
+            return None
         return self._move_to_pending(src)
 
-    def requeue_all_claims(self) -> list[str]:
-        """Move every claimed file back to pending/. Returns the moved names."""
+    def requeue_all_claims(self, owner: str | None = None) -> list[str]:
+        """Move every claimed file back to pending/. Returns the moved names.
+
+        With an `owner`, only that owner's claims move; foreign, unknown and
+        corrupt claims stay claimed for their holder or an operator.
+        """
         moved = []
         for f in sorted(self.claimed_dir.glob("*.md")):
+            if owner is not None and not self._owner_matches(f, owner):
+                continue
             if self._move_to_pending(f) is not None:
                 moved.append(f.name)
         return moved
+
+    def list_owned_claims(self) -> list[Claim]:
+        """Every held claim with its recorded ownership, in sorted order.
+
+        `list_claims()` stays the plain task view; this is the ownership view
+        a cleanup or audit path needs. A claim with no readable sidecar is
+        reported with `owner=OWNER_UNKNOWN`, never dropped.
+        """
+        claims = []
+        for f in sorted(self.claimed_dir.glob("*.md")):
+            meta = read_metadata(f)
+            task = Task(id=_slug(f.stem), body=f.read_text(),
+                        source=f"claimed:{f.name}")
+            claims.append(Claim(task=task, filename=f.name, owner=meta.owner,
+                                claimed_at=meta.claimed_at,
+                                meta_path=metadata_path(f)))
+        return claims
 
     def claim_age_hours(self, name: str) -> float:
         """Hours since a claimed file was last written; -1.0 if not claimed.
@@ -175,7 +263,13 @@ class DirectoryTaskProvider(TaskProvider):
         return _named_file(self.claimed_dir, name_or_task)
 
     def _move_to_pending(self, src: Path) -> str | None:
-        """Move one claimed file into pending/, never overwriting. Path str."""
+        """Move one claimed file into pending/, never overwriting. Path str.
+
+        The ownership sidecar belongs to the claim, not to the file's location,
+        so it is dropped once the claim is gone: the markdown rename leaves it
+        behind in claimed/, and a sidecar with no claim under it would
+        misattribute the next claim taken on that name.
+        """
         dest = self.pending_dir / src.name
         n = 0
         while dest.exists():
@@ -187,13 +281,20 @@ class DirectoryTaskProvider(TaskProvider):
         except OSError:
             # vanished or held elsewhere: leave it claimed rather than lose it
             return None
+        remove_metadata(src)
         return str(dest)
 
+    def _owner_matches(self, claim_file: Path, owner: str) -> bool:
+        """True when the sidecar beside `claim_file` records exactly `owner`."""
+        return read_metadata(claim_file).owner == owner
+
     def release_claim(self, task: Task) -> None:
-        """Remove the staging file once intake has persisted the body."""
+        """Remove the staging file (and its ownership sidecar) once intake has
+        persisted the body."""
         for f in self.claimed_dir.glob("*.md"):
             if _slug(f.stem) == task.id:
                 f.unlink(missing_ok=True)
+                remove_metadata(f)
                 break
 
     def submit(self, task: Task, status: str, summary: str) -> None:
