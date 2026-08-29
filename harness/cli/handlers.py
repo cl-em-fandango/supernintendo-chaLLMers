@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,29 @@ CLAIMS_STRANDED_WARNING = ("⚠ {count} claimed tasks: nothing will process them
 # entrypoints and the operator command agree on one number; env-overridable for
 # a box whose sessions legitimately run longer.
 CLAIM_STALE_HOURS = float(os.environ.get("CLAIM_STALE_HOURS", "6.0"))
+
+# Entropy in a generated owner id, in bytes. Four is 4 billion values: enough
+# that two invocations of the same command in the same process never collide,
+# short enough for an id an operator reads in `claimed/`.
+_OWNER_TOKEN_BYTES = 4
+
+
+def _new_owner_id(command: str) -> str:
+    """The claim-ownership id one command invocation holds for its whole life.
+
+    Generated once, at the top of a run command, and passed to every claim that
+    invocation takes and every claim it hands back (see
+    `providers.fetch_pending(claim=True, owner=...)` and
+    `providers.requeue_claim(..., owner=...)`). A claim therefore carries the id
+    of the invocation that took it, and cleanup can only move claims this
+    process took for itself — a peer run's claim, or a pre-ownership claim, is
+    refused by the provider rather than silently stolen.
+
+    `<command>-<pid>-<token>`: the command names the id for a human reading
+    `claimed/`, the pid separates invocations that share a command, and the
+    token separates two invocations of the same command in the same process.
+    """
+    return f"{command}-{os.getpid()}-{uuid.uuid4().hex[:_OWNER_TOKEN_BYTES]}"
 
 
 def _slug(name: str) -> str:
@@ -51,12 +75,16 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
     Claims are taken a single file at a time (`limit=1`), so a run can never
     hold the whole queue; anything it did not work stays in pending/. Claims
     this invocation made are handed back to pending/ on the way out, so a
-    park, an exception or an early return cannot strand them. Claims that were
-    already sitting in claimed/ when the run started are left untouched unless
-    the stale-claim guard was switched on (`requeue_stale` /
-    `autoRequeueStaleClaims`) — see `_requeue_stale_claims` for why it is off.
+    park, an exception or an early return cannot strand them. Every claim is
+    taken under one owner id generated for this invocation, and the same id is
+    named by the cleanup, so the hand-back can only ever move this run's own
+    claims. Claims that were already sitting in claimed/ when the run started
+    are left untouched unless the stale-claim guard was switched on
+    (`requeue_stale` / `autoRequeueStaleClaims`) — see `_requeue_stale_claims`
+    for why it is off.
     """
     cfg, store, runner, provider, pipeline, log = build()
+    owner = _new_owner_id("run")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
                           log=log)
@@ -65,7 +93,7 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
         if continue_:
             resume_in_flight(pipeline.lifecycle, pipeline, log=log)
         while True:
-            tasks = provider.fetch_pending(claim=True, limit=1)
+            tasks = provider.fetch_pending(claim=True, limit=1, owner=owner)
             if not tasks:
                 log("pending queue empty")
                 break
@@ -85,20 +113,22 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
             gen.run(Path(__file__).resolve().parent)
         return 0
     finally:
-        _release_run_claims(provider, claimed, log)
+        _release_run_claims(provider, claimed, owner, log)
 
 
-def _release_run_claims(provider, claimed: list[Task], log) -> int:
-    """Hand back the claims this run made, and log how many.
+def _release_run_claims(provider, claimed: list[Task], owner: str, log) -> int:
+    """Hand back this run's own claims, and log how many.
 
-    Only the tasks named in `claimed` are moved: pre-existing entries in
-    claimed/ belong to the human review pass, not to this run (see
-    `provider.requeue_all_claims()`, which is the operator command's job).
-    A claim already consumed by the pipeline is simply not there to move.
+    Only the tasks named in `claimed` are moved, and only those the named
+    `owner` still holds: pre-existing entries in claimed/ belong to the human
+    review pass, not to this run (see `provider.requeue_all_claims()`, which is
+    the operator command's job), and a claim held by another live invocation is
+    refused by the provider rather than stolen. A claim already consumed by the
+    pipeline is simply not there to move.
     """
     released = 0
     for task in claimed:
-        if provider.requeue_claim(task):
+        if provider.requeue_claim(task, owner=owner):
             released += 1
             log(f"  released claim: {task.id}")
     if released:
@@ -110,10 +140,13 @@ def cmd_run_one() -> int:
     """Claim and process at most one pending task, then exit.
 
     Anything the claim fetch returned but this call did not process is handed
-    back to pending/ for a later cycle. Not used by the supervisor.
+    back to pending/ for a later cycle. The claims are taken and handed back
+    under one owner id generated for this invocation, so the hand-back cannot
+    move a claim another invocation is holding. Not used by the supervisor.
     """
     cfg, store, runner, provider, pipeline, log = build()
-    tasks = provider.fetch_pending(claim=True)
+    owner = _new_owner_id("run-one")
+    tasks = provider.fetch_pending(claim=True, owner=owner)
     if not tasks:
         log("no pending tasks to claim")
         return 0
@@ -123,7 +156,7 @@ def cmd_run_one() -> int:
     # release any other claims made this cycle that we did not process,
     # returning them to pending so a future cycle picks them up.
     for other in tasks[1:]:
-        if provider.requeue_claim(other):
+        if provider.requeue_claim(other, owner=owner):
             log(f"  requeued unprocessed claim: {other.id}")
     return 0
 
@@ -135,16 +168,20 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> i
     before `pending/` is touched. Tasks are claimed one at a time, and the
     loop returns once `pending/` is empty. This is the subcommand T14's pure
     `command_for_action` maps RESUME and WORK to; T38 checks that mapping and
-    the supervisor call site. Stale claims: `_requeue_stale_claims`.
+    the supervisor call site. Every claim this loop takes is recorded against
+    one owner id generated for this invocation, and the hand-back of the claims
+    it did not process names that same id, so another run's claim is never
+    moved here. Stale claims: `_requeue_stale_claims`.
     """
     cfg, store, runner, provider, pipeline, log = build()
+    owner = _new_owner_id("run-task-loop")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
                           log=log)
     if continue_:
         resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     while True:
-        tasks = provider.fetch_pending(claim=True)
+        tasks = provider.fetch_pending(claim=True, owner=owner)
         if not tasks:
             log("pending queue empty")
             return 0
@@ -152,7 +189,7 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> i
         log(f"processing {task.id} ({len(tasks)} pending)")
         pipeline.process(task)
         for other in tasks[1:]:
-            if provider.requeue_claim(other):
+            if provider.requeue_claim(other, owner=owner):
                 log(f"  requeued unprocessed claim: {other.id}")
 
 
