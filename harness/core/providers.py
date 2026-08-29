@@ -6,6 +6,7 @@ issues, a database, an API, ...) can be added without touching the pipeline.
 
 Interface:
     fetch_pending() -> list[Task]     # tasks ready to work on
+    count_pending() -> int            # how many a fetch would hand over, read-only
     list_claims() -> list[Task]       # tasks held claimed but not yet processed
     list_owned_claims() -> list[Claim]  # same claims, with who holds each
     requeue_all_claims() -> list[str] # hand every claim back to the pending pool
@@ -70,6 +71,17 @@ class TaskProvider(ABC):
     @abstractmethod
     def fetch_pending(self) -> list[Task]:
         """Return tasks ready to be worked on, in priority order."""
+
+    def count_pending(self) -> int:
+        """How many tasks `fetch_pending()` would return, without claiming.
+
+        A count is not a fetch: a caller that only wants the queue depth must
+        not ask a fetch for it, because a fetch is where the claim lifecycle
+        lives and a default flipped there turns a question into a claim. The
+        default answers honestly by asking the fetch — an adapter whose fetch
+        is cheap and side-effect-free has nothing to lose by overriding.
+        """
+        return len(self.fetch_pending())
 
     def list_claims(self) -> list[Task]:
         """Tasks currently claimed but not yet processed. Sources without a
@@ -188,6 +200,23 @@ class DirectoryTaskProvider(TaskProvider):
                         raise
             tasks.append(Task(id=tid, body=body, source=f"directory:{f.name}"))
         return tasks
+
+    def count_pending(self) -> int:
+        """Pending files a fetch would hand over, counted without claiming.
+
+        The same rule as `fetch_pending()` applies: a file the enqueue guard
+        refuses is not a task, so it is not counted either. The autonomous
+        generator stops on this number, and it must stop on the queue it can
+        actually work, not on a pile of plan parents no fetch would claim.
+
+        Read-only by construction — no rename, no sidecar, no write, and no
+        call into `fetch_pending()`. The generator asks once per attempt, so a
+        count that ever took a claim would empty the queue by looking at it.
+        A refusal is not logged either: this is asked several times per
+        proposal, and the skip is the fetch's news to tell once.
+        """
+        return sum(1 for f in self.pending_dir.glob("*.md")
+                   if check_enqueue(f.read_text(), f.name).allowed)
 
     def list_claims(self) -> list[Task]:
         """The files sitting in claimed/, in sorted order, as tasks."""

@@ -82,7 +82,14 @@ class AutonomousGenerator:
         return added
 
     def _pending_count(self) -> int:
-        return len(self.provider.fetch_pending())
+        """Queue depth, read-only.
+
+        Counted through `provider.count_pending()` rather than by fetching: a
+        fetch is the claim boundary, and this is asked on every loop condition,
+        every attempt header and the closing line, so a count that claimed
+        would empty the queue by looking at it.
+        """
+        return self.provider.count_pending()
 
 
 def _proposal_text(output: str) -> str:
