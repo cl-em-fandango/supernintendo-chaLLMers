@@ -22,7 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from harness.core.config import Config
-from harness.core.enums import CHECKPOINT_ORDER, CheckpointStage
+from harness.core.enums import CHECKPOINT_ORDER, CheckpointStage, Verdict
 from harness.core.providers import Task
 from harness.core.session import SessionResult
 from harness.workflow.params import StageContext
@@ -55,7 +55,7 @@ class StubMerge:
 class StubRunner:
     """Stands in for `SessionRunner`: records the stages it was asked to run."""
 
-    def __init__(self, verdict: str = "pass"):
+    def __init__(self, verdict: Verdict = Verdict.PASS):
         self.calls: list[str] = []
         self.verdict = verdict
 
@@ -66,7 +66,7 @@ class StubRunner:
         out_file.write_text("VERDICT: " + self.verdict)
         return SessionResult(ok=True, verdict=self.verdict, peak_tokens=0,
                              duration_s=0.0,
-                             output="## Summary\nmerged work\n\nVERDICT: " + self.verdict,
+                             output="## Summary\nmerged work\n\nVERDICT: " + self.verdict.value,
                              out_file=out_file, crashed=False)
 
 
