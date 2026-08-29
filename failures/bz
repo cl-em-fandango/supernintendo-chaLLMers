@@ -1,1 +1,0 @@
-FAILED tests/test_workdir_persistence.py::WorkdirPersistenceTest::test_intake_records_workdir_before_ensure_branch

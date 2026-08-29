@@ -1,1 +1,0 @@
-FAILED tests/test_git_conflict.py::SquashConflictCleanupTest::test_added_paths_are_recorded_before_the_merge

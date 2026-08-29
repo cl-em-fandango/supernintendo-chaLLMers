@@ -1,1 +1,0 @@
-FAILED tests/test_git_conflict.py::SquashConflictCleanupTest::test_squash_conflict_raises_with_evidence

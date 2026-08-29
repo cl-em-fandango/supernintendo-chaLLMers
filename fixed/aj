@@ -1,1 +1,0 @@
-FAILED tests/test_git_conflict.py::SquashConflictCleanupTest::test_unrelated_untracked_file_survives_the_cleanup

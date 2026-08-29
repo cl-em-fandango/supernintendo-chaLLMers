@@ -1,1 +1,0 @@
-FAILED tests/test_merge_checkpoint.py::MergeCheckpointTest::test_lost_checkpoint_write_still_completes
