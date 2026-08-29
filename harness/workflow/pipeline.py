@@ -341,7 +341,13 @@ class Pipeline:
             if r.verdict is Verdict.PASS:
                 return True
             if it < max_iter:
-                feedback = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
+                # Review feedback and the implementation progress note are two
+                # artifacts with two readers (the fix session vs. the next
+                # implement session), so they get two paths. Sharing one file let
+                # a review report be read back as a progress note and made
+                # `_implement`'s "keep the first note" guard stick (T56).
+                feedback = (ctx.task_dir / "artifacts" / "progress"
+                            / f"slice-{sid}-review.md")
                 shutil.copy(r.out_file, feedback)
                 # A fix session is a code edit, so it runs on the implementer
                 # regardless of which review asked for it (T55). `model` above
