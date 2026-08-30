@@ -82,6 +82,20 @@ class Config:
                 if any(k in m for k in ("A3B", "MOE", "MoE", "moe", "Gemma", "oss"))]
 
     @property
+    def configured_models(self) -> list[str]:
+        """All unique model identifiers configured across all roles and pools."""
+        result: list[str] = []
+        for val in self.models.values():
+            if isinstance(val, str) and val.strip():
+                if val.strip() not in result:
+                    result.append(val.strip())
+            elif isinstance(val, (list, tuple, set)):
+                for item in val:
+                    if isinstance(item, str) and item.strip() and item.strip() not in result:
+                        result.append(item.strip())
+        return result
+
+    @property
     def max_prompt_tokens(self) -> int:
         """Working prompt cap in tokens (config key `maxPromptTokens`).
 

@@ -29,6 +29,7 @@ from .transcripts import (
 from external.pi_cli import (
     PiSessionResult,
     run_pi_session,
+    validate_models_present,
     _extract_verdict,
     _now,
 )
@@ -60,6 +61,18 @@ class SessionRunner:
         self.cfg = cfg
         self.store = store
         self.log = log
+        self._models_validated = False
+
+    def validate_models(self) -> None:
+        """Validate all configured models via pi --list-models before running."""
+        if self._models_validated:
+            return
+        models = getattr(self.cfg, "configured_models", None)
+        if callable(models):
+            models = models()
+        if models and isinstance(models, (list, tuple, set)):
+            validate_models_present(models, log=self.log)
+        self._models_validated = True
 
     def run(
         self,
@@ -73,6 +86,7 @@ class SessionRunner:
         iteration: int = 1,
         notes: str = "",
     ) -> SessionResult:
+        self.validate_models()
         workdir = Path(workdir)
         # Wire-side conversion, the one place a `Stage` becomes its string. A
         # stray string is recorded verbatim rather than raising: losing a stats

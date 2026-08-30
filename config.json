@@ -1,5 +1,6 @@
 {
   "workDir": "/srv/pi-harness",
+  "repoDir": "/srv/pi-harness/harness_build",
   "tokenBudget": 60000,
   "maxPromptTokens": 60000,
   "maxSpecKickbacks": 3,
@@ -11,18 +12,14 @@
   "autonomousQueueTarget": 5,
   "trunkBranch": "pi/trunk",
   "modelContext": {
-    "QwenOptimised32k": 32768,
-    "QwenOptimised64k": 65536,
-    "OrinthOptimised32k": 32768,
-    "QwenOptimised128k": 131072,
-    "Ornith-1.5-35B-Q6_K.gguf": 131072,
-    "Qwen3.8-27B-Q4_K_M": 131072,
-    "Qwen3.8-27B-UD-Q4_K_XL": 131072,
-    "Qwen3.8-27B-UD-Q8_K_XL": 131072,
-    "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2": 131072,
-    "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P": 131072,
-    "Qwen3.8-DFLASH2-Implementer": 131072,
-    "Qwen3.8-DFLASH2-TechnicalWriter": 131072
+    "gemma-4-26B-A4B-it-UD-Q8_K_XL": 131072,
+    "GLM4.5-AIR_Q4_K_M": 131072,
+    "gpt-oss-120b-q5-k-m": 131072,
+    "Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L": 131072,
+    "Ornith-1.5-35B-Q6_K": 131072,
+    "Qwen3.8-27B-UD-Q6_K_XL_DFLASH2": 131072,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer": 131072,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter": 131072
   },
   "taskProvider": "directory",
   "directoryProvider": {
@@ -40,14 +37,14 @@
     "implementer": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer",
     "assessor": "Ornith-1.5-35B-Q6_K",
     "fastPool": [
-      "Ornith-1.5-35B-Q6_K.gguf",
+      "Ornith-1.5-35B-Q6_K",
       "gemma-4-26B-A4B-it-UD-Q8_K_XL",
       "GLM4.5-AIR_Q4_K_M",
       "gpt-oss-120b-q5-k-m",
       "Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L"
     ],
     "randomPool": [
-      "Ornith-1.5-35B-Q6_K.gguf",
+      "Ornith-1.5-35B-Q6_K",
       "gemma-4-26B-A4B-it-UD-Q8_K_XL",
       "GLM4.5-AIR_Q4_K_M",
       "gpt-oss-120b-q5-k-m",

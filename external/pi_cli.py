@@ -815,6 +815,171 @@ def _extract_verdict(output: str) -> str:
     return "unknown"
 
 
+def parse_model_list_output(stdout: str) -> list[str]:
+    """Parse output from `pi --list-models` into a list of model identifiers."""
+    if not stdout or not stdout.strip():
+        return []
+
+    models: list[str] = []
+
+    def _add(m: str) -> None:
+        m = m.strip()
+        if m and m not in models:
+            models.append(m)
+
+    # 1. Attempt JSON parsing
+    trimmed = stdout.strip()
+    if (trimmed.startswith("[") and trimmed.endswith("]")) or (
+        trimmed.startswith("{") and trimmed.endswith("}")
+    ):
+        try:
+            data = json.loads(trimmed)
+            items = []
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                if "models" in data and isinstance(data["models"], list):
+                    items = data["models"]
+                else:
+                    for v in data.values():
+                        if isinstance(v, list):
+                            items.extend(v)
+                        elif isinstance(v, dict) and "models" in v and isinstance(v["models"], list):
+                            items.extend(v["models"])
+            for item in items:
+                if isinstance(item, str):
+                    _add(item)
+                elif isinstance(item, dict):
+                    for k in ("id", "name", "model", "modelId"):
+                        if k in item and isinstance(item[k], str):
+                            _add(item[k])
+            if models:
+                return models
+        except Exception:
+            pass
+
+    # 2. Line-by-line parsing
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Strip markdown bullet markers
+        if line.startswith(("- ", "* ", "+ ")):
+            line = line[2:].strip()
+        # Extract potential JSON object embedded on one line
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    for k in ("id", "name", "model", "modelId"):
+                        if k in item and isinstance(item[k], str):
+                            _add(item[k])
+                    continue
+            except Exception:
+                pass
+
+        parts = line.split()
+        if not parts:
+            continue
+        _add(parts[0])
+        _add(line)
+
+        for part in parts:
+            if "/" in part:
+                _add(part)
+                _add(part.split("/")[-1])
+
+    return models
+
+
+def list_available_pi_models(
+    provider: str | None = None,
+    workdir: Path | str | None = None,
+    timeout_s: float = 30.0,
+) -> list[str]:
+    """Query available models via `pi --list-models`."""
+    if provider is None:
+        provider = os.environ.get("HARNESS_PI_PROVIDER", "")
+
+    cmd = ["pi"]
+    if provider and provider.lower() not in ("none", "null", "disabled", "unset"):
+        cmd.extend(["--provider", provider])
+    cmd.append("--list-models")
+
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to execute `{' '.join(cmd)}`: {exc}") from exc
+
+    if res.returncode != 0:
+        err_msg = res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
+        raise RuntimeError(f"`{' '.join(cmd)}` failed ({res.returncode}): {err_msg}")
+
+    return parse_model_list_output(res.stdout)
+
+
+def validate_models_present(
+    models: list[str] | set[str],
+    provider: str | None = None,
+    available_models: list[str] | set[str] | None = None,
+    log=print,
+) -> None:
+    """Validate that all required models are present in the output of `pi --list-models`.
+
+    Raises RuntimeError if any required model is not available.
+    """
+    if not models:
+        return
+    req_models = [m.strip() for m in models if isinstance(m, str) and m.strip()]
+    if not req_models:
+        return
+
+    if available_models is None:
+        avail_list = list_available_pi_models(provider=provider)
+    else:
+        avail_list = list(available_models)
+
+    avail_set = set(avail_list)
+    for m in list(avail_set):
+        if "/" in m:
+            avail_set.add(m.split("/", 1)[1])
+            avail_set.add(m.rsplit("/", 1)[1])
+        if m.endswith(".gguf"):
+            avail_set.add(m[:-5])
+
+    missing = []
+    for model in req_models:
+        model_clean = model.strip()
+        model_base = model_clean[:-5] if model_clean.endswith(".gguf") else model_clean
+        if model_clean in avail_set or model_base in avail_set:
+            continue
+        matched = any(
+            avail == model_clean
+            or avail == model_base
+            or avail.endswith("/" + model_clean)
+            or avail.endswith("/" + model_base)
+            or (model_clean in avail)
+            for avail in avail_set
+        )
+        if not matched:
+            missing.append(model)
+
+    if missing:
+        missing_sorted = sorted(set(missing))
+        avail_sorted = sorted(set(avail_list))
+        raise RuntimeError(
+            f"Missing required model(s) via pi --list-models: {', '.join(missing_sorted)}. "
+            f"Available models: {', '.join(avail_sorted) if avail_sorted else '(none)'}"
+        )
+
+
 def _now() -> str:
     """Get current timestamp in ISO format."""
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")

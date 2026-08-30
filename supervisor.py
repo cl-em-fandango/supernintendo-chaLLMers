@@ -87,6 +87,7 @@ from harness.workflow.cycle import (CycleAction,  # noqa: E402
                                     subcommand_for_action)
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 from external.git_cli import revert_to_last_good  # noqa: E402
+from external.pi_cli import validate_models_present  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = HARNESS_DIR / "config.json"
@@ -325,6 +326,20 @@ def run_loop() -> int:
     # rebuilding them per cycle is what used to make only one count cheap
     # enough to log.
     cfg = load(CONFIG_PATH)
+
+    # Validate all configured models are present via pi --list-models before starting cycles
+    try:
+        models = getattr(cfg, "configured_models", None)
+        if callable(models):
+            models = models()
+        if models and isinstance(models, (list, tuple, set)):
+            validate_models_present(models, log=log)
+            log("all configured models validated via pi --list-models")
+    except Exception as exc:
+        log(f"⚠ model validation failed: {exc}")
+        release_lock()
+        return 1
+
     provider = create_provider(cfg)
     lifecycle = TaskLifecycle(cfg, log=log)
 
