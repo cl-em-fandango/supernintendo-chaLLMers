@@ -13,9 +13,10 @@ from ..workflow.autonomous import AutonomousGenerator
 from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
-from ..core.board import (BoardSummary, BoardTask, LocationBoard,
-                          aggregate_stats, classify_origin, render_board)
-from ..core.claim_metadata import OWNER_UNKNOWN
+from ..core.board import (TERMINAL_LOCATIONS, BoardSummary, BoardTask,
+                          LocationBoard, aggregate_stats, classify_origin,
+                          collapse_task_stats, render_board)
+from ..core.claim_metadata import OWNER_UNKNOWN, read_metadata
 from ..core.providers import Task
 from ..core.stats import render_report, render_task_journey
 from ..composition import build
@@ -387,8 +388,73 @@ def cmd_status() -> int:
     return 0
 
 
-def _board_task(queue_dir: Path, sub: str, name: str) -> BoardTask:
-    """Collect one queue entry for the board: id, origin, timestamps, state flag.
+# The review location holds each terminal task's summary file, the only place
+# a park/fail reason is recorded. No enum member covers it (TaskStatus is the
+# task's own state, not a file location), so the directory name lives here.
+_REVIEW_LOCATION = "review"
+
+
+def _board_task_id(queue_dir: Path, sub: str, name: str) -> str:
+    """The task id of one queue entry: file entries lose their `.md` suffix."""
+    path = queue_dir / sub / name
+    return path.stem if path.is_file() else name
+
+
+def _stats_rows_by_task(rows: list[dict]) -> dict[str, list[dict]]:
+    """Index session rows by task id, preserving append order within a task.
+
+    One pass over the store so the board reads `sessions.jsonl` once, not
+    once per task. Rows without a task id are dropped: nothing can show them.
+    """
+    by_task: dict[str, list[dict]] = {}
+    for row in rows:
+        task_id = str(row.get("task_id") or "")
+        if task_id:
+            by_task.setdefault(task_id, []).append(row)
+    return by_task
+
+
+def _claim_owner(queue_dir: Path, claim) -> str:
+    """The owner recorded in a claim's ownership sidecar.
+
+    The provider names the claim file in `source` (`claimed:<file>`); a
+    provider that does not, or a sidecar that is absent or corrupt, reads
+    back as `OWNER_UNKNOWN` (the renderer shows `?`, spec FR-3).
+    """
+    prefix = f"{CLAIMED_LOCATION}:"
+    if not claim.source.startswith(prefix):
+        return OWNER_UNKNOWN
+    claim_file = queue_dir / CLAIMED_LOCATION / claim.source[len(prefix):]
+    return read_metadata(claim_file).owner
+
+
+def _terminal_reason(queue_dir: Path, task_id: str) -> str:
+    """The park/fail reason of a terminal task, best-effort (spec FR-3).
+
+    `TaskLifecycle.park`/`fail` record the reason as the executive summary
+    of `review/<id>.md`; neither `task.json` nor the stats rows carry one.
+    No file, unreadable file, or no summary section all read as no reason —
+    absence is not an error.
+    """
+    try:
+        text = (queue_dir / _REVIEW_LOCATION / f"{task_id}.md").read_text()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    lines = text.splitlines()
+    heading = "## Executive summary"
+    if heading not in lines:
+        return ""
+    for line in lines[lines.index(heading) + 1:]:
+        stripped = line.strip()
+        if stripped:
+            return "" if stripped.startswith("#") else stripped
+    return ""
+
+
+def _board_task(queue_dir: Path, sub: str, name: str, *,
+                owner: str = "", reason: str = "",
+                stats_rows: list[dict] | None = None) -> BoardTask:
+    """Collect one queue entry for the board: id, origin, timestamps, state.
 
     The task id is the entry name, minus a `.md` suffix for the file-shaped
     locations (`pending/`, `review/`, `claimed/`). `task.json` is read as plain
@@ -398,17 +464,26 @@ def _board_task(queue_dir: Path, sub: str, name: str) -> BoardTask:
     a query command's stdout. Missing, unreadable, unparseable or non-object
     all read the same way: no timestamp, no state (spec FR-7).
 
-    Read-only (FR-8): one directory listing, two reads, no stat-write, no claim.
+    Read-only (FR-8): one directory listing, plain reads, no stat-write, no
+    claim. `owner`, `reason` and `stats_rows` are collected by `cmd_board`
+    (they come from the claim sidecar, the review summary and the stats
+    store respectively) and ride along untouched.
     """
     path = queue_dir / sub / name
-    task_id = path.stem if path.is_file() else name
+    task_id = _board_task_id(queue_dir, sub, name)
     last_updated = ""
     state_readable = False
+    stage = ""
+    checkpointed_stages: tuple[str, ...] = ()
     try:
         raw = json.loads((path / "task.json").read_text())
         if isinstance(raw, dict):
             state_readable = True
             last_updated = str(raw.get("last_updated") or "")
+            stage = str(raw.get("stage") or "")
+            checkpoints = raw.get("checkpointed_stages")
+            if isinstance(checkpoints, list):
+                checkpointed_stages = tuple(str(s) for s in checkpoints)
     except (OSError, ValueError, UnicodeDecodeError):
         pass
     try:
@@ -417,7 +492,10 @@ def _board_task(queue_dir: Path, sub: str, name: str) -> BoardTask:
         mtime = 0.0
     return BoardTask(task_id=task_id, origin=classify_origin(task_id),
                      last_updated=last_updated, mtime=mtime,
-                     state_readable=state_readable)
+                     state_readable=state_readable, stage=stage,
+                     checkpointed_stages=checkpointed_stages, owner=owner,
+                     reason=reason,
+                     stats=collapse_task_stats(stats_rows or []))
 
 
 def cmd_board() -> int:
@@ -431,15 +509,26 @@ def cmd_board() -> int:
     """
     cfg, store, _, provider, _, _ = build()
     claims = provider.list_claims()
+    rows_by_task = _stats_rows_by_task(store.all())
     boards = []
     for sub in QUEUE_LOCATIONS_ALL:
         if sub == CLAIMED_LOCATION:
-            tasks = tuple(_board_task(cfg.queue_dir, sub, claim.id)
-                          for claim in claims)
+            owners = {claim.id: _claim_owner(cfg.queue_dir, claim)
+                      for claim in claims}
+            names = [claim.id for claim in claims]
         else:
-            tasks = tuple(_board_task(cfg.queue_dir, sub, name)
-                          for name in _queue_names(cfg.queue_dir, sub))
-        boards.append(LocationBoard(location=sub, tasks=tasks))
+            owners = {}
+            names = _queue_names(cfg.queue_dir, sub)
+        tasks = []
+        for name in names:
+            task_id = _board_task_id(cfg.queue_dir, sub, name)
+            tasks.append(_board_task(
+                cfg.queue_dir, sub, name,
+                owner=owners.get(name, ""),
+                reason=(_terminal_reason(cfg.queue_dir, task_id)
+                        if sub in TERMINAL_LOCATIONS else ""),
+                stats_rows=rows_by_task.get(task_id, [])))
+        boards.append(LocationBoard(location=sub, tasks=tuple(tasks)))
     warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
     print(render_board(BoardSummary(locations=tuple(boards),
                                      claims_warning=warning,

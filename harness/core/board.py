@@ -3,15 +3,18 @@
 State collection lives in `cli/handlers.py`; this module turns collected data
 into the rendered string (precedent: `stats.render_report`). It is a leaf: it
 imports no workflow/cli code, mutates nothing, and its output is a
-deterministic function of its input. Slice 2 adds the task rows (id, origin
-tag, ordering, `done/` cap); color and the wide layout arrive in later slices.
+deterministic function of its input. Slice 2 added the task rows (id, origin
+tag, ordering, `done/` cap); slice 3 adds the per-task state fields (stage,
+checkpoints, last updated, owner, collapsed stats, terminal reason). Color
+and the wide layout arrive in a later slice.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
+from .claim_metadata import OWNER_UNKNOWN
 from .enums import TaskStatus, Verdict
 
 # Outcomes that count as a decided session (spec FR-2): only a session whose
@@ -39,6 +42,10 @@ AUTO_ID_PREFIX = "auto-"
 # updated done tasks plus a `(+N more)` line (spec FR-7).
 DONE_DISPLAY_CAP = 10
 
+# Locations whose tasks may carry a recorded terminal reason (park/fail,
+# spec FR-3). The handler reads it best-effort; absence is not an error.
+TERMINAL_LOCATIONS = frozenset({TaskStatus.PARKED.value, TaskStatus.FAILED.value})
+
 
 class TaskOrigin(Enum):
     """Who created a task, classified by id alone (spec FR-4)."""
@@ -65,14 +72,44 @@ class BoardTask:
     an object; a missing or corrupt one renders as `state: unknown` (FR-7).
 
     `mtime` is the entry's filesystem modification time (0.0 when it could
-    not be stat'ed), collected now for the display fallback later slices
-    add; it is deliberately not a sort key.
+    not be stat'ed), the display fallback when `task.json` records no
+    timestamp; it is deliberately not a sort key.
+
+    `stage` and `checkpointed_stages` are the `task.json` values echoed
+    verbatim (edge data: older files may hold names no current enum member
+    covers); both are empty unless `state_readable`.
+
+    `owner` is the claim-ownership sidecar value, set only for `claimed/`
+    entries (`OWNER_UNKNOWN` renders as `?`). `reason` is a recorded
+    park/fail reason for `parked/`/`failed/` entries, empty when none was
+    found. `stats` is the task's collapsed session line, None when the
+    stats store holds no rows for it.
     """
     task_id: str
     origin: TaskOrigin
     last_updated: str = ""
     mtime: float = 0.0
     state_readable: bool = False
+    stage: str = ""
+    checkpointed_stages: tuple[str, ...] = ()
+    owner: str = ""
+    reason: str = ""
+    stats: "TaskStats | None" = None
+
+
+@dataclass(frozen=True)
+class TaskStats:
+    """One task's session rows collapsed into the board's single line (FR-3).
+
+    `sessions` is the row count, `tokens` the sum of `peak_tokens`,
+    `duration_s` the sum of `duration_s`, and `last_verdict` the `verdict`
+    of the newest row — a canonical `Verdict` value when the row holds one,
+    otherwise the row's string verbatim (edge data from the model).
+    """
+    sessions: int
+    tokens: int
+    duration_s: float
+    last_verdict: str
 
 
 @dataclass(frozen=True)
@@ -168,14 +205,83 @@ def sort_tasks(tasks: tuple[BoardTask, ...] | list[BoardTask]) -> tuple[BoardTas
     return tuple(sorted(tasks, key=_sort_key))
 
 
-def _render_task_line(task: BoardTask) -> str:
-    """One task row: id + origin tag; unreadable state says so (FR-7).
+def _row_recency(row: dict, index: int) -> tuple[float, int]:
+    """'Newest row' key: a parseable `ts` beats every row without one,
+    otherwise append order decides (spec FR-3: order by timestamp, then
+    append order, newest first)."""
+    ts = _parse_timestamp(str(row.get("ts") or ""))
+    return (ts.timestamp() if ts is not None else -1.0, index)
 
-    Stage/checkpoint, stats and owner fields are slice 3; color is slice 4.
+
+def collapse_task_stats(rows: list[dict]) -> TaskStats | None:
+    """Collapse a task's session rows into its one board line (spec FR-3).
+
+    None when the task has no rows — such a task shows none of these fields.
+    Unreadable `peak_tokens`/`duration_s` count as 0, never a crash. The
+    last verdict is the newest row's `verdict`, canonicalised through
+    `Verdict` when it names a known member.
+    """
+    if not rows:
+        return None
+    tokens = 0
+    duration_s = 0.0
+    for row in rows:
+        try:
+            tokens += int(row.get("peak_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            duration_s += float(row.get("duration_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+    newest = max(range(len(rows)), key=lambda i: _row_recency(rows[i], i))
+    raw_verdict = str(rows[newest].get("verdict") or "")
+    parsed = Verdict.parse(raw_verdict)
+    return TaskStats(
+        sessions=len(rows),
+        tokens=tokens,
+        duration_s=duration_s,
+        last_verdict=parsed.value if parsed else (raw_verdict or "unknown"),
+    )
+
+
+def _owner_label(owner: str) -> str:
+    """An unknown claim owner renders `?` (spec FR-3), a known one verbatim."""
+    return "?" if owner == OWNER_UNKNOWN else owner
+
+
+def _updated_label(task: BoardTask) -> str:
+    """`task.json`'s timestamp, else the entry's mtime as UTC ISO, else none."""
+    if task.last_updated:
+        return task.last_updated
+    if task.mtime > 0.0:
+        return datetime.fromtimestamp(task.mtime, tz=timezone.utc).isoformat(
+            timespec="seconds")
+    return ""
+
+
+def _render_task_line(task: BoardTask) -> str:
+    """One task row: id, origin tag, and the state fields it has (FR-3).
+
+    Unreadable state says so (FR-7). Color is slice 4.
     """
     line = f"  {task.task_id} [{task.origin.value}]"
     if not task.state_readable:
         line += "  state: unknown"
+    if task.state_readable and task.stage:
+        line += (f"  stage={task.stage}"
+                 f" done:[{','.join(task.checkpointed_stages)}]")
+    updated = _updated_label(task)
+    if updated:
+        line += f"  updated={updated}"
+    if task.owner:
+        line += f"  owner={_owner_label(task.owner)}"
+    if task.stats is not None:
+        line += (f"  sessions={task.stats.sessions} tokens={task.stats.tokens}"
+                 f" time={task.stats.duration_s:.0f}s"
+                 f" last verdict={task.stats.last_verdict}")
+    if task.reason:
+        line += f"  reason={task.reason}"
     return line
 
 
