@@ -4,9 +4,11 @@ State collection lives in `cli/handlers.py`; this module turns collected data
 into the rendered string (precedent: `stats.render_report`). It is a leaf: it
 imports no workflow/cli code, mutates nothing, and its output is a
 deterministic function of its input. Slice 2 added the task rows (id, origin
-tag, ordering, `done/` cap); slice 3 adds the per-task state fields (stage,
-checkpoints, last updated, owner, collapsed stats, terminal reason). Color
-and the wide layout arrive in a later slice.
+tag, ordering, `done/` cap); slice 3 added the per-task state fields (stage,
+checkpoints, last updated, owner, collapsed stats, terminal reason); slice 4
+adds ANSI color gated on the caller-supplied `RenderContext`, the wide
+side-by-side column layout, truncation to the terminal width, and an
+encoding-safe writer.
 """
 from __future__ import annotations
 
@@ -46,6 +48,25 @@ DONE_DISPLAY_CAP = 10
 # spec FR-3). The handler reads it best-effort; absence is not an error.
 TERMINAL_LOCATIONS = frozenset({TaskStatus.PARKED.value, TaskStatus.FAILED.value})
 
+# ANSI escapes (spec FR-5). Applied only when the RenderContext says the
+# stream is a TTY and NO_COLOR is unset; the escapes are the whole payload of
+# the color decision, so stripping them yields the plain output byte-for-byte.
+COLOR_RESET = "\033[0m"
+COLOR_GREEN = "\033[32m"
+COLOR_YELLOW = "\033[33m"
+COLOR_RED = "\033[31m"
+COLOR_MAGENTA = "\033[35m"
+
+# At or above this terminal width the locations render as side-by-side
+# columns; below it, as stacked sections (spec FR-6, ~120 cells).
+WIDE_LAYOUT_MIN_WIDTH = 120
+
+# Cells between adjacent columns in the wide layout.
+_COLUMN_GAP = 1
+
+# Marks a line cut short by truncation (spec FR-6: truncate, never wrap).
+TRUNCATION_MARKER = "…"
+
 
 class TaskOrigin(Enum):
     """Who created a task, classified by id alone (spec FR-4)."""
@@ -57,6 +78,16 @@ def classify_origin(task_id: str) -> TaskOrigin:
     """`auto-…` ids are auto-generated; everything else is user-created."""
     return (TaskOrigin.AUTO if task_id.startswith(AUTO_ID_PREFIX)
             else TaskOrigin.USER)
+
+
+# Task rows carry their origin color: user green, auto magenta (spec FR-5).
+ORIGIN_COLORS = {TaskOrigin.USER: COLOR_GREEN, TaskOrigin.AUTO: COLOR_MAGENTA}
+
+# Summary/column-header accents: `failed`/`parked` read as warnings, `done`
+# as green (spec FR-5). Other locations stay uncolored.
+LOCATION_COLORS = {TaskStatus.FAILED.value: COLOR_RED,
+                   TaskStatus.PARKED.value: COLOR_YELLOW,
+                   TaskStatus.DONE.value: COLOR_GREEN}
 
 
 @dataclass(frozen=True)
@@ -131,6 +162,19 @@ class StatsAggregate:
     pass_rate: float
     reject_rate: float
     total_tokens: int
+
+
+@dataclass(frozen=True)
+class RenderContext:
+    """The terminal facts the renderer needs, collected by the handler.
+
+    `use_color` is the TTY-and-NO_COLOR decision (spec FR-6) — the renderer
+    never inspects the environment or the stream itself. `width` is the
+    terminal width in cells; lines longer than it are truncated, and the
+    layout switches to columns at WIDE_LAYOUT_MIN_WIDTH.
+    """
+    use_color: bool = False
+    width: int = 80
 
 
 @dataclass(frozen=True)
@@ -260,12 +304,29 @@ def _updated_label(task: BoardTask) -> str:
     return ""
 
 
-def _render_task_line(task: BoardTask) -> str:
-    """One task row: id, origin tag, and the state fields it has (FR-3).
+def _paint(text: str, color: str, context: RenderContext) -> str:
+    """Wrap `text` in `color` when color is on; plain text otherwise."""
+    if not context.use_color or not color or not text:
+        return text
+    return f"{color}{text}{COLOR_RESET}"
 
-    Unreadable state says so (FR-7). Color is slice 4.
+
+def _truncate(text: str, width: int) -> str:
+    """Cut `text` to `width` cells, marking the cut (spec FR-6: truncate
+    rather than wrap). A non-positive width means 'no limit'."""
+    if width <= 0 or len(text) <= width:
+        return text
+    if width <= len(TRUNCATION_MARKER):
+        return TRUNCATION_MARKER[:width]
+    return text[:width - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
+def _task_line_text(task: BoardTask) -> str:
+    """One task row's plain text: id, origin tag, and the state fields it
+    has (FR-3). Unreadable state says so (FR-7). No indent, no color — the
+    layouts add both, so stacked and column output carry identical text.
     """
-    line = f"  {task.task_id} [{task.origin.value}]"
+    line = f"{task.task_id} [{task.origin.value}]"
     if not task.state_readable:
         line += "  state: unknown"
     if task.state_readable and task.stage:
@@ -285,27 +346,116 @@ def _render_task_line(task: BoardTask) -> str:
     return line
 
 
-def _render_location(loc: LocationBoard) -> list[str]:
-    header = f"── {loc.location} ({len(loc.tasks)}) "
-    lines = [header + "─" * max(0, _SECTION_RULE_WIDTH - len(header))]
-    tasks = sort_tasks(loc.tasks)
+def _visible_tasks(loc: LocationBoard) -> tuple[list[BoardTask], int]:
+    """The location's tasks in board order, capped for `done/` (FR-7).
+
+    Returns the tasks to show and how many the cap hid.
+    """
+    tasks = list(sort_tasks(loc.tasks))
     hidden = 0
     if loc.location == TaskStatus.DONE.value and len(tasks) > DONE_DISPLAY_CAP:
         hidden = len(tasks) - DONE_DISPLAY_CAP
         tasks = tasks[:DONE_DISPLAY_CAP]
+    return tasks, hidden
+
+
+def _render_location(loc: LocationBoard, context: RenderContext) -> list[str]:
+    header = f"── {loc.location} ({len(loc.tasks)}) "
+    rule = header + "─" * max(0, _SECTION_RULE_WIDTH - len(header))
+    lines = [_paint(_truncate(rule, context.width),
+                    LOCATION_COLORS.get(loc.location, ""), context)]
+    tasks, hidden = _visible_tasks(loc)
     if not tasks:
         lines.append(f"  {EMPTY_COLUMN_MARKER}")
     for task in tasks:
-        lines.append(_render_task_line(task))
+        lines.append(_paint(_truncate(f"  {_task_line_text(task)}",
+                                      context.width),
+                            ORIGIN_COLORS[task.origin], context))
     if hidden:
         lines.append(f"  (+{hidden} more)")
     return lines
 
 
-def _render_summary_lines(summary: BoardSummary) -> list[str]:
+@dataclass(frozen=True)
+class _ColumnLine:
+    """One plain line inside a wide-layout column, with its accent color."""
+    text: str
+    color: str = ""
+
+
+@dataclass(frozen=True)
+class _Column:
+    """One location as the wide layout sees it: header plus body lines."""
+    header: _ColumnLine
+    lines: tuple[_ColumnLine, ...]
+
+
+def _column_widths(columns: list[_Column], total_width: int) -> list[int]:
+    """Per-column cell widths for the wide layout.
+
+    Each column would like its natural width (its longest line). When they
+    do not all fit in `total_width`, every column shrinks to the same even
+    share and its lines truncate to it — one long field must not shift the
+    whole board (spec FR-6).
+    """
+    count = len(columns)
+    natural = [max(len(line.text) for line in (col.header, *col.lines))
+               for col in columns]
+    available = total_width - _COLUMN_GAP * (count - 1)
+    if available > 0 and sum(natural) <= available:
+        return natural
+    return [max(1, available // count)] * count
+
+
+def _render_column_cell(line: _ColumnLine | None, width: int,
+                        context: RenderContext) -> str:
+    """One padded, truncated, colored cell of the wide layout. A missing
+    line (the column is shorter than the tallest) is blank padding."""
+    if line is None:
+        return " " * width
+    plain = _truncate(line.text, width)
+    return _paint(plain, line.color, context) + " " * (width - len(plain))
+
+
+def _render_columns(summary: BoardSummary, context: RenderContext) -> list[str]:
+    """The wide layout: one side-by-side column per location (spec FR-6).
+
+    Same information as the stacked sections — same header counts, same
+    task lines, same empty markers and `(+N more)` lines — laid out across
+    the terminal and truncated per column instead of per line.
+    """
+    columns = []
+    for loc in summary.locations:
+        tasks, hidden = _visible_tasks(loc)
+        body = ([_ColumnLine(EMPTY_COLUMN_MARKER)] if not tasks else
+                [_ColumnLine(_task_line_text(task),
+                             ORIGIN_COLORS[task.origin]) for task in tasks])
+        if hidden:
+            body.append(_ColumnLine(f"(+{hidden} more)"))
+        columns.append(_Column(
+            header=_ColumnLine(f"{loc.location} ({len(loc.tasks)})",
+                               LOCATION_COLORS.get(loc.location, "")),
+            lines=tuple(body)))
+    widths = _column_widths(columns, context.width)
+    gap = " " * _COLUMN_GAP
+    lines = [gap.join(_render_column_cell(col.header, width, context)
+                      for col, width in zip(columns, widths))]
+    for row in range(max(len(col.lines) for col in columns)):
+        lines.append(gap.join(
+            _render_column_cell(
+                col.lines[row] if row < len(col.lines) else None,
+                width, context)
+            for col, width in zip(columns, widths)))
+    return lines
+
+
+def _render_summary_lines(summary: BoardSummary,
+                          context: RenderContext) -> list[str]:
     lines = ["=== harness board ==="]
-    lines.append(" · ".join(f"{c.location} {len(c.tasks)}"
-                            for c in summary.locations))
+    lines.append(" · ".join(
+        _paint(f"{c.location} {len(c.tasks)}",
+               LOCATION_COLORS.get(c.location, ""), context)
+        for c in summary.locations))
     if summary.claims_warning:
         lines.append(summary.claims_warning)
     if summary.stats is not None:
@@ -317,16 +467,40 @@ def _render_summary_lines(summary: BoardSummary) -> list[str]:
     return lines
 
 
-def render_board(summary: BoardSummary) -> str:
-    """Render the executive summary plus one stacked section per location.
+def render_board(summary: BoardSummary,
+                 context: RenderContext = RenderContext()) -> str:
+    """Render the executive summary plus the board body.
 
     The section order is the order of `summary.locations`, which the handler
     builds from QUEUE_LOCATIONS_ALL; task order within a section is
     `sort_tasks`, with `done/` capped at DONE_DISPLAY_CAP entries plus a
-    `(+N more)` line. The side-by-side wide layout is a later slice.
+    `(+N more)` line. At `context.width` >= WIDE_LAYOUT_MIN_WIDTH the body
+    is side-by-side columns; below it, stacked sections. Both layouts carry
+    identical information; color follows `context.use_color` only.
     """
-    lines = _render_summary_lines(summary)
+    lines = _render_summary_lines(summary, context)
     lines.append("")
-    for loc in summary.locations:
-        lines.extend(_render_location(loc))
+    if context.width >= WIDE_LAYOUT_MIN_WIDTH:
+        lines.extend(_render_columns(summary, context))
+    else:
+        for loc in summary.locations:
+            lines.extend(_render_location(loc, context))
     return "\n".join(lines)
+
+
+def write_board(text: str, stream) -> None:
+    """Write rendered board text to `stream` without an encoding crash.
+
+    The board uses box-drawing and `·` characters and task ids may hold any
+    Unicode; on a non-UTF8 locale a direct write could raise
+    `UnicodeEncodeError` (spec FR-7). Round-tripping through the stream's
+    own encoding with `errors="replace"` substitutes what cannot be encoded
+    and never raises, and is a no-op for UTF-8 streams. A stream that
+    declares no encoding (a pure in-memory text stream) takes the text as
+    written, untransformed.
+    """
+    encoding = getattr(stream, "encoding", None)
+    if encoding:
+        text = text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace")
+    stream.write(text + "\n")

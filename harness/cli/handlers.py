@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,8 +15,9 @@ from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
 from ..core.board import (TERMINAL_LOCATIONS, BoardSummary, BoardTask,
-                          LocationBoard, aggregate_stats, classify_origin,
-                          collapse_task_stats, render_board)
+                          LocationBoard, RenderContext, aggregate_stats,
+                          classify_origin, collapse_task_stats, render_board,
+                          write_board)
 from ..core.claim_metadata import OWNER_UNKNOWN, read_metadata
 from ..core.providers import Task
 from ..core.stats import render_report, render_task_journey
@@ -498,6 +500,24 @@ def _board_task(queue_dir: Path, sub: str, name: str, *,
                      stats=collapse_task_stats(stats_rows or []))
 
 
+# Terminal width the board assumes when the stream reports none (spec FR-6).
+_BOARD_FALLBACK_WIDTH = 80
+
+
+def _board_context() -> RenderContext:
+    """The terminal facts for the board renderer (spec FR-6).
+
+    Color only when stdout is a TTY and `NO_COLOR` is unset; width from
+    `shutil.get_terminal_size` (which also honors a `COLUMNS` override) with
+    an 80-cell fallback. The renderer takes these as data and never touches
+    the environment or the stream itself.
+    """
+    width = shutil.get_terminal_size(
+        fallback=(_BOARD_FALLBACK_WIDTH, 24)).columns
+    use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    return RenderContext(use_color=use_color, width=width)
+
+
 def cmd_board() -> int:
     """Print the kanban-style board: executive summary over the location sections.
 
@@ -530,9 +550,11 @@ def cmd_board() -> int:
                 stats_rows=rows_by_task.get(task_id, [])))
         boards.append(LocationBoard(location=sub, tasks=tuple(tasks)))
     warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
-    print(render_board(BoardSummary(locations=tuple(boards),
-                                     claims_warning=warning,
-                                     stats=aggregate_stats(store.all()))))
+    board = render_board(BoardSummary(locations=tuple(boards),
+                                      claims_warning=warning,
+                                      stats=aggregate_stats(store.all())),
+                         _board_context())
+    write_board(board, sys.stdout)
     return 0
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -52,6 +53,11 @@ class _WiredFixture(unittest.TestCase):
         patcher = mock.patch.object(handlers, "build", lambda *a, **k: wired)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Pin the terminal width: stacked layout (< 120 cells), wide enough
+        # that no board line truncates, so assertions see full text.
+        env = mock.patch.dict(os.environ, {"COLUMNS": "110"})
+        env.start()
+        self.addCleanup(env.stop)
         self.store: StatsStore = wired[1]
 
     def _board(self) -> str:
@@ -123,7 +129,6 @@ class ActiveStateTest(_WiredFixture):
 
     def test_last_updated_falls_back_to_the_entry_mtime(self):
         task_dir = self._make_dir_task("active", "no-stamp")  # no task.json
-        import os
         os.utime(task_dir, (1_700_000_000, 1_700_000_000))
         body = self._section_body(self._board(), "active")
         self.assertIn("updated=2023-11-14T22:13:20+00:00", body)
@@ -162,7 +167,10 @@ class TaskStatsLineTest(_WiredFixture):
     """Session rows collapse into one line per task (FR-3)."""
 
     def test_rows_collapse_into_sessions_tokens_time_and_newest_verdict(self):
-        self._make_dir_task("active", "worker")
+        # A short `last_updated` keeps the row inside the pinned 110-column
+        # width, so truncation (slice 4) cannot cut the asserted fields.
+        self._make_dir_task("active", "worker",
+                            {"last_updated": "2026-01-01T00:00:00"})
         # The newer-ts row is appended FIRST: recency must follow `ts`, not
         # append order, so the last verdict is the 01-02 row's `fail`.
         self._record("worker", verdict="fail", outcome="fail",
@@ -173,7 +181,8 @@ class TaskStatsLineTest(_WiredFixture):
         self.assertIn("sessions=2 tokens=300 time=30s last verdict=fail", body)
 
     def test_rows_without_timestamps_fall_back_to_append_order(self):
-        self._make_dir_task("active", "worker")
+        self._make_dir_task("active", "worker",
+                            {"last_updated": "2026-01-01T00:00:00"})
         self._record("worker", verdict="kickback")
         self._record("worker", verdict="pass")
         body = self._section_body(self._board(), "active")
@@ -188,7 +197,8 @@ class TaskStatsLineTest(_WiredFixture):
         self.assertNotIn("last verdict=", body)
 
     def test_unreadable_numbers_count_as_zero_not_a_crash(self):
-        self._make_dir_task("active", "worker")
+        self._make_dir_task("active", "worker",
+                            {"last_updated": "2026-01-01T00:00:00"})
         self.store.path.write_text(json.dumps(
             {"task_id": "worker", "verdict": "weird-value",
              "peak_tokens": "junk", "duration_s": "nope"}) + "\n")

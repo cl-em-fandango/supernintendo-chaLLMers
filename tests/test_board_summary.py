@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import shutil
 import sys
 import tempfile
@@ -54,6 +55,11 @@ class _WiredFixture(unittest.TestCase):
         patcher = mock.patch.object(handlers, "build", lambda *a, **k: wired)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Pin the terminal width: stacked layout (< 120 cells), wide enough
+        # that no board line truncates, so assertions see full text.
+        env = mock.patch.dict(os.environ, {"COLUMNS": "110"})
+        env.start()
+        self.addCleanup(env.stop)
         self.wired = wired
 
     def _board(self) -> str:
