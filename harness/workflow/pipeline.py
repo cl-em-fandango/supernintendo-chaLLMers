@@ -208,12 +208,14 @@ class Pipeline:
             self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
                      else f"  resuming (no checkpoints yet)")
             if not state.workdir:
-                # Old-format task.json: migrate once from the same persisted
-                # original.md intake used, then never re-derive.
+                # Old-format task.json: migrate once, then never re-derive.
                 self.log(f"  workdir not recorded for {task.id}, "
-                         f"re-derived from original.md")
+                         f"resolved from config")
                 self.lifecycle.record_workdir(task_dir)
                 state = self.lifecycle.load_state(task.id)
+            elif self.cfg.repo_dir is not None and state.workdir != str(self.cfg.repo_dir):
+                state.workdir = str(self.cfg.repo_dir)
+                self.lifecycle.save_state(state)
             elif not (task_dir / "original.md").exists():
                 # EC13: original.md missing after a partial crash; re-resolve
                 # the workdir so it falls back to the task dir.
@@ -238,8 +240,8 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo in the queue: workdir={workdir} is "
-                f"under queue={self.cfg.queue_dir}; record the real repo path "
-                f"in the task body")
+                f"under queue={self.cfg.queue_dir}; configure repoDir in "
+                f"config.json or pass --repo on the CLI")
             return "parked"
         if not workdir.is_dir():
             # Same refusal, different reason: a workdir that does not exist is
@@ -248,8 +250,8 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo outside a real directory: "
-                f"workdir={workdir} does not exist; record the real repo path "
-                f"in the task body")
+                f"workdir={workdir} does not exist; configure repoDir in "
+                f"config.json or pass --repo on the CLI")
             return "parked"
         try:
             ensure_branch(workdir, task.id, self.cfg.trunk_branch)

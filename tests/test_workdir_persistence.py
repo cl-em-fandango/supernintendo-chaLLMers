@@ -93,7 +93,7 @@ class FakeRunner:
                              crashed=False)
 
 
-def _cfg(queue_dir: Path) -> Config:
+def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=queue_dir.parent,
         token_budget=100_000,
@@ -108,6 +108,7 @@ def _cfg(queue_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
     )
 
 
@@ -120,7 +121,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.lines: list[str] = []
         self.repo = _make_repo(Path(self._tmp.name) / "repo")
-        self.cfg = _cfg(self.queue_dir)
+        self.cfg = _cfg(self.queue_dir, repo=self.repo)
         self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self.runner = FakeRunner()
         self.pipeline = Pipeline(self.cfg, self.runner, log=self.lines.append)
@@ -199,7 +200,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
         self.assertEqual(status, "done")
         # the resume added no resolution: the saved value was used as-is
         self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
-        self.assertNotIn("re-derived from original.md", self._log())
+        self.assertNotIn("resolved from config", self._log())
         self.assertEqual(self.runner.workdirs, [str(self.repo)] * len(self.runner.workdirs))
 
     # ------------------------------------------------------------------
@@ -218,7 +219,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
         status = self.pipeline.process(self._task())
 
         self.assertEqual(status, "done")
-        self.assertIn("workdir not recorded for t1, re-derived from original.md",
+        self.assertIn("workdir not recorded for t1, resolved from config",
                       self._log())
         self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
                                             self.queue_dir / "active" / "t1"])
@@ -242,7 +243,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
         self.assertEqual(status, "done")
         self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
                                             self.queue_dir / "active" / "t1"])
-        self.assertIn("workdir not recorded for t1, re-derived from original.md",
+        self.assertIn("workdir not recorded for t1, resolved from config",
                       self._log())
         self.assertEqual(self._task_json()["workdir"], str(self.repo))
         # A subsequent process resumes from the migrated state without
@@ -258,7 +259,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
         self.assertEqual(status, "done")
         self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
                                             self.queue_dir / "active" / "t1"])
-        self.assertNotIn("re-derived from original.md",
+        self.assertNotIn("resolved from config",
                          "\n".join(self.lines[pre:]))
         self.assertEqual(self.runner.workdirs, [str(self.repo)] * len(self.runner.workdirs))
 

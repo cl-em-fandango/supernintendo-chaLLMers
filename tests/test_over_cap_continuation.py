@@ -84,7 +84,8 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _cfg(work_dir: Path, continuations: int | None = None,
-         max_crash_retries: int | None = None) -> Config:
+         max_crash_retries: int | None = None,
+         repo: Path | None = None) -> Config:
     raw: dict = {}
     if continuations is not None:
         raw["maxContextContinuations"] = continuations
@@ -92,6 +93,7 @@ def _cfg(work_dir: Path, continuations: int | None = None,
         raw["maxCrashRetries"] = max_crash_retries
     return Config(
         work_dir=work_dir,
+        repo_dir=repo,
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -322,8 +324,8 @@ class ProcessRescueTest(unittest.TestCase):
         self.queue = self.work_dir / "queue"
         for sub in ("pending", "active", "done", "failed", "parked", "review"):
             (self.queue / sub).mkdir(parents=True)
-        self.cfg = _cfg(self.work_dir, continuations=CONTINUATIONS)
         self.repo = _make_repo(self.work_dir / "repo")
+        self.cfg = _cfg(self.work_dir, continuations=CONTINUATIONS, repo=self.repo)
         self.lines: list[str] = []
         td = self.queue / "active" / "t1"
         (td / "artifacts").mkdir(parents=True, exist_ok=True)

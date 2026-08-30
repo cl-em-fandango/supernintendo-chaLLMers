@@ -171,15 +171,16 @@ class TaskLifecycleCheckpointTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # resolve_workdir guard (EC13)
     # ------------------------------------------------------------------
-    def test_resolve_workdir_missing_original_falls_back(self):
+    def test_resolve_workdir_without_config_falls_back(self):
         td = self._intake()
         (td / "original.md").unlink()
         self.assertEqual(self.lifecycle.resolve_workdir(td), td)
 
-    def test_resolve_workdir_finds_git_repo(self):
-        td = self._intake(body=f"# t1\n\nwork in {self.queue_dir}/repo")
+    def test_resolve_workdir_uses_config_repo_dir(self):
         repo = self.queue_dir / "repo"
         (repo / ".git").mkdir(parents=True)
+        self.lifecycle.cfg.repo_dir = repo
+        td = self._intake(body="# t1\n\nbody")
         self.assertEqual(self.lifecycle.resolve_workdir(td), repo)
 
 

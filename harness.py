@@ -48,17 +48,20 @@ def main() -> int:
     
     if args.command == "run":
         return handlers.cmd_run(continue_=args.continue_,
-                                requeue_stale=args.requeue_stale)
+                                requeue_stale=args.requeue_stale,
+                                repo=args.repo)
     elif args.command == "run-task":
         return handlers.cmd_run_task(args.file, fresh=args.fresh,
-                                     continue_=args.continue_)
+                                     continue_=args.continue_,
+                                     repo=args.repo)
     elif args.command == "run-one":
-        return handlers.cmd_run_one()
+        return handlers.cmd_run_one(repo=args.repo)
     elif args.command == "run-task-loop":
         return handlers.cmd_run_task_loop(continue_=args.continue_,
-                                           requeue_stale=args.requeue_stale)
+                                           requeue_stale=args.requeue_stale,
+                                           repo=args.repo)
     elif args.command == "autonomous":
-        return handlers.cmd_autonomous()
+        return handlers.cmd_autonomous(repo=args.repo)
     elif args.command == "status":
         return handlers.cmd_status()
     elif args.command == "report":
@@ -68,7 +71,8 @@ def main() -> int:
     elif args.command == "journey":
         return handlers.cmd_journey(task_id=args.task_id, save=args.save)
     elif args.command == "resume":
-        return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh)
+        return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh,
+                                   repo=args.repo)
     elif args.command in ("unpark", "requeue"):
         return handlers.cmd_unpark(args.task_id)
     elif args.command == "requeue-claims":

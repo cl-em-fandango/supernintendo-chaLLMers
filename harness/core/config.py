@@ -38,6 +38,7 @@ class Config:
     directory_provider: dict
     models: dict
     model_context_map: dict
+    repo_dir: Path | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -139,8 +140,17 @@ def load(path: str | Path) -> Config:
     p = Path(path)
     raw: dict[str, Any] = json.loads(p.read_text())
     work_dir = Path(raw["workDir"]).expanduser()
+    repo_dir_raw = (
+        raw.get("repoDir")
+        or raw.get("repoPath")
+        or raw.get("repo_dir")
+        or raw.get("repo")
+        or raw.get("targetRepo")
+    )
+    repo_dir = Path(repo_dir_raw).expanduser().resolve() if repo_dir_raw else None
     return Config(
         work_dir=work_dir,
+        repo_dir=repo_dir,
         token_budget=int(raw.get("maxPromptTokens",
                                 raw.get("tokenBudget",
                                         DEFAULT_MAX_PROMPT_TOKENS))),

@@ -432,19 +432,11 @@ class TaskLifecycle:
         return workdir
 
     def resolve_workdir(self, task_dir: Path) -> Path:
-        """If the task references an existing git repo, work there; else the
-        last referenced path (if any), so the queue guard can reject a
-        missing or non-repo workdir without mkdiring it. A missing
-        `original.md` (partial crash, EC13) falls back to the task dir rather
-        than crashing."""
-        original = task_dir / "original.md"
-        if not original.exists():
-            self.log(f"  ⚠ {original} missing; using task dir as workdir")
-            return task_dir
-        workdir = task_dir
-        for m in re.findall(r"/[a-zA-Z0-9_./-]+", original.read_text()):
-            p = Path(m)
-            if p.is_dir() and (p / ".git").exists():
-                return p
-            workdir = p
-        return workdir
+        """Resolve the target repository workdir deterministically.
+
+        Uses `cfg.repo_dir` (configured in config.json or passed via CLI).
+        Falls back to `task_dir` (which the queue guard rejects) if no target
+        repo is configured. Never extracts paths from markdown."""
+        if self.cfg.repo_dir is not None:
+            return self.cfg.repo_dir
+        return task_dir

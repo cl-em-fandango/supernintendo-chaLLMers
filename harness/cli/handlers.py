@@ -61,8 +61,9 @@ def _slug(name: str) -> str:
     return (re.sub(r"[^a-zA-Z0-9-]+", "_", name).strip("_")[:60] or "task")
 
 
-def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int:
-    cfg, store, runner, provider, pipeline, log = build()
+def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
+                 repo: str | Path | None = None) -> int:
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
                 source=f"cli:{file}")
     if fresh:
@@ -73,7 +74,8 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False) -> int
     return 0
 
 
-def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
+def cmd_run(continue_: bool = False, requeue_stale: bool = False,
+            repo: str | Path | None = None) -> int:
     """Process pending tasks one claim at a time, then enter autonomous mode.
 
     That is the difference from `run-task-loop`, which exits once pending/ is
@@ -91,7 +93,7 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
     scoped to this invocation's id, so it cannot move a peer's claim or an
     unattributable one — see `_requeue_stale_claims` for why it is off.
     """
-    cfg, store, runner, provider, pipeline, log = build()
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     owner = _new_owner_id("run")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
@@ -117,8 +119,8 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False) -> int:
         if not provider.fetch_pending():
             log("queue empty -> entering autonomous mode")
             gen = AutonomousGenerator(cfg, runner, provider, log=log)
-            # generate against the harness's own repo (self-improvement)
-            gen.run(Path(__file__).resolve().parent)
+            target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+            gen.run(target_repo)
         return 0
     finally:
         _release_run_claims(provider, claimed, owner, log)
@@ -144,7 +146,7 @@ def _release_run_claims(provider, claimed: list[Task], owner: str, log) -> int:
     return released
 
 
-def cmd_run_one() -> int:
+def cmd_run_one(repo: str | Path | None = None) -> int:
     """Claim and process at most one pending task, then exit.
 
     Anything the claim fetch returned but this call did not process is handed
@@ -152,7 +154,7 @@ def cmd_run_one() -> int:
     under one owner id generated for this invocation, so the hand-back cannot
     move a claim another invocation is holding. Not used by the supervisor.
     """
-    cfg, store, runner, provider, pipeline, log = build()
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     owner = _new_owner_id("run-one")
     if not provider.count_pending():
         log("no pending tasks to claim")
@@ -176,7 +178,8 @@ def cmd_run_one() -> int:
     return 0
 
 
-def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> int:
+def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False,
+                      repo: str | Path | None = None) -> int:
     """Process pending tasks one at a time until the queue is empty.
 
     With `--continue`, every `active/` task that has a `task.json` is resumed
@@ -190,7 +193,7 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False) -> i
     only this invocation's own aged claims and leaves a peer's — and any claim
     nobody can be shown to hold — where they are: `_requeue_stale_claims`.
     """
-    cfg, store, runner, provider, pipeline, log = build()
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     owner = _new_owner_id("run-task-loop")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
@@ -350,10 +353,11 @@ def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
     return 0
 
 
-def cmd_autonomous() -> int:
-    cfg, store, runner, provider, pipeline, log = build()
+def cmd_autonomous(repo: str | Path | None = None) -> int:
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     gen = AutonomousGenerator(cfg, runner, provider, log=log)
-    gen.run(Path(__file__).resolve().parent)
+    target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+    gen.run(target_repo)
     return 0
 
 
@@ -600,9 +604,10 @@ def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
     return 0
 
 
-def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False) -> int:
+def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False,
+               repo: str | Path | None = None) -> int:
     """Resume a task from its last checkpoint (spec FR3)."""
-    cfg, store, runner, provider, pipeline, log = build()
+    cfg, store, runner, provider, pipeline, log = build(repo=repo)
     return resume_task(task_id, yes, cfg, pipeline,
                        lifecycle=pipeline.lifecycle, log=log, fresh=fresh)
 

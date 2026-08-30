@@ -19,6 +19,12 @@ def _add_requeue_stale_flag(parser: argparse.ArgumentParser) -> None:
                         default=False, help=REQUEUE_STALE_HELP)
 
 
+def _add_repo_flag(parser: argparse.ArgumentParser) -> None:
+    """The target repository flag: CLI override for repoDir in config.json."""
+    parser.add_argument("--repo", "--repo-dir", dest="repo", default=None,
+                        help="Path to target git repository (overrides repoDir in config.json)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the harness CLI."""
     parser = argparse.ArgumentParser(
@@ -33,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--continue", dest="continue_", action="store_true",
                            default=False, help="Also resume in-flight tasks in active/")
     _add_requeue_stale_flag(run_parser)
+    _add_repo_flag(run_parser)
     
     # run-task
     run_task_parser = subparsers.add_parser("run-task", help="Process a single task file")
@@ -41,18 +48,22 @@ def build_parser() -> argparse.ArgumentParser:
                                 default=False, help="Also resume in-flight tasks in active/")
     run_task_parser.add_argument("--fresh", dest="fresh", action="store_true",
                                 default=False, help="Delete any existing active/ dir and restart from scratch")
+    _add_repo_flag(run_task_parser)
     
     # run-one
-    subparsers.add_parser("run-one", help="Claim and process exactly one pending task")
+    run_one_parser = subparsers.add_parser("run-one", help="Claim and process exactly one pending task")
+    _add_repo_flag(run_one_parser)
     
     # run-task-loop
     run_task_loop_parser = subparsers.add_parser("run-task-loop", help="Process pending tasks one at a time until queue is empty")
     run_task_loop_parser.add_argument("--continue", dest="continue_", action="store_true",
                                      default=False, help="Also resume in-flight tasks in active/")
     _add_requeue_stale_flag(run_task_loop_parser)
+    _add_repo_flag(run_task_loop_parser)
     
     # autonomous
-    subparsers.add_parser("autonomous", help="Generate tasks until queue has N")
+    autonomous_parser = subparsers.add_parser("autonomous", help="Generate tasks until queue has N")
+    _add_repo_flag(autonomous_parser)
     
     # status
     subparsers.add_parser("status", help="Show queue + stats")
@@ -78,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--fresh", dest="fresh", action="store_true",
                                default=False,
                                help="Drop all checkpoints and restart from scratch")
+    _add_repo_flag(resume_parser)
 
     # unpark (with requeue alias)
     unpark_parser = subparsers.add_parser("unpark", help="Move a parked/failed task back to pending")
