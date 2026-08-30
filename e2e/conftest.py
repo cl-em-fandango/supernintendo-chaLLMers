@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import signal
+import sys
 from typing import Generator
 
 import pytest
@@ -14,8 +16,31 @@ from .container_driver import (
     STARTPOINT_IMAGE_TAG,
     ContainerLifecycleManager,
     EphemeralContainer,
+    cleanup_all_containers,
     get_container_engine,
 )
+
+
+def _install_e2e_signal_handlers() -> None:
+    """Install signal handlers so interrupting pytest immediately kills all active containers."""
+    def _handle_signal(signum, frame):
+        print(f"\n[E2E] Interrupted by signal {signum}. Cleaning up all running containers...")
+        cleanup_all_containers()
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _handle_signal)
+        except (ValueError, OSError):
+            pass
+
+
+_install_e2e_signal_handlers()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Ensure all test containers are killed and removed at session end even on failure."""
+    cleanup_all_containers()
 
 
 @pytest.fixture(scope="session")

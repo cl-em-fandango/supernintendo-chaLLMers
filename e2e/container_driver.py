@@ -1,9 +1,11 @@
 """Container driver and ephemeral snapshot management for E2E testing."""
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -21,6 +23,82 @@ STARTPOINT_IMAGE_TAG = "harness-e2e-startpoint:latest"
 DEFAULT_TW_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter"
 DEFAULT_IMP_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer"
 DEFAULT_ASSESSOR_MODEL = "Ornith-1.5-35B-Q6_K"
+
+_TRACKED_CONTAINERS: set[tuple[str, str]] = set()
+_CONTAINER_LOCK = threading.Lock()
+
+
+def register_container(engine: str, name: str) -> None:
+    """Register an active container for automatic teardown on exit or interrupt."""
+    with _CONTAINER_LOCK:
+        _TRACKED_CONTAINERS.add((engine, name))
+
+
+def unregister_container(engine: str, name: str) -> None:
+    """Unregister a container that has been cleaned up."""
+    with _CONTAINER_LOCK:
+        _TRACKED_CONTAINERS.discard((engine, name))
+
+
+def force_cleanup_container(engine: str, container_name: str) -> None:
+    """Forcibly stop, kill, and remove a container without hanging in stopping state.
+
+    First sends SIGKILL directly to avoid graceful-stop deadlocks (e.g. hung subshells),
+    then force-removes the container and its ephemeral storage with a strict timeout.
+    """
+    try:
+        # Step 1: Immediate SIGKILL to prevent stopping state hangs
+        subprocess.run(
+            [engine, "kill", container_name],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        pass
+
+    try:
+        # Step 2: Force remove container with volumes
+        subprocess.run(
+            [engine, "rm", "-f", "-v", container_name],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def cleanup_all_containers() -> None:
+    """Reap all tracked and labeled E2E test containers."""
+    with _CONTAINER_LOCK:
+        containers = list(_TRACKED_CONTAINERS)
+        _TRACKED_CONTAINERS.clear()
+
+    for engine, name in containers:
+        force_cleanup_container(engine, name)
+
+    # Belt and braces: sweep any leftover containers carrying the harness-e2e label
+    for engine in ("podman", "docker"):
+        if shutil.which(engine):
+            try:
+                res = subprocess.run(
+                    [engine, "ps", "-a", "--filter", "label=harness-e2e=true", "-q"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    c_ids = res.stdout.strip().split()
+                    for cid in c_ids:
+                        force_cleanup_container(engine, cid)
+            except Exception:
+                pass
+
+
+# Automatic exit hook for unexpected process exits
+atexit.register(cleanup_all_containers)
 
 
 def get_container_engine() -> str:
@@ -63,6 +141,7 @@ class EphemeralContainer:
         self.imp_model = imp_model
         self.assessor = assessor
         self.workspace_dir = "/workspace"
+        register_container(self.engine, self.container_name)
 
     def is_running(self) -> bool:
         """Check if the container is currently running."""
@@ -125,13 +204,20 @@ class EphemeralContainer:
             cmd.extend(command)
 
         if not stream:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
+            except (KeyboardInterrupt, BaseException) as exc:
+                try:
+                    subprocess.run([self.engine, "kill", self.container_name], capture_output=True, timeout=5, check=False)
+                except Exception:
+                    pass
+                raise exc
         else:
             stdout_parts: list[str] = []
             stderr_parts: list[str] = []
@@ -163,6 +249,18 @@ class EphemeralContainer:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+            except (KeyboardInterrupt, BaseException) as exc:
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                except Exception:
+                    pass
+                try:
+                    subprocess.run([self.engine, "kill", self.container_name], capture_output=True, timeout=5, check=False)
+                except Exception:
+                    pass
+                raise exc
             finally:
                 err_thread.join(timeout=2)
 
@@ -274,11 +372,8 @@ Target repository: {target_repo}
 
     def destroy(self) -> None:
         """Stop and remove the container instance to revert to clean state."""
-        subprocess.run(
-            [self.engine, "rm", "-f", self.container_name],
-            capture_output=True,
-            check=False,
-        )
+        unregister_container(self.engine, self.container_name)
+        force_cleanup_container(self.engine, self.container_name)
 
 
 class ContainerLifecycleManager:
@@ -325,6 +420,7 @@ class ContainerLifecycleManager:
             [
                 self.engine, "run", "-d",
                 "--network", "host",
+                "--label", "harness-e2e=true",
                 "--name", temp_builder_name,
                 "--entrypoint", "/bin/sh",
                 base_tag,
@@ -335,6 +431,7 @@ class ContainerLifecycleManager:
         )
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to start builder container: {proc.stderr}")
+        register_container(self.engine, temp_builder_name)
 
         try:
             init_script = """#!/usr/bin/env bash
@@ -398,7 +495,8 @@ chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
             print(f"==> [E2E] Container snapshot '{snapshot_tag}' committed successfully.")
 
         finally:
-            subprocess.run([self.engine, "rm", "-f", temp_builder_name], check=False, capture_output=True)
+            unregister_container(self.engine, temp_builder_name)
+            force_cleanup_container(self.engine, temp_builder_name)
 
     def spawn_ephemeral_container(
         self,
@@ -415,6 +513,7 @@ chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
         flags = [
             "-d",
             "--name", container_name,
+            "--label", "harness-e2e=true",
             "-e", f"HARNESS_PI_PROVIDER={provider}",
             "-e", f"PI_E2E_TW_MODEL={tw_model}",
             "-e", f"PI_E2E_IMP_MODEL={imp_model}",
