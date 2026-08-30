@@ -64,6 +64,8 @@ def _slug(name: str) -> str:
 def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
                  repo: str | Path | None = None) -> int:
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
                 source=f"cli:{file}")
     if fresh:
@@ -94,6 +96,8 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
     unattributable one — see `_requeue_stale_claims` for why it is off.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     owner = _new_owner_id("run")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
@@ -155,6 +159,8 @@ def cmd_run_one(repo: str | Path | None = None) -> int:
     move a claim another invocation is holding. Not used by the supervisor.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     owner = _new_owner_id("run-one")
     if not provider.count_pending():
         log("no pending tasks to claim")
@@ -194,6 +200,8 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False,
     nobody can be shown to hold — where they are: `_requeue_stale_claims`.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     owner = _new_owner_id("run-task-loop")
     _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
                           enabled=_requeue_stale_enabled(cfg, requeue_stale),
@@ -355,6 +363,8 @@ def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
 
 def cmd_autonomous(repo: str | Path | None = None) -> int:
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     gen = AutonomousGenerator(cfg, runner, provider, log=log)
     target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
     gen.run(target_repo)
@@ -608,6 +618,8 @@ def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False,
                repo: str | Path | None = None) -> int:
     """Resume a task from its last checkpoint (spec FR3)."""
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+        runner.validate_models()
     return resume_task(task_id, yes, cfg, pipeline,
                        lifecycle=pipeline.lifecycle, log=log, fresh=fresh)
 
