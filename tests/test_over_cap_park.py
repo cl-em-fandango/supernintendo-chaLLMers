@@ -81,7 +81,8 @@ def _git(cwd: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout
 
 
-def _cfg(work_dir: Path, max_crash_retries: int | None = None) -> Config:
+def _cfg(work_dir: Path, max_crash_retries: int | None = None,
+         repo: Path | None = None) -> Config:
     """A config whose crash-retry count is explicit when one is asked for.
 
     `raw` is what `Config.get("maxCrashRetries", 2)` reads, so passing the
@@ -103,6 +104,7 @@ def _cfg(work_dir: Path, max_crash_retries: int | None = None) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
         raw=raw,
     )
 
@@ -339,8 +341,8 @@ class StagesNeverCatchTest(unittest.TestCase):
         self.queue_dir = self.work_dir / "queue"
         for sub in ("pending", "active", "done", "failed", "parked", "review"):
             (self.queue_dir / sub).mkdir(parents=True)
-        self.cfg = _cfg(self.work_dir)
         self.repo = _make_repo(self.work_dir / "repo")
+        self.cfg = _cfg(self.work_dir, repo=self.repo)
         # A real intake, so `stage_slices` (which loads `task.json`) and
         # `stage_holistic` (which asks it about the merge checkpoint) see the
         # state a run would really have at that point.
@@ -429,8 +431,8 @@ class ProcessParksTest(unittest.TestCase):
         self.queue_dir = self.work_dir / "queue"
         for sub in ("pending", "active", "done", "failed", "parked", "review"):
             (self.queue_dir / sub).mkdir(parents=True)
-        self.cfg = _cfg(self.work_dir)
         self.repo = _make_repo(self.work_dir / "repo")
+        self.cfg = _cfg(self.work_dir, repo=self.repo)
         self.lines: list[str] = []
         self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self._seed_slices()

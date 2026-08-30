@@ -107,7 +107,7 @@ class FakeRunner:
                              crashed=False)
 
 
-def _cfg(queue_dir: Path) -> Config:
+def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=queue_dir.parent,
         token_budget=100_000,
@@ -122,6 +122,7 @@ def _cfg(queue_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
     )
 
 
@@ -134,10 +135,11 @@ class PipelineResumeTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.lines: list[str] = []
         self.repo = _make_repo(Path(self._tmp.name) / "repo")
+        self.cfg = _cfg(self.queue_dir, repo=self.repo)
         self.runner = FakeRunner()
-        self.pipeline = Pipeline(_cfg(self.queue_dir), self.runner,
+        self.pipeline = Pipeline(self.cfg, self.runner,
                                  log=self.lines.append)
-        self.lifecycle = TaskLifecycle(_cfg(self.queue_dir), log=self.lines.append)
+        self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self._seed_slices()
 
     def _seed_slices(self):
@@ -276,16 +278,11 @@ class PipelineResumeTest(unittest.TestCase):
     # EC13: missing original.md -> resolve_workdir falls back, no crash
     # ------------------------------------------------------------------
     def test_missing_original_md_does_not_crash(self):
-        # EC13: original.md missing -> resolve_workdir falls back to the task
-        # dir (no crash). The task dir is not a git repo, so ensure_branch
-        # inits a fresh one there and the holistic merge has nothing to merge
-        # -> parked. The point is that process() completes without raising.
+        # EC13: original.md missing -> process() completes without raising.
         td = self.lifecycle.intake(self._task())
         (td / "original.md").unlink()
         status = self.pipeline.process(self._task())
         self.assertIn(status, ("done", "parked"))
-        # the fallback was logged
-        self.assertIn("missing; using task dir as workdir", "\n".join(self.lines))
 
 
 if __name__ == "__main__":

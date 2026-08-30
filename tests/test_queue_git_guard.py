@@ -152,6 +152,7 @@ class QueueWorkdirGuardTest(unittest.TestCase):
 
     def test_missing_workdir_parks_without_mkdir(self):
         ghost = self.root / "not-a-repo"
+        self.cfg.repo_dir = ghost
         status = self.pipeline.process(self._task(f"work in {ghost}\n"))
 
         self.assertEqual("parked", status)
