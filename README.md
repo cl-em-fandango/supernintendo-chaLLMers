@@ -271,7 +271,7 @@ The harness maps dedicated model roles in `config.json` to optimize accuracy, do
       "QwenOptimised32k",
       "QwenOptimised64k",
       "OrinthOptimised32k",
-      "Ornith-1.5-35B-Q6_K.gguf",
+      "Ornith-1.5-35B-Q6_K",
       "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
       "Qwen3.8-27B-UD-Q8_K_XL",
       "Qwen3.8-27B-Q4_K_M"
@@ -281,7 +281,7 @@ The harness maps dedicated model roles in `config.json` to optimize accuracy, do
       "QwenOptimised64k",
       "QwenOptimised128k",
       "OrinthOptimised32k",
-      "Ornith-1.5-35B-Q6_K.gguf",
+      "Ornith-1.5-35B-Q6_K",
       "Qwen3.8-27B-Q4_K_M",
       "Qwen3.8-27B-UD-Q4_K_XL",
       "Qwen3.8-27B-UD-Q8_K_XL",
@@ -293,7 +293,7 @@ The harness maps dedicated model roles in `config.json` to optimize accuracy, do
   },
   "modelContext": {
     "OrinthOptimised32k": 32768,
-    "Ornith-1.5-35B-Q6_K.gguf": 131072,
+    "Ornith-1.5-35B-Q6_K": 131072,
     "Qwen3.8-27B-Q4_K_M": 131072,
     "Qwen3.8-27B-UD-Q4_K_XL": 131072,
     "Qwen3.8-27B-UD-Q8_K_XL": 131072,
