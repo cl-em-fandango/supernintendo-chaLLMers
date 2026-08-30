@@ -1,6 +1,7 @@
 """Command handlers for the harness CLI."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -12,7 +13,8 @@ from ..workflow.autonomous import AutonomousGenerator
 from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
-from ..core.board import BoardSummary, LocationCount, aggregate_stats, render_board
+from ..core.board import (BoardSummary, BoardTask, LocationBoard,
+                          aggregate_stats, classify_origin, render_board)
 from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.providers import Task
 from ..core.stats import render_report, render_task_journey
@@ -385,6 +387,39 @@ def cmd_status() -> int:
     return 0
 
 
+def _board_task(queue_dir: Path, sub: str, name: str) -> BoardTask:
+    """Collect one queue entry for the board: id, origin, timestamps, state flag.
+
+    The task id is the entry name, minus a `.md` suffix for the file-shaped
+    locations (`pending/`, `review/`, `claimed/`). `task.json` is read as plain
+    JSON rather than through `TaskLifecycle` because the board must report a
+    corrupt file as `state: unknown` instead of the tolerant defaults
+    `load_state()` produces, and because that loader would log its warnings to
+    a query command's stdout. Missing, unreadable, unparseable or non-object
+    all read the same way: no timestamp, no state (spec FR-7).
+
+    Read-only (FR-8): one directory listing, two reads, no stat-write, no claim.
+    """
+    path = queue_dir / sub / name
+    task_id = path.stem if path.is_file() else name
+    last_updated = ""
+    state_readable = False
+    try:
+        raw = json.loads((path / "task.json").read_text())
+        if isinstance(raw, dict):
+            state_readable = True
+            last_updated = str(raw.get("last_updated") or "")
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return BoardTask(task_id=task_id, origin=classify_origin(task_id),
+                     last_updated=last_updated, mtime=mtime,
+                     state_readable=state_readable)
+
+
 def cmd_board() -> int:
     """Print the kanban-style board: executive summary over the location sections.
 
@@ -396,13 +431,17 @@ def cmd_board() -> int:
     """
     cfg, store, _, provider, _, _ = build()
     claims = provider.list_claims()
-    counts = []
+    boards = []
     for sub in QUEUE_LOCATIONS_ALL:
-        n = len(claims) if sub == CLAIMED_LOCATION \
-            else len(_queue_names(cfg.queue_dir, sub))
-        counts.append(LocationCount(location=sub, count=n))
+        if sub == CLAIMED_LOCATION:
+            tasks = tuple(_board_task(cfg.queue_dir, sub, claim.id)
+                          for claim in claims)
+        else:
+            tasks = tuple(_board_task(cfg.queue_dir, sub, name)
+                          for name in _queue_names(cfg.queue_dir, sub))
+        boards.append(LocationBoard(location=sub, tasks=tasks))
     warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
-    print(render_board(BoardSummary(locations=tuple(counts),
+    print(render_board(BoardSummary(locations=tuple(boards),
                                      claims_warning=warning,
                                      stats=aggregate_stats(store.all()))))
     return 0
