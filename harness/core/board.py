@@ -12,6 +12,7 @@ encoding-safe writer.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -63,6 +64,22 @@ WIDE_LAYOUT_MIN_WIDTH = 120
 
 # Cells between adjacent columns in the wide layout.
 _COLUMN_GAP = 1
+
+# Cells a column keeps for itself when the columns must share the terminal.
+# Below this a column header is unreadable, so the share stops here and cells
+# truncate instead of shrinking further.
+MIN_COLUMN_WIDTH = 14
+
+# The separator `_task_line_text` puts between a task row's fields.
+FIELD_SEPARATOR = "  "
+
+# Where a wide-layout column cell may break: any run of spaces, so a row that
+# does not fit its column wraps between words instead of mid-word (spec FR-6)
+# and every field the stacked layout shows stays visible in the columns too.
+WRAP_POINT = re.compile("( +)")
+
+# Marks a column line that continues the task row above it.
+COLUMN_CONTINUATION_INDENT = "  "
 
 # Marks a line cut short by truncation (spec FR-6: truncate, never wrap).
 TRUNCATION_MARKER = "…"
@@ -325,24 +342,27 @@ def _task_line_text(task: BoardTask) -> str:
     """One task row's plain text: id, origin tag, and the state fields it
     has (FR-3). Unreadable state says so (FR-7). No indent, no color — the
     layouts add both, so stacked and column output carry identical text.
+    Fields are separated by FIELD_SEPARATOR, the boundary the wide layout
+    wraps on.
     """
     line = f"{task.task_id} [{task.origin.value}]"
     if not task.state_readable:
-        line += "  state: unknown"
+        line += FIELD_SEPARATOR + "state: unknown"
     if task.state_readable and task.stage:
-        line += (f"  stage={task.stage}"
-                 f" done:[{','.join(task.checkpointed_stages)}]")
+        line += (FIELD_SEPARATOR + f"stage={task.stage}"
+                 + f" done:[{','.join(task.checkpointed_stages)}]")
     updated = _updated_label(task)
     if updated:
-        line += f"  updated={updated}"
+        line += FIELD_SEPARATOR + f"updated={updated}"
     if task.owner:
-        line += f"  owner={_owner_label(task.owner)}"
+        line += FIELD_SEPARATOR + f"owner={_owner_label(task.owner)}"
     if task.stats is not None:
-        line += (f"  sessions={task.stats.sessions} tokens={task.stats.tokens}"
+        line += (FIELD_SEPARATOR + f"sessions={task.stats.sessions}"
+                 f" tokens={task.stats.tokens}"
                  f" time={task.stats.duration_s:.0f}s"
                  f" last verdict={task.stats.last_verdict}")
     if task.reason:
-        line += f"  reason={task.reason}"
+        line += FIELD_SEPARATOR + f"reason={task.reason}"
     return line
 
 
@@ -390,21 +410,94 @@ class _Column:
     lines: tuple[_ColumnLine, ...]
 
 
+def _share_remainder(cells: int, weights: list[int]) -> list[int]:
+    """Split `cells` across columns in proportion to `weights`.
+
+    Integer shares, so the layout is deterministic; the cells left over by
+    rounding go to the columns with the largest fractional part, ties by
+    column order.
+    """
+    total = sum(weights)
+    if total <= 0:
+        base, rest = divmod(cells, len(weights))
+        return [base + (1 if i < rest else 0) for i in range(len(weights))]
+    shares = [cells * w // total for w in weights]
+    order = sorted(range(len(shares)),
+                   key=lambda i: (-((cells * weights[i]) % total), i))
+    for index in order[:cells - sum(shares)]:
+        shares[index] += 1
+    return shares
+
+
 def _column_widths(columns: list[_Column], total_width: int) -> list[int]:
     """Per-column cell widths for the wide layout.
 
     Each column would like its natural width (its longest line). When they
-    do not all fit in `total_width`, every column shrinks to the same even
-    share and its lines truncate to it — one long field must not shift the
-    whole board (spec FR-6).
+    do not all fit in `total_width`, every column keeps MIN_COLUMN_WIDTH and
+    the rest of the terminal is shared out in proportion to how much each
+    column wanted beyond that floor — a content-heavy column gets more cells
+    than an empty one. The widths are fixed for the whole board, so one long
+    field cannot shift it (spec FR-6); a line that still does not fit wraps
+    on field boundaries instead of being cut.
     """
     count = len(columns)
     natural = [max(len(line.text) for line in (col.header, *col.lines))
                for col in columns]
     available = total_width - _COLUMN_GAP * (count - 1)
-    if available > 0 and sum(natural) <= available:
+    if available <= 0:
+        return [1] * count
+    if sum(natural) <= available:
         return natural
-    return [max(1, available // count)] * count
+    if available < MIN_COLUMN_WIDTH * count:
+        return [max(1, available // count)] * count
+    extra = _share_remainder(available - MIN_COLUMN_WIDTH * count,
+                             [max(0, w - MIN_COLUMN_WIDTH) for w in natural])
+    return [MIN_COLUMN_WIDTH + e for e in extra]
+
+
+def _wrap_cell_text(text: str, width: int) -> list[str]:
+    """Break one column line onto several lines of at most `width` cells.
+
+    Breaks happen only at a WRAP_POINT (a run of spaces), never inside a word;
+    continuation lines are indented so they read as part of the row above. A
+    single word longer than the column is the one thing that still gets
+    truncated (spec FR-6: truncate long fields to the available width).
+    """
+    if width <= 0 or len(text) <= width:
+        return [text]
+    limit = max(1, width - len(COLUMN_CONTINUATION_INDENT))
+    lines: list[str] = []
+    current = ""
+    separator = ""
+    for piece in WRAP_POINT.split(text):
+        if not piece:
+            continue
+        if piece.isspace():
+            separator = piece
+            continue
+        candidate = f"{current}{separator}{piece}" if current else piece
+        if len(candidate) <= (limit if lines else width):
+            current = candidate
+            separator = ""
+            continue
+        if current:
+            lines.append(current)
+        separator = ""
+        current = _truncate(piece, limit)
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _wrapped_body(col: _Column, width: int) -> tuple[_ColumnLine, ...]:
+    """A column's body lines as they physically sit in a `width`-cell column."""
+    body: list[_ColumnLine] = []
+    for line in col.lines:
+        for index, physical in enumerate(_wrap_cell_text(line.text, width)):
+            text = (physical if index == 0
+                    else COLUMN_CONTINUATION_INDENT + physical)
+            body.append(_ColumnLine(text, line.color))
+    return tuple(body)
 
 
 def _render_column_cell(line: _ColumnLine | None, width: int,
@@ -422,7 +515,8 @@ def _render_columns(summary: BoardSummary, context: RenderContext) -> list[str]:
 
     Same information as the stacked sections — same header counts, same
     task lines, same empty markers and `(+N more)` lines — laid out across
-    the terminal and truncated per column instead of per line.
+    the terminal, a task row that does not fit its column wrapped on field
+    boundaries rather than cut short.
     """
     columns = []
     for loc in summary.locations:
@@ -437,15 +531,17 @@ def _render_columns(summary: BoardSummary, context: RenderContext) -> list[str]:
                                LOCATION_COLORS.get(loc.location, "")),
             lines=tuple(body)))
     widths = _column_widths(columns, context.width)
+    bodies = [_wrapped_body(col, width)
+              for col, width in zip(columns, widths)]
     gap = " " * _COLUMN_GAP
     lines = [gap.join(_render_column_cell(col.header, width, context)
                       for col, width in zip(columns, widths))]
-    for row in range(max(len(col.lines) for col in columns)):
+    for row in range(max(len(body) for body in bodies)):
         lines.append(gap.join(
             _render_column_cell(
-                col.lines[row] if row < len(col.lines) else None,
+                body[row] if row < len(body) else None,
                 width, context)
-            for col, width in zip(columns, widths)))
+            for body, width in zip(bodies, widths)))
     return lines
 
 

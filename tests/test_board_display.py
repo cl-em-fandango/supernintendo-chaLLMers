@@ -4,9 +4,10 @@ Pins the ANSI color scheme (user green, auto magenta, `failed`/`parked`
 warning accents — spec FR-5) gated on a TTY stdout with `NO_COLOR` unset
 (FR-6, AC 4); the side-by-side column layout at wide terminals and the
 stacked fallback at narrow ones, both carrying identical content (FR-6);
-truncation instead of wrapping (FR-6); and an encoding-safe output path in
-which non-ASCII ids and box-drawing characters can never raise
-`UnicodeEncodeError` (FR-7).
+truncation of an over-long word instead of a mid-word cut (FR-6), with a row
+that does not fit its column wrapped on word boundaries so both layouts show
+the same fields; and an encoding-safe output path in which non-ASCII ids and
+box-drawing characters can never raise `UnicodeEncodeError` (FR-7).
 
 Renderer-level tests call the pure `render_board` with an explicit
 `RenderContext`; handler-level tests reuse the `_WiredFixture` pattern of
@@ -31,10 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.cli import handlers  # noqa: E402
 from harness.core.board import (COLOR_GREEN, COLOR_MAGENTA, COLOR_RED,  # noqa: E402
                                 COLOR_YELLOW, COLOR_RESET, BoardSummary, BoardTask,
-                                EMPTY_COLUMN_MARKER, LocationBoard,
-                                RenderContext, TaskOrigin, TRUNCATION_MARKER,
-                                WIDE_LAYOUT_MIN_WIDTH, render_board,
-                                write_board)
+                                EMPTY_COLUMN_MARKER, LocationBoard, RenderContext,
+                                TaskOrigin, TaskStats, TRUNCATION_MARKER,
+                                WIDE_LAYOUT_MIN_WIDTH, render_board, write_board)
 from harness.core.providers import DirectoryTaskProvider  # noqa: E402
 from harness.core.stats import StatsStore  # noqa: E402
 
@@ -53,6 +53,66 @@ def _summary() -> BoardSummary:
         LocationBoard("failed", (BoardTask("auto-crash", TaskOrigin.AUTO),)),
         LocationBoard("done", (BoardTask("finished", TaskOrigin.USER),)),
     ))
+
+
+def _state_summary() -> BoardSummary:
+    """Seven locations holding tasks with every per-task state field filled.
+
+    Used for the FR-6 parity criterion: the same task set at width 80
+    (stacked) and width 140 (columns) must carry the same information.
+    """
+    stats = TaskStats(sessions=2, tokens=3000, duration_s=15.4,
+                      last_verdict="fail")
+
+    def task(task_id, origin, **overrides):
+        fields = dict(state_readable=True, stage="slicing",
+                      checkpointed_stages=("spec", "plan"),
+                      last_updated="2026-07-20T10:11:12Z", stats=stats)
+        fields.update(overrides)
+        return BoardTask(task_id, origin, **fields)
+
+    return BoardSummary(locations=(
+        LocationBoard("pending", (task("queued", TaskOrigin.USER),)),
+        LocationBoard("claimed",
+                      (task("taken", TaskOrigin.USER, owner="pi-host-1"),)),
+        LocationBoard("active", (task("worker", TaskOrigin.USER),
+                                 task("auto-gen", TaskOrigin.AUTO))),
+        LocationBoard("review", ()),
+        LocationBoard("parked",
+                      (task("stuck", TaskOrigin.USER,
+                            reason="blocked on env"),)),
+        LocationBoard("failed",
+                      (task("auto-crash", TaskOrigin.AUTO, reason="boom"),)),
+        LocationBoard("done", (task("finished", TaskOrigin.USER),)),
+    ))
+
+
+# Every word a fully-populated task row is built from, bar the timestamp
+# (`updated=` is one word longer than a narrow column, so both layouts show it
+# truncated — present, never dropped). The wide layout shows all of these in
+# full; wrapping may split them across lines, truncation may not swallow one.
+STATE_WORDS = {
+    "queued", "taken", "worker", "auto-gen", "stuck", "auto-crash",
+    "finished", "[user]", "[auto]",
+    "stage=slicing", "done:[spec,plan]",
+    "owner=pi-host-1", "sessions=2", "tokens=3000", "time=15s", "last",
+    "verdict=fail", "reason=blocked", "on", "env", "reason=boom",
+}
+
+
+def _visible_field_keys(text: str) -> set[str]:
+    """The keyed task fields (`stage=`, `sessions=`, `reason=`) a board shows.
+
+    A word cut short still names its field, so a truncated `sessions=…` counts
+    as showing `sessions=`; a word cut before its `=` shows nothing, which is
+    exactly the loss FR-6 parity is about.
+    """
+    keys = set()
+    for word in text.split():
+        key = word.removesuffix(TRUNCATION_MARKER).split("=", 1)[0]
+        if key and f"{key}=" in word:
+            keys.add(f"{key}=")
+    return keys
 
 
 class ColorTest(unittest.TestCase):
@@ -121,6 +181,37 @@ class LayoutTest(unittest.TestCase):
                  "parked 1 · failed 1 · done 1"
         self.assertIn(counts, wide)
         self.assertIn(counts, stacked)
+
+    def test_the_wide_layout_shows_every_field_the_stacked_one_shows(self):
+        """FR-6 parity: no per-task field is a stacked-layout exclusive."""
+        wide = ANSI_ESCAPE.sub(
+            "", render_board(_state_summary(), RenderContext(width=140)))
+        stacked = ANSI_ESCAPE.sub(
+            "", render_board(_state_summary(), RenderContext(width=80)))
+        self.assertLessEqual(_visible_field_keys(stacked),
+                             _visible_field_keys(wide))
+        self.assertEqual(_visible_field_keys(wide),
+                         {"stage=", "updated=", "owner=", "sessions=",
+                          "tokens=", "time=", "verdict=", "reason="})
+
+    def test_the_wide_layout_shows_the_full_state_of_a_task_row(self):
+        out = ANSI_ESCAPE.sub(
+            "", render_board(_state_summary(), RenderContext(width=140)))
+        words = set(out.split())
+        self.assertEqual(STATE_WORDS - words, set())
+        self.assertTrue(any(word.startswith("updated=2026-07-20")
+                            for word in words))
+
+    def test_a_wide_row_wraps_inside_its_column_rather_than_losing_fields(self):
+        out = ANSI_ESCAPE.sub(
+            "", render_board(_state_summary(), RenderContext(width=140)))
+        body = out.splitlines()[4:]  # past the summary block and header row
+        wrapped = [line for line in body if line.startswith("  ")]
+        self.assertTrue(wrapped, "no continuation lines were rendered")
+        for line in body:
+            self.assertLessEqual(len(line), 140)
+        self.assertIn("done:[spec,plan]", out)
+        self.assertIn("verdict=fail", out)
 
     def test_long_lines_truncate_to_the_width_instead_of_wrapping(self):
         summary = BoardSummary(locations=(
