@@ -60,6 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
     # report
     subparsers.add_parser("report", help="Print the stats report")
 
+    # board (with hidden kanban alias)
+    subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
+    subparsers.add_parser("kanban", help=argparse.SUPPRESS)
+
     # journey
     journey_parser = subparsers.add_parser("journey", help="Show static workflow journey graph and bottleneck analysis")
     journey_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
