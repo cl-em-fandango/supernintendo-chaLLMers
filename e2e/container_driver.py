@@ -452,25 +452,26 @@ git config --global user.email "tester@harness.local"
 git config --global init.defaultBranch "pi/trunk"
 git config --global --add safe.directory "*"
 
-# Initialize target_repo as a valid git repository with harness skeleton for gate checks
+# Initialize target_repo as a valid git repository with complete working copy of the codebase
+rm -rf "${WORKSPACE}/target_repo"
+mkdir -p "${WORKSPACE}/target_repo"
+
+# Copy the entire codebase from /opt/harness-frozen to target_repo (including .gitignore, pyproject.toml, tests, etc.)
+cp -a /opt/harness-frozen/. "${WORKSPACE}/target_repo/"
+
+# Clean up any transient/irrelevant files from the working copy
+rm -rf "${WORKSPACE}/target_repo/.git" "${WORKSPACE}/target_repo/.pi-*" "${WORKSPACE}/target_repo/logs" "${WORKSPACE}/target_repo/stats" "${WORKSPACE}/target_repo/queue"
+
+# Initialize clean git repository on pi/trunk
 cd "${WORKSPACE}/target_repo"
 git init -b pi/trunk
 git config user.name "E2E Tester"
 git config user.email "tester@harness.local"
-
-cp -r /opt/harness-frozen/harness ./harness
-cp -r /opt/harness-frozen/external ./external
-cp /opt/harness-frozen/harness.py ./harness.py
-echo "# Target Project" > README.md
-if [ -f /opt/harness-frozen/pyproject.toml ]; then
-  cp /opt/harness-frozen/pyproject.toml ./pyproject.toml
-fi
-
 git add -A
 git commit -m "chore: initial sandbox project setup"
 git tag -f pi/last-good
 
-chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi
+chmod -R 777 "${WORKSPACE}" /home/harnessuser /root/.pi /opt/harness-frozen
 """
             exec_res = subprocess.run(
                 [self.engine, "exec", "-i", temp_builder_name, "bash", "-c", init_script],
