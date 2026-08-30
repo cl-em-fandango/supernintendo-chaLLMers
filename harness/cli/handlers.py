@@ -12,6 +12,7 @@ from ..workflow.autonomous import AutonomousGenerator
 from ..workflow.continue_fresh import fresh_restart, resume_in_flight
 from ..workflow.resume import resume_task
 from ..workflow.task_lifecycle import CLAIMED_LOCATION, QUEUE_LOCATIONS_ALL
+from ..core.board import BoardSummary, LocationCount, aggregate_stats, render_board
 from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.providers import Task
 from ..core.stats import render_report, render_task_journey
@@ -381,6 +382,29 @@ def cmd_status() -> int:
         log(CLAIMS_STRANDED_WARNING.format(count=len(claims)))
     log()
     log(render_report(store.all()))
+    return 0
+
+
+def cmd_board() -> int:
+    """Print the kanban-style board: executive summary over the location sections.
+
+    Read-only (spec FR-8): counts come from directory listings and
+    `provider.list_claims()` — nothing is claimed, moved or written. The
+    claimed count is the claim list, not the directory listing, so ownership
+    sidecars never count as tasks (consistent with `cmd_status`). Rendering is
+    the pure `core.board.render_board`; this handler only collects.
+    """
+    cfg, store, _, provider, _, _ = build()
+    claims = provider.list_claims()
+    counts = []
+    for sub in QUEUE_LOCATIONS_ALL:
+        n = len(claims) if sub == CLAIMED_LOCATION \
+            else len(_queue_names(cfg.queue_dir, sub))
+        counts.append(LocationCount(location=sub, count=n))
+    warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
+    print(render_board(BoardSummary(locations=tuple(counts),
+                                     claims_warning=warning,
+                                     stats=aggregate_stats(store.all()))))
     return 0
 
 
