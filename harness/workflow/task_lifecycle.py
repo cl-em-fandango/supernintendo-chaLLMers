@@ -285,6 +285,7 @@ class TaskLifecycle:
         `task.json` (F1.5: new fields, signature unchanged)."""
         task_dir = self.task_dir(task.id)
         (task_dir / "artifacts" / "progress").mkdir(parents=True, exist_ok=True)
+        (task_dir / "artifacts" / "sessions").mkdir(parents=True, exist_ok=True)
         (task_dir / "prompts").mkdir(exist_ok=True)
         (task_dir / "original.md").write_text(task.body)
         now = _now()
@@ -406,7 +407,8 @@ class TaskLifecycle:
 
 - spec: `{td}/artifacts/spec.md`
 - slices: `{td}/artifacts/slices.md`
-- session outputs: `{td}/artifacts/*.out`
+- journey: `{td}/artifacts/journey.md`
+- session transcripts: `{td}/artifacts/sessions/`
 """
         if handoff is not None:
             body += _handoff_section(handoff)
