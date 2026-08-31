@@ -144,7 +144,8 @@ class Pipeline:
         completed stages. A fresh task (no task.json) is intaken as before.
         """
         task_dir = self.lifecycle.task_dir(task.id)
-        if self.lifecycle.task_json_path(task.id).exists():
+        resumed = self.lifecycle.task_json_path(task.id).exists()
+        if resumed:
             state = self.lifecycle.load_state(task.id)
             skipped = [s.value for s in state.checkpointed_stages]
             self.log(f"═══ task {task.id} ═══")
@@ -199,6 +200,8 @@ class Pipeline:
         except Exception as e:
             self.lifecycle.park(task.id, f"git setup failed: {e}")
             return "parked"
+        if resumed and not self._clean_worktree_on_resume(task.id, workdir):
+            return "parked"
 
         ctx = StageContext(task.id, task_dir, workdir)
         outcome = "parked"
@@ -251,6 +254,32 @@ class Pipeline:
             return outcome
         finally:
             self._persist_journey_readout(task.id, task_dir)
+
+    def _clean_worktree_on_resume(self, task_id: str, workdir: Path) -> bool:
+        """FR-5.3: discard the uncommitted residue of a killed attempt before
+        the resumed waterfall starts, so partial edits cannot leak into the
+        next slice. Runs only on a resume (a fresh intake has no residue) and
+        only after `ensure_branch` put the worktree on the task branch — the
+        helper itself refuses trunk/detached HEAD as a second line of defence.
+
+        A clean tree is a no-op. A refused or failed cleanup parks the task:
+        proceeding with residue we could not discard is exactly the leak this
+        requirement exists to prevent (fail-closed, NFR-1).
+        """
+        from ..core.gitops import discard_task_residue
+        try:
+            discarded = discard_task_residue(workdir, task_id,
+                                             self.cfg.trunk_branch)
+        except Exception as e:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: FAILED: {e}")
+            self.lifecycle.park(task_id, f"worktree cleanup on resume failed: {e}")
+            return False
+        if discarded:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: discarded "
+                     f"{len(discarded)} uncommitted path(s), e.g. {discarded[:5]}")
+        else:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: clean (no residue)")
+        return True
 
     def _persist_journey_readout(self, task_id: str, task_dir: Path) -> None:
         """Persist static workflow journey graph and log the summary readout."""

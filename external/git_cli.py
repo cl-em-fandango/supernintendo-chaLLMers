@@ -221,6 +221,38 @@ def abort_merge(workdir: Path, added: list[str] | None = None) -> None:
         _discard_added(workdir, added)
 
 
+def discard_task_residue(workdir: Path, task_id: str, trunk: str) -> list[str]:
+    """Discard uncommitted residue in the task worktree (FR-5.3, resume path).
+
+    A session killed mid-slice can leave half-written edits and stray untracked
+    files on the task branch; the next attempt must not inherit them. The
+    discard is a `git reset --hard HEAD` (tracked/staged residue, committed
+    work untouched) plus `git clean -fd` (untracked residue; ignored files are
+    kept). Returns the paths that were dirty *before* the discard so the caller
+    can log what was dropped.
+
+    This is the deliberate exception to the `_require_clean` philosophy: every
+    other destructive operation here refuses a dirty tree because it cannot
+    tell harness residue from human work. This one can, because it is scoped:
+    it runs only when HEAD is the task's own `pi/<task_id>` branch, and it
+    refuses — raising, never cleaning — on the trunk/base branch, a detached
+    HEAD, or any other branch. Callers invoke it right after `ensure_branch`
+    has put the worktree on the task branch.
+    """
+    workdir = Path(workdir)
+    branch = f"pi/{task_id}"
+    current = _current_branch(workdir)
+    if current != branch:
+        raise RuntimeError(
+            f"refusing worktree cleanup for {task_id}: HEAD is on "
+            f"{current or 'a detached HEAD'}, not the task branch {branch}; "
+            f"cleanup never runs against {trunk} or a branch it does not own")
+    discarded = dirty_paths(workdir)
+    _git(workdir, "reset", "-q", "--hard", "HEAD", check=False)
+    _git(workdir, "clean", "-fd", check=False)
+    return discarded
+
+
 def merge_to_trunk(workdir: Path, task_id: str, trunk: str, title: str,
                    allow_dirty: bool = False) -> None:
     """Squash-merge a feature branch to trunk, then verify the result.
@@ -349,19 +381,25 @@ def verify_harness(workdir: Path) -> tuple[bool, str]:
     supervisor: a failed import, or a CLI that won't execute.
     """
     workdir = Path(workdir)
+    # The child `harness.py` runs the FR-1 entrypoint gate. This process only
+    # gets here after its own gate already passed (container, or the documented
+    # escape hatch), and the child is a two-second import/CLI smoke test, not
+    # a new bounded run — so it inherits that authorisation instead of being
+    # refused for the environment its parent already vouched for.
+    env = {**os.environ, "HARNESS_ALLOW_HOST_UNSAFE": "1"}
     # 1. the package must import (current module layout after the workflow/ + core/ split)
     r = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path.insert(0, '.'); "
          "import harness, harness.workflow.pipeline, harness.workflow.autonomous, "
          "harness.core.session, harness.core.providers, harness.core.gitops, harness.core.stats"],
-        cwd=workdir, capture_output=True, text=True, timeout=60)
+        cwd=workdir, capture_output=True, text=True, timeout=60, env=env)
     if r.returncode != 0:
         return False, f"import failed: {r.stderr.strip()[-300:]}"
     # 2. the CLI must actually run (status touches config + stats + queue)
     r = subprocess.run(
         [sys.executable, "harness.py", "status"],
-        cwd=workdir, capture_output=True, text=True, timeout=120)
+        cwd=workdir, capture_output=True, text=True, timeout=120, env=env)
     if r.returncode != 0:
         return False, f"harness.py status failed rc={r.returncode}: {r.stderr.strip()[-300:]}"
     return True, "ok"
