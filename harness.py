@@ -37,9 +37,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.cli.parser import parse_args
 from harness.cli import handlers
+from harness.core.environment import assert_containerized
 
 
 def main() -> int:
+    assert_containerized("harness.py")
     args = parse_args(sys.argv[1:])
     
     if args.command is None:
