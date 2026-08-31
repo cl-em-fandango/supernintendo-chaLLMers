@@ -12,6 +12,12 @@ from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
+from ..core.stats import render_task_journey_markdown
+from ..core.transcripts import (
+    list_transcripts,
+    match_rows_to_transcripts,
+    resolve_task_dir,
+)
 from .params import StageContext
 from .spec_assessment import SpecAssessment, assess_spec
 from .task_lifecycle import Handoff, TaskLifecycle
@@ -253,7 +259,7 @@ class Pipeline:
             self._persist_journey_readout(task.id, task_dir)
 
     def _persist_journey_readout(self, task_id: str, task_dir: Path) -> None:
-        """Persist static workflow journey graph and log the summary readout."""
+        """Persist the journey readouts (ASCII + Markdown) and log the summary."""
         if not hasattr(self.runner, "store") or self.runner.store is None:
             return
         try:
@@ -266,9 +272,32 @@ class Pipeline:
             art_dir = task_dir / "artifacts"
             if art_dir.exists():
                 (art_dir / "journey.txt").write_text(journey_text)
+            self._persist_journey_markdown(task_id, rows)
             self.log(f"\n{journey_text}")
         except Exception as e:
             self.log(f"  ⚠ could not persist workflow journey readout: {e}")
+
+    def _persist_journey_markdown(self, task_id: str, rows: list[dict]) -> None:
+        """Write `artifacts/journey.md` beside the transcripts it links to.
+
+        The caller's `task_dir` is the path from *before* the pass ended, and a
+        pass that parked, failed or completed has already moved the task into
+        `parked/`, `failed/` or `done/`. The Markdown journey is the browsable
+        surface — every link in it is relative to the `artifacts/` directory it
+        sits in — so it is written to the task's current location, which is
+        where its transcripts are. A task with no queue directory (a direct
+        runner use, or a queue that was cleaned mid-pass) simply gets no
+        journey.md; the ASCII readout and the stats-dir copy are untouched.
+        """
+        task_dir = resolve_task_dir(self.cfg.queue_dir, task_id)
+        if task_dir is None:
+            return
+        art_dir = task_dir / "artifacts"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        transcripts = match_rows_to_transcripts(rows, list_transcripts(task_dir))
+        (art_dir / "journey.md").write_text(
+            render_task_journey_markdown(rows, task_id=task_id,
+                                         transcript_files=transcripts))
 
     def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
         """Per-stage terminal return contract (F2.1): feasibility failure is

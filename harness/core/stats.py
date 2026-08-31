@@ -433,6 +433,124 @@ def render_task_journey(rows: list[dict], task_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def render_task_journey_markdown(rows: list[dict], task_id: str | None = None,
+                                 transcript_files: list[str | None] | None = None) -> str:
+    """Render the task journey as a browsable Markdown document.
+
+    Companion to `render_task_journey`, not a replacement: same analysis, same
+    headline metrics and diagnostics, but every session row links to its
+    transcript with a path *relative to `artifacts/`* so the directory stays
+    browsable when it is moved or committed. `transcript_files` is positionally
+    aligned with `rows` (one filename, or None when that session has no
+    transcript — pre-feature sessions, or a transcript write that failed) and
+    such a row shows an em dash instead of a link.
+    """
+    if not rows:
+        return f"# Journey: {task_id or 'unknown'}\n\nNo sessions recorded.\n"
+
+    analysis = task_journey_analysis(rows, task_id=task_id)
+    links = list(transcript_files) if transcript_files else [None] * len(rows)
+    lines: list[str] = [
+        f"# Journey: {analysis.task_id}",
+        "",
+        (f"**Sessions:** {analysis.total_sessions} · "
+         f"**Wall clock:** {analysis.total_duration_s:.1f}s · "
+         f"**Max tokens:** {_format_tokens(analysis.max_peak_tokens)} · "
+         f"**Bounces/blocks:** {analysis.bounces_count} · "
+         f"**Loops/retries:** {analysis.loops_count}"),
+        "",
+        "## Sessions",
+        "",
+        "| # | Stage / Target | Model | Duration | Tokens | Verdict | Transcript |",
+        "| --- | --- | --- | ---: | ---: | --- | --- |",
+    ]
+    for step, filename in zip(analysis.steps, links):
+        lines.append(
+            f"| {step.index} | {_escape_cell(_target_name(step))} "
+            f"| {_escape_cell(step.model)} "
+            f"| {step.duration_s:.1f}s "
+            f"| {_format_tokens(step.peak_tokens)} "
+            f"| {_escape_cell(step.verdict)} "
+            f"| {_transcript_link(filename)} |"
+        )
+    lines += ["", "## Diagnostics", ""]
+    lines += _markdown_list("Loops & retries", analysis.loop_descriptions,
+                            "Clean straight pass (no retry loops)",
+                            count=analysis.loops_count)
+    lines += _markdown_list("Blockages & bounces", analysis.bounce_descriptions,
+                            "No rejections or blockages encountered",
+                            count=analysis.bounces_count)
+    lines += _markdown_list("Time hotspots",
+                            _hotspot_descriptions(analysis.hotspots),
+                            "Execution time was evenly distributed")
+    lines += _markdown_stage_summary(rows, analysis.task_id)
+    return "\n".join(lines) + "\n"
+
+
+def _target_name(step: JourneyStep) -> str:
+    """The `Stage / Target` label: slice and iteration read at a glance."""
+    name = step.stage
+    if step.slice_id:
+        name = f"slice {step.slice_id}: {step.stage.replace('slice_', '')}"
+    if step.iteration > 1:
+        name += f" (iter {step.iteration})"
+    return name
+
+
+def _escape_cell(text: str) -> str:
+    """Make text safe for a Markdown table cell (pipes break rows, newlines end them)."""
+    return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _transcript_link(filename: str | None) -> str:
+    """A relative link to one transcript, or an em dash when there is none."""
+    if not filename:
+        return "—"
+    return f"[{filename}](sessions/{filename})"
+
+
+def _markdown_list(title: str, items: list[str], empty_text: str,
+                   count: int | None = None) -> list[str]:
+    """One `###` diagnostics section as a Markdown list."""
+    heading = f"### {title}"
+    if count is not None:
+        heading += f" ({count} detected)"
+    lines = [heading, ""]
+    lines += [f"- {_escape_cell(item)}" for item in items] or [f"- {empty_text}"]
+    lines.append("")
+    return lines
+
+
+def _hotspot_descriptions(hotspots: list[JourneyStep]) -> list[str]:
+    """The latency hotspots, slowest first, with their share of wall clock."""
+    return [
+        f"Step #{h.index} {_target_name(h)}: {h.duration_s:.1f}s "
+        f"({h.time_pct:.1f}% of task time, {h.model})"
+        + (" [HOTSPOT]" if h.is_hotspot else "")
+        for h in hotspots[:5]
+    ]
+
+
+def _markdown_stage_summary(rows: list[dict], task_id: str) -> list[str]:
+    """Per-stage totals for the task, ported from the ASCII readout."""
+    lines = [f"### Stage summary for {task_id}", ""]
+    for stage_name, stage_rows in sorted(_group(rows, "stage").items()):
+        sessions = len(stage_rows)
+        duration = sum(float(r.get("duration_s", 0.0)) for r in stage_rows)
+        max_tokens = max((int(r.get("peak_tokens", 0)) for r in stage_rows),
+                         default=0)
+        bounces = sum(1 for r in stage_rows
+                      if r.get("outcome") in ("kickback", "fail", "kickout", "error"))
+        lines.append(
+            f"- **{stage_name}**: {sessions} session{'s' if sessions != 1 else ''} "
+            f"| time={duration:.1f}s "
+            f"| max_tokens={_format_tokens(max_tokens)} "
+            f"| bounces={bounces}"
+        )
+    lines.append("")
+    return lines
+
+
 def _format_tokens(n: int) -> str:
     """Format token count with k suffix if >= 1000."""
     if n >= 1000:

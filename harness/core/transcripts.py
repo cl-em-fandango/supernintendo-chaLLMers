@@ -13,8 +13,14 @@ survives a process restart and never reuses a number already on disk.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+_TRANSCRIPT_NAME = re.compile(
+    r"^(?P<sequence>\d+)-(?P<stage>.+?)"
+    r"(?:-slice-(?P<slice>.+?))?(?:-iter-(?P<iteration>\d+))?\.md$"
+)
 
 
 @dataclass
@@ -94,6 +100,104 @@ def transcript_filename(record: TranscriptRecord) -> str:
     if record.iteration != 1:
         name += f"-iter-{record.iteration}"
     return f"{name}.md"
+
+
+@dataclass
+class TranscriptFile:
+    """One transcript already on disk, read back out of its filename.
+
+    The filename is the only place the sequence number and the slice/iteration
+    identity survive after the writer is done, so this is what the journey map
+    uses to point a stats row at its transcript.
+    """
+    sequence: int
+    stage: str
+    slice_id: str | None
+    iteration: int
+    name: str
+    path: Path
+
+
+def parse_transcript_filename(path: Path) -> TranscriptFile | None:
+    """Read `NNN-<stage>[-slice-<id>][-iter-<n>].md` back into its parts.
+
+    Returns None for a name the writer would never produce, so a stray file in
+    `sessions/` is ignored rather than matched to the wrong session.
+    """
+    match = _TRANSCRIPT_NAME.match(Path(path).name)
+    if match is None:
+        return None
+    return TranscriptFile(
+        sequence=int(match.group("sequence")),
+        stage=match.group("stage"),
+        slice_id=match.group("slice"),
+        iteration=int(match.group("iteration") or 1),
+        name=Path(path).name,
+        path=Path(path),
+    )
+
+
+def list_transcripts(task_dir: Path) -> list[TranscriptFile]:
+    """Every parseable transcript under `<task_dir>/artifacts/sessions/`.
+
+    Sorted by sequence number, so a caller can pair them with sessions in
+    chronological order. A missing sessions directory is simply no transcripts.
+    """
+    sessions_dir = sessions_dir_for(task_dir)
+    if not sessions_dir.is_dir():
+        return []
+    parsed = [parse_transcript_filename(p) for p in sessions_dir.glob("*.md")]
+    return sorted((t for t in parsed if t is not None),
+                  key=lambda t: (t.sequence, t.name))
+
+
+def match_rows_to_transcripts(rows: list[dict],
+                              transcripts: list[TranscriptFile]) -> list[str | None]:
+    """Pair each stats row with a transcript filename, positionally (None = none).
+
+    Stats rows for a task are chronological and transcripts are numbered from
+    the row count, so row *i* normally carries sequence *i*. A resumed task can
+    start numbering past the restored row count, so the sequence is only a
+    first candidate: what actually binds a pair is stage, slice and iteration.
+    Each transcript is used at most once, and a row with no plausible partner
+    gets None — the journey then shows `—` rather than a broken link.
+    """
+    pool = list(transcripts)
+    used: set[str] = set()
+    paired: list[str | None] = []
+    for index, row in enumerate(rows, 1):
+        found = _match_one(row, index, pool, used)
+        paired.append(found.name if found else None)
+        if found:
+            used.add(found.name)
+    return paired
+
+
+def _match_one(row: dict, index: int, pool: list[TranscriptFile],
+               used: set[str]) -> TranscriptFile | None:
+    """The transcript for one row: sequence first, then identity in order."""
+    for candidate in pool:
+        if candidate.name not in used and candidate.sequence == index \
+                and _identity_matches(row, candidate):
+            return candidate
+    for candidate in pool:
+        if candidate.name not in used and _identity_matches(row, candidate):
+            return candidate
+    return None
+
+
+def _identity_matches(row: dict, transcript: TranscriptFile) -> bool:
+    """Whether a row and a transcript describe the same unit of work.
+
+    Slice ids are strings on disk and may be recorded as ints in a row, so both
+    sides are compared as strings; an absent slice is only `None` on both sides.
+    """
+    row_slice = row.get("slice")
+    return (
+        str(row.get("stage", "")) == transcript.stage
+        and (None if row_slice is None else str(row_slice)) == transcript.slice_id
+        and int(row.get("iteration", 1) or 1) == transcript.iteration
+    )
 
 
 def has_stderr(record: TranscriptRecord) -> bool:
