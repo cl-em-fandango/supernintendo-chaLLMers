@@ -12,17 +12,14 @@ from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
-<<<<<<< Updated upstream
 from ..core.stats import render_task_journey_markdown
 from ..core.transcripts import (
     list_transcripts,
     match_rows_to_transcripts,
     resolve_task_dir,
 )
-=======
 from .continuation import (ContinuationNote, continuation_prompt, handover_dir,
                            write_note)
->>>>>>> Stashed changes
 from .params import StageContext
 from .spec_assessment import SpecAssessment, assess_spec
 from .task_lifecycle import Handoff, TaskLifecycle
