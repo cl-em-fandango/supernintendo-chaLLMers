@@ -596,6 +596,14 @@ def run_pi_session(
         assert proc.stdout is not None
         assert proc.stderr is not None
 
+        # pi's stdout/stderr are model- and tool-produced byte streams. The
+        # default strict decode would raise UnicodeDecodeError out of the read
+        # loop below on a single invalid byte, killing the session, the stats
+        # row and the transcript alike. Replace instead: the bad byte arrives as
+        # U+FFFD and the rest of the stream is read intact.
+        proc.stdout.reconfigure(encoding="utf-8", errors="replace")
+        proc.stderr.reconfigure(encoding="utf-8", errors="replace")
+
         def drain_stderr():
             # Read to EOF. `stop_stderr` must never abandon data that is still
             # sitting in the pipe buffer: the child exits, stdout closes and the

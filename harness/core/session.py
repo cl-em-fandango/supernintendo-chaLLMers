@@ -180,10 +180,14 @@ class SessionRunner:
                 crashed=result.crashed,
                 prompt=full_prompt,
                 output=result.output,
-                stderr=result.stderr or result.err,
+                # The Stderr section is the child's stderr and nothing else;
+                # the run's own failure text (`err`) is metadata, so a session
+                # that died with no stderr still shows an empty Stderr fence.
+                stderr=result.stderr,
+                error=result.err or "",
                 slice_id=slice_id,
                 iteration=iteration,
-            ))
+            ), self.log)
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.

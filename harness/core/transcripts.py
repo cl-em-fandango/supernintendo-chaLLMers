@@ -38,6 +38,7 @@ class TranscriptRecord:
     stderr: str
     slice_id: str | None = None
     iteration: int = 1
+    error: str = ""
 
 
 def resolve_task_dir(queue_dir: Path, task_id: str) -> Path | None:
@@ -82,8 +83,25 @@ def transcript_filename(record: TranscriptRecord) -> str:
     return f"{record.sequence:03d}-{record.stage}.md"
 
 
+def has_stderr(record: TranscriptRecord) -> bool:
+    """Whether this transcript gets a `## Stderr` section.
+
+    The rule is 'non-empty stderr', plus one edge case the spec names: a
+    session that came back with nothing at all (empty output, empty stderr,
+    rc != 0) still has to read as a complete record, so a failed session gets
+    the section even when it is empty. A *successful* session with nothing on
+    stderr does not get an empty section.
+    """
+    return bool(record.stderr) or record.rc != 0 or record.crashed
+
+
 def render_transcript(record: TranscriptRecord) -> str:
-    """Render one transcript as Markdown (see module docstring for layout)."""
+    """Render one transcript as Markdown (see module docstring for layout).
+
+    Every section is fenced independently: the Prompt, Output and Stderr
+    contents are unrelated, so one containing a ``` run cannot break another
+    one's delimiter (see `_fenced`).
+    """
     lines = [
         f"# Session {record.sequence:03d}: {record.stage} ({record.task_id})",
         "",
@@ -100,6 +118,13 @@ def render_transcript(record: TranscriptRecord) -> str:
         f"- rc: {record.rc}",
         f"- verdict: {record.verdict}",
         f"- crashed: {'true' if record.crashed else 'false'}",
+    ]
+    if record.error:
+        # The run's failure text (e.g. `wall-clock timeout after 3600s`) is not
+        # stderr, so it gets its own metadata line rather than being spliced
+        # into the Stderr section. Collapsed to one line to keep the list flat.
+        lines.append(f"- error: {' '.join(record.error.split())}")
+    lines += [
         "",
         "## Prompt",
         "",
@@ -109,21 +134,60 @@ def render_transcript(record: TranscriptRecord) -> str:
         "",
         _fenced(record.output),
     ]
-    if record.stderr:
+    if has_stderr(record):
         lines += ["", "## Stderr", "", _fenced(record.stderr)]
     lines.append("")
     return "\n".join(lines)
 
 
-def write_transcript(task_dir: Path, record: TranscriptRecord) -> Path:
-    """Write one transcript file and return its path."""
-    dest_dir = sessions_dir_for(task_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    path = dest_dir / transcript_filename(record)
-    path.write_text(render_transcript(record))
-    return path
+def write_transcript(task_dir: Path, record: TranscriptRecord, log) -> Path | None:
+    """Write one transcript file, warn-and-continue on failure.
+
+    A transcript is an audit artifact, not pipeline state: a directory we
+    cannot write to (read-only mount, disk full, permissions) must never abort
+    the session that produced it. Same posture as the journey readout — the
+    operator gets a warning line and the run continues.
+
+    Returns the path written, or None when the write failed.
+    """
+    try:
+        dest_dir = sessions_dir_for(task_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / transcript_filename(record)
+        # `errors="replace"` is the last net for text that survived the stream
+        # decode but cannot be encoded (lone surrogates from a broken child).
+        path.write_text(render_transcript(record), encoding="utf-8",
+                        errors="replace")
+        return path
+    except OSError as exc:
+        log(f"  ! transcript write failed for session "
+            f"{record.sequence:03d}-{record.stage}: {exc}")
+        return None
 
 
 def _fenced(content: str) -> str:
-    """One fenced code block. Fence escaping is a later slice."""
-    return f"```\n{content}\n```"
+    """One fenced code block whose delimiter cannot appear inside `content`.
+
+    The delimiter is a run of backticks strictly longer than the longest
+    backtick run inside this block's own content, minimum three. Computed per
+    block, never shared, so an output containing ``` is wrapped in ```` while
+    a prompt without backticks keeps ```. An empty section still gets its
+    fence pair — the header is emitted either way.
+    """
+    fence = "`" * (longest_backtick_run(content) + 1)
+    if len(fence) < 3:
+        fence = "```"
+    return f"{fence}\n{content}\n{fence}"
+
+
+def longest_backtick_run(content: str) -> int:
+    """Length of the longest run of consecutive backticks in `content` (0 if none)."""
+    longest = 0
+    run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return longest
