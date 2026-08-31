@@ -15,9 +15,11 @@ Usage — subcommands and flags exactly as cli/parser.py defines them:
                                  (hidden alias: kanban)
   harness.py journey [task_id]   Show workflow journey graph & bottleneck analysis
   harness.py resume <task_id>    Resume a task from its last checkpoint
+                                 (--yes / -y, --fresh)
+  harness.py unpark <task_id>    Resume a parked/failed task (synonym for resume)
+                                 (--yes / -y, --fresh; hidden alias: requeue)
+  harness.py restart <task_id>   Restart a task from scratch, dropping checkpoints
                                  (--yes / -y)
-  harness.py unpark <task_id>    Move a parked/failed task back to pending
-                                 (hidden alias: requeue <task_id>)
   harness.py requeue-claims      Hand stranded claimed/ files back to pending
                                  (--older-than HOURS, --dry-run)
 
@@ -72,7 +74,9 @@ def main() -> int:
     elif args.command == "resume":
         return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh)
     elif args.command in ("unpark", "requeue"):
-        return handlers.cmd_unpark(args.task_id)
+        return handlers.cmd_unpark(args.task_id, yes=args.yes, fresh=args.fresh)
+    elif args.command == "restart":
+        return handlers.cmd_restart(args.task_id, yes=args.yes)
     elif args.command == "requeue-claims":
         return handlers.cmd_requeue_claims(older_than=args.older_than,
                                            dry_run=args.dry_run)

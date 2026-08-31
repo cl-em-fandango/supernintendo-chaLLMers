@@ -607,30 +607,11 @@ def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False) -> int:
                        lifecycle=pipeline.lifecycle, log=log, fresh=fresh)
 
 
-def cmd_unpark(task_id: str) -> int:
-    """Move a parked (or failed) task back to pending so it is re-processed.
+def cmd_unpark(task_id: str, yes: bool = False, fresh: bool = False) -> int:
+    """Resume/unpark a task from its last checkpoint (synonym for resume)."""
+    return cmd_resume(task_id, yes=yes, fresh=fresh)
 
-    The task's artifacts (spec, slices, progress) are preserved, so the next
-    run continues from where it got to rather than starting over.
-    """
-    cfg, _, _, _, _, log = build()
-    moved = False
-    for src_folder in ("parked", "failed"):
-        src = cfg.queue_dir / src_folder / task_id
-        if src.exists():
-            dst = cfg.queue_dir / "pending" / f"{task_id}.md"
-            original = src / "original.md"
-            if original.exists():
-                dst.write_text(original.read_text())
-            else:
-                dst.write_text(f"# {task_id}\n\n(requeued from {src_folder}; original requirement missing)\n")
-            # remove the old terminal dir so it starts fresh in active/
-            shutil.rmtree(src)
-            # drop any stale exec summary
-            (cfg.queue_dir / "review" / f"{task_id}.md").unlink(missing_ok=True)
-            log(f"unparked {task_id}: {src_folder} -> pending/{task_id}.md")
-            moved = True
-    if not moved:
-        log(f"{task_id} not found in parked/ or failed/")
-        return 1
-    return 0
+
+def cmd_restart(task_id: str, yes: bool = False) -> int:
+    """Restart a task from scratch, dropping all checkpoints."""
+    return cmd_resume(task_id, yes=yes, fresh=True)

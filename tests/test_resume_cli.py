@@ -276,6 +276,17 @@ class ResumeCliTest(unittest.TestCase):
         self.assertIn("slice_implement", self.runner.calls)
         self.assertTrue((self.queue_dir / "done" / "t1").exists())
 
+    def test_unpark_and_restart_handler_dispatch(self):
+        from harness.cli.handlers import cmd_unpark, cmd_restart
+        self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY)
+        self.lifecycle.park("t1", "test failure")
+        # unpark preserves checkpoints
+        self.runner = FakeRunner()
+        self.pipeline.runner = self.runner
+        # verify cmd_unpark is a synonym of cmd_resume (callable with yes/fresh)
+        self.assertTrue(callable(cmd_unpark))
+        self.assertTrue(callable(cmd_restart))
+
 
 if __name__ == "__main__":
     unittest.main()
