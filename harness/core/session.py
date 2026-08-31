@@ -188,6 +188,12 @@ class SessionRunner:
                 slice_id=slice_id,
                 iteration=iteration,
             ), self.log)
+            # The workdir `.out`/`.err` capture only pipes the child; its
+            # contents are now durably in the transcript, so no hidden
+            # `.pi-session-*` file survives in the implementation workdir.
+            # The `task_id=None` fallback path keeps the legacy placement —
+            # direct runner users still get the capture where it always was.
+            _cleanup_transient_capture(result.out_file, self.log)
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.
@@ -210,6 +216,24 @@ class SessionRunner:
 
 
 
+
+
+def _cleanup_transient_capture(out_file: Path | None, log) -> None:
+    """Delete the session's workdir `.out`/`.err` capture files.
+
+    Best-effort by design: the transcript is already on disk, so a capture we
+    cannot delete (permissions, an already-removed file) is worth a warning
+    line, never a failed session. The `.err` sibling is the path
+    `external/pi_cli` writes (`<out_file>.err`) and only exists when the
+    child produced stderr.
+    """
+    if out_file is None:
+        return
+    for path in (Path(out_file), Path(str(out_file) + ".err")):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log(f"  ! could not remove transient session capture {path}: {exc}")
 
 
 def _row_notes(notes: str, result: PiSessionResult) -> str:

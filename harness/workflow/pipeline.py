@@ -347,7 +347,7 @@ class Pipeline:
         if kickbacks > self.cfg.max_spec_kickbacks:
             self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
             return None
-        shutil.copy(r.out_file, ctx.task_dir / "artifacts" / f"kickback_{assessor}_{kickbacks}.md")
+        file_session_output(r, ctx.task_dir / "artifacts" / f"kickback_{assessor}_{kickbacks}.md")
         self.log(f"  kickback to spec author (#{kickbacks})")
         return kickbacks
 
@@ -365,7 +365,7 @@ class Pipeline:
             self.lifecycle.fail(ctx.task_id, "Task rejected at feasibility: " + _summary(r.output))
             return False
         if r.verdict is Verdict.KICKBACK:
-            shutil.copy(r.out_file, ctx.task_dir / "artifacts" / "feasibility_kickback.md")
+            file_session_output(r, ctx.task_dir / "artifacts" / "feasibility_kickback.md")
             self.log("  feasibility kickback -> back to spec stage")
             if not self.stage_spec(ctx):
                 return False
@@ -455,7 +455,7 @@ class Pipeline:
                 return True
             note = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
             if r.verdict is Verdict.PROGRESS and not note.exists():
-                shutil.copy(r.out_file, note)
+                file_session_output(r, note)
         self.lifecycle.park(ctx.task_id, f"slice {sid} not delivered in {self.cfg.max_slice_implement} implementation iterations")
         return False
 
@@ -483,7 +483,7 @@ class Pipeline:
                 feedback = (ctx.task_dir / "artifacts" / "progress"
                             / f"slice-{sid}-review.md")
                 feedback.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(r.out_file, feedback)
+                file_session_output(r, feedback)
                 # A fix session is a code edit, so it runs on the implementer
                 # regardless of which review asked for it (T55). `model` above
                 # follows the review type; the fix model follows the work type.
@@ -579,6 +579,24 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------------------
+
+def file_session_output(r: SessionResult, dest: Path) -> None:
+    """File one session's raw output as an artifact at `dest`.
+
+    The pipeline used to `shutil.copy` the workdir `.out` capture directly.
+    That capture is now cleaned up by the session layer once the transcript
+    holds its contents (001-full-interactions-logged), so the copy falls back
+    to the in-memory output — the capture was written from that same string,
+    so both paths produce identical bytes. The destination artifact paths are
+    unchanged (kickback reports, progress notes, review feedback).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src = Path(r.out_file) if r.out_file is not None else None
+    if src is not None and src.is_file():
+        shutil.copy(src, dest)
+    else:
+        dest.write_text(r.output)
+
 
 def _stage_value(stage: Stage | str) -> str:
     """A `Stage` member's wire name; a stray string passes through unchanged

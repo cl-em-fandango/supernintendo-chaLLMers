@@ -6,7 +6,8 @@ non-empty), and the metadata an operator needs to place the session (stage,
 model, duration, peak tokens, rc, verdict, crashed).
 
 Files land in `<task_dir>/artifacts/sessions/` named
-`NNN-<stage>.md`, where `NNN` is a per-task sequence number derived from
+`NNN-<stage>[-slice-<id>][-iter-<n>].md`, where `NNN` is a per-task sequence
+number derived from
 `max(stats rows for the task, transcripts already on disk) + 1` so numbering
 survives a process restart and never reuses a number already on disk.
 """
@@ -79,8 +80,20 @@ def next_sequence(stats_row_count: int, task_dir: Path) -> int:
 
 
 def transcript_filename(record: TranscriptRecord) -> str:
-    """`NNN-<stage>.md` for one transcript."""
-    return f"{record.sequence:03d}-{record.stage}.md"
+    """`NNN-<stage>[-slice-<id>][-iter-<n>].md` for one transcript.
+
+    The slice and iteration parts say at a glance which unit of work a
+    transcript belongs to; `-iter-1` is omitted because it is the common case
+    and the stats row carries the number either way. The `NNN` prefix is what
+    guarantees uniqueness — two attempts of the same stage/slice/iteration
+    (a crash retry reuses all three) still get one file each.
+    """
+    name = f"{record.sequence:03d}-{record.stage}"
+    if record.slice_id is not None:
+        name += f"-slice-{record.slice_id}"
+    if record.iteration != 1:
+        name += f"-iter-{record.iteration}"
+    return f"{name}.md"
 
 
 def has_stderr(record: TranscriptRecord) -> bool:
