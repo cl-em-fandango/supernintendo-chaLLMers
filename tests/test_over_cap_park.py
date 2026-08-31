@@ -1,4 +1,4 @@
-"""T74: an over-cap session parks the task and is never retried.
+"""T74 (revised): an over-cap trip is a warning; only exhaustion parks.
 
 T49 lifted the streamed over-cap stop onto `SessionResult.over_context_budget`,
 so the routing layer finally had something to route on. Until now it did not:
@@ -9,18 +9,26 @@ would have merged work nobody finished.
 
 The routing is now:
 
-- `_run` checks `over_context_budget` **before** the crash-retry branch and
-  raises `OverContextBudget` carrying the task id, the stage, the slice id and
-  iteration the call site asked for, the measured peak, the cap that stopped
-  the session and the path of its partial output;
-- the trip outranks a crash on the same result — a session we stopped on
-  purpose is not a child that died — so it never enters the retry loop and
-  costs exactly one runner call;
+- `_run` checks `over_context_budget` **before** the crash-retry branch, so the
+  trip outranks a crash on the same result — a session we stopped on purpose is
+  not a child that died — and never enters the crash-retry loop;
+- the first trip does **not** end the task. `_run` hands the work to a clean
+  session under a handover note (`workflow/continuation.py`), so what this
+  module pins is the *terminal* path: after `maxContextContinuations` handovers
+  have all tripped on the same stage, `OverContextBudget` is raised carrying the
+  task id, the stage, the slice id and iteration the call site asked for, the
+  measured peak, the cap that stopped the session and the path of its partial
+  output;
 - `Pipeline.process` catches it once (no stage catches it) and parks with
   `over context budget: peak=<n> limit=<n>`.
 
+The handover itself — the note, the resuming prompt, a continuation that
+finishes the stage — is `tests/test_over_cap_continuation.py`.
+
 These tests pin, without a subprocess or a model:
-- one over-cap result = exactly one runner call, at any `maxCrashRetries`;
+- one tripped session = exactly one runner call at any `maxCrashRetries` (a trip
+  is never crash-retried), and one exhausted stage costs exactly
+  `maxContextContinuations + 1` sessions;
 - the exception payload, including the fields a handoff needs (`slice_id`,
   `iteration`, `out_file`) that `_run` alone knows;
 - the exact park reason, one park, and the task in `parked/`;
@@ -70,10 +78,14 @@ OVER_CAP = 60_001
 # The park reason, exactly as `TaskLifecycle.park` must receive it.
 REASON = f"over context budget: peak={OVER_CAP} limit={CAP}"
 
-# `maxCrashRetries` is read from the config raw dict; a bare `Config` has an
-# empty one, so the default below is the one the shipped `config.json` states.
+# `maxCrashRetries` and `maxContextContinuations` are read from the config raw
+# dict; a bare `Config` has an empty one, so the defaults below are the ones the
+# shipped `config.json` states.
 DEFAULT_RETRIES = 2
 DEFAULT_ATTEMPTS = DEFAULT_RETRIES + 1
+DEFAULT_CONTINUATIONS = 3
+# One stopped session plus every handover to a clean session that follows it.
+DEFAULT_TRIPPED_SESSIONS = DEFAULT_CONTINUATIONS + 1
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -81,14 +93,21 @@ def _git(cwd: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout
 
 
-def _cfg(work_dir: Path, max_crash_retries: int | None = None) -> Config:
-    """A config whose crash-retry count is explicit when one is asked for.
+def _cfg(work_dir: Path, max_crash_retries: int | None = None,
+         max_context_continuations: int | None = None) -> Config:
+    """A config whose crash-retry and handover counts are explicit when asked.
 
-    `raw` is what `Config.get("maxCrashRetries", 2)` reads, so passing the
-    number here is the only way to move `Pipeline.max_crash_retries` — and the
-    only way to show an over-cap trip ignores it entirely.
+    `raw` is what `Config.get("maxCrashRetries", 2)` and
+    `Config.get("maxContextContinuations", 3)` read, so passing the numbers here
+    is the only way to move `Pipeline.max_crash_retries` and
+    `Pipeline.max_context_continuations` — and the only way to show an over-cap
+    trip ignores the crash-retry count entirely.
     """
-    raw = {} if max_crash_retries is None else {"maxCrashRetries": max_crash_retries}
+    raw: dict = {}
+    if max_crash_retries is not None:
+        raw["maxCrashRetries"] = max_crash_retries
+    if max_context_continuations is not None:
+        raw["maxContextContinuations"] = max_context_continuations
     return Config(
         work_dir=work_dir,
         token_budget=CAP,
@@ -195,7 +214,7 @@ class ScriptedRunner:
 
 
 class RunTripTest(unittest.TestCase):
-    """`Pipeline._run` itself: no retry, the payload, and the crash path intact."""
+    """`Pipeline._run` itself: no crash retry, the payload, the crash path intact."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -213,7 +232,12 @@ class RunTripTest(unittest.TestCase):
     def _trip(self, runner: ScriptedRunner, stage, *, slice_id=None,
               iteration=None, max_crash_retries: int | None = None,
               task_id: str = "t1") -> OverContextBudget:
-        """`_run` against a stage scripted to trip; returns the raised exception."""
+        """`_run` against a stage scripted to trip on **every** session.
+
+        The stage therefore exhausts its handovers, so this returns the
+        `OverContextBudget` that ends the run. A trip that is rescued by a clean
+        session is `tests/test_over_cap_continuation.py`.
+        """
         kw: dict = {}
         if slice_id is not None:
             kw["slice_id"] = slice_id
@@ -225,38 +249,44 @@ class RunTripTest(unittest.TestCase):
         return caught.exception
 
     # ------------------------------------------------------------------
-    # a. never retried
+    # a. never crash-retried
     # ------------------------------------------------------------------
     def test_over_cap_result_raises_instead_of_being_returned(self):
         runner = ScriptedRunner(over_cap=[Stage.SLICE_IMPLEMENT])
         exc = self._trip(runner, Stage.SLICE_IMPLEMENT, slice_id="1", iteration=1)
         self.assertIs(exc.stage, Stage.SLICE_IMPLEMENT)
-        # The dead-on-arrival result never reaches the caller: nothing to route on.
-        self.assertEqual(len(runner.results), 1)
-        self.assertTrue(runner.results[0].over_context_budget)
+        # Every session of the exhausted stage is a trip, and none of them ever
+        # reaches the caller: there is nothing safe to route on.
+        self.assertEqual(len(runner.results), DEFAULT_TRIPPED_SESSIONS)
+        self.assertTrue(all(r.over_context_budget for r in runner.results))
 
-    def test_over_cap_costs_exactly_one_runner_call_at_any_retry_count(self):
-        """The trip bypasses the retry loop; re-running would burn the same cap."""
+    def test_a_trip_never_costs_a_crash_retry_at_any_retry_count(self):
+        """The trip bypasses the crash loop; a handover is not a crash retry.
+
+        The session count is therefore `maxContextContinuations + 1` whatever
+        `maxCrashRetries` says — a trip that also fell into the crash branch
+        would multiply the two loops.
+        """
         for retries in (0, 1, 2, 4):
             with self.subTest(maxCrashRetries=retries):
                 runner = ScriptedRunner(over_cap=[Stage.SPEC_AUTHOR])
                 self._trip(runner, Stage.SPEC_AUTHOR,
                            max_crash_retries=retries)
-                self.assertEqual(len(runner.calls), 1,
-                                 "an over-cap session was retried")
+                self.assertEqual(len(runner.calls), DEFAULT_TRIPPED_SESSIONS,
+                                 "an over-cap session was crash-retried")
 
     def test_over_cap_outranks_a_crash_on_the_same_result(self):
         """T48 keeps the trip distinct from a death; the routing keeps it that way.
 
         A stopped child also carries a non-zero rc, so a check placed after the
-        crash branch would raise `AllAttemptsCrashed` and announce retries that
-        must not happen.
+        crash branch would raise `AllAttemptsCrashed` and announce crash retries
+        that must not happen.
         """
         runner = ScriptedRunner(over_cap=[Stage.HOLISTIC], crash=[Stage.HOLISTIC])
         exc = self._trip(runner, Stage.HOLISTIC)
         self.assertIsInstance(exc, OverContextBudget)
         self.assertNotIsInstance(exc, AllAttemptsCrashed)
-        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(len(runner.calls), DEFAULT_TRIPPED_SESSIONS)
 
     # ------------------------------------------------------------------
     # b. the payload a handoff needs
@@ -271,9 +301,10 @@ class RunTripTest(unittest.TestCase):
         self.assertEqual(exc.iteration, 3)
         self.assertEqual(exc.peak_tokens, OVER_CAP)
         self.assertEqual(exc.context_limit, CAP)
-        # The partial session output, as the runner reported it: the handoff's
-        # "last output path" and the only copy of what the model got done.
-        self.assertEqual(exc.out_file, runner.results[0].out_file)
+        # The partial session output of the *last* stopped session, as the
+        # runner reported it: the handoff's "last output path" and the only copy
+        # of what the model got done.
+        self.assertEqual(exc.out_file, runner.results[-1].out_file)
         self.assertTrue(Path(exc.out_file).exists())
 
     def test_payload_of_a_stage_without_a_slice_reads_as_no_slice(self):
@@ -389,7 +420,9 @@ class StagesNeverCatchTest(unittest.TestCase):
         pipeline = self._pipeline(runner)
         with self.assertRaises(OverContextBudget):
             pipeline.stage_spec(self._ctx())
-        self.assertEqual(runner.count(Stage.SPEC_AUTHOR), 1)
+        # Every session is the author: the handovers stay inside the stage that
+        # tripped, and no assessor ever sees a spec nobody finished.
+        self.assertEqual(runner.count(Stage.SPEC_AUTHOR), DEFAULT_TRIPPED_SESSIONS)
         self.assertEqual(runner.count(Stage.SPEC_ASSESS_ORNITH), 0)
         self.assertEqual(runner.count(Stage.SPEC_ASSESS_TW), 0)
 
@@ -400,7 +433,7 @@ class StagesNeverCatchTest(unittest.TestCase):
         with self.assertRaises(OverContextBudget):
             pipeline._review_loop(self._ctx(), "1", ReviewKind.TECH,
                                   Stage.TECH_REVIEW)
-        self.assertEqual(runner.count(Stage.TECH_REVIEW), 1)
+        self.assertEqual(runner.count(Stage.TECH_REVIEW), DEFAULT_TRIPPED_SESSIONS)
         self.assertEqual(runner.count(Stage.SLICE_FIX), 0)
         self.assertEqual(runner.count(Stage.FUNC_REVIEW), 0)
         self.assertEqual(self.sliced_checkpointed, [],
@@ -481,15 +514,16 @@ class ProcessParksTest(unittest.TestCase):
         self.assertEqual(self.parks, [("t1", REASON)])
         self.assertEqual(self._parked_state()["status"], "parked")
         self.assertIn(REASON, self._summary_text())
-        # One session in total: the trip ended the whole run, not one stage.
-        self.assertEqual(len(runner.calls), 1,
+        # The stopped session plus its handovers, all of them the tripped stage:
+        # the run never left that stage, so it never reached a later one.
+        self.assertEqual(len(runner.calls), DEFAULT_TRIPPED_SESSIONS,
                          f"the run made {len(runner.calls)} runner calls")
 
     def test_no_stage_runs_after_the_trip(self):
         runner = ScriptedRunner(over_cap=[Stage.SPEC_AUTHOR])
         self._process(runner)
         self.assertEqual([c["stage"] for c in runner.calls],
-                         [Stage.SPEC_AUTHOR.value],
+                         [Stage.SPEC_AUTHOR.value] * DEFAULT_TRIPPED_SESSIONS,
                          "a stage after the tripped one ran")
 
     def test_partial_verdict_is_never_routed_on(self):
@@ -512,7 +546,8 @@ class ProcessParksTest(unittest.TestCase):
         self.assertEqual(state["checkpointed_stages"],
                          ["spec", "feasibility", "slicing"])
         self.assertEqual(state["checkpointed_slices"], [])
-        self.assertEqual(runner.count(Stage.SLICE_IMPLEMENT), 1)
+        self.assertEqual(runner.count(Stage.SLICE_IMPLEMENT),
+                         DEFAULT_TRIPPED_SESSIONS)
         self.assertEqual(runner.count(Stage.TECH_REVIEW), 0)
 
     def test_trip_at_the_holistic_stage_parks_and_never_merges(self):
@@ -523,7 +558,7 @@ class ProcessParksTest(unittest.TestCase):
         self.assertEqual(status, "parked")
         self.assertEqual(self.parks, [("t1", REASON)])
         self.assertEqual(self._parked_state()["status"], "parked")
-        self.assertEqual(runner.count(Stage.HOLISTIC), 1)
+        self.assertEqual(runner.count(Stage.HOLISTIC), DEFAULT_TRIPPED_SESSIONS)
         self.assertFalse((self.queue_dir / "done" / "t1").exists())
         self.assertTrue((self.queue_dir / "parked" / "t1").exists())
         self.assertEqual(

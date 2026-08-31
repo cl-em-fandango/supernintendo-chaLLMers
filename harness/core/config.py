@@ -11,7 +11,9 @@ from typing import Any
 DEFAULT_CONTEXT_WINDOW = 131072
 
 # Working prompt cap fixed by decision D2: the moment usage crosses this the
-# session is parked and handed off (the trip itself is T42).
+# session is stopped and handed to a clean session with a handover note (the
+# trip itself is T42, the handover is `workflow/continuation.py`). Parking only
+# happens when the handovers are used up.
 DEFAULT_MAX_PROMPT_TOKENS = 60_000
 
 # Headroom reserved for the model's own output tokens.

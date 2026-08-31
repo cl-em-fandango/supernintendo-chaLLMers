@@ -12,12 +12,17 @@ from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
+<<<<<<< Updated upstream
 from ..core.stats import render_task_journey_markdown
 from ..core.transcripts import (
     list_transcripts,
     match_rows_to_transcripts,
     resolve_task_dir,
 )
+=======
+from .continuation import (ContinuationNote, continuation_prompt, handover_dir,
+                           write_note)
+>>>>>>> Stashed changes
 from .params import StageContext
 from .spec_assessment import SpecAssessment, assess_spec
 from .task_lifecycle import Handoff, TaskLifecycle
@@ -59,14 +64,16 @@ class AllAttemptsCrashed(Exception):
 
 
 class OverContextBudget(Exception):
-    """One session was stopped for crossing the context cap (T74).
+    """A stage crossed the context cap and no handover could rescue it (T74).
 
     The trip itself happens in the stream (`external/pi_cli.py`) and is lifted
-    onto `SessionResult.over_context_budget` by `SessionRunner`; this exception
-    is the *routing* of that trip. `_run` raises it before the crash-retry
-    branch, so an over-cap session is never retried — re-running a session that
-    already proved too big for the window would only burn the same context
-    again — and its partial verdict never reaches a stage.
+    onto `SessionResult.over_context_budget` by `SessionRunner`. A trip is a
+    budget *warning*, not a verdict, so `_run` no longer treats the first one as
+    terminal: it writes a handover note and resumes the stage in a clean session
+    (`workflow/continuation.py`). This exception is raised only when
+    `maxContextContinuations` fresh sessions have all tripped on the same stage
+    — the point where the work really is too big for one session and a human or
+    a re-slice is needed.
 
     It carries everything a handoff needs, because the session that tripped is
     the only place those values exist: the stage, slice id and iteration the
@@ -99,32 +106,44 @@ class Pipeline:
         self.provider = provider
         self.lifecycle = TaskLifecycle(cfg, log)
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
+        # How many *clean* sessions one stage may be handed to after a cap trip.
+        # A trip is a warning, so the first response is a handover, not a park;
+        # this is the bound on how often we hand over before calling it.
+        self.max_context_continuations = cfg.get("maxContextContinuations", 3)
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
-        """Run a session, retrying on crash. Artifacts persist on disk, so a
-        retry continues from what the model already wrote rather than restarting.
+        """Run a session, retrying a crash and handing over on a cap trip.
+
+        Two failures with two responses:
+
+        - a *dead child* is retried on the same prompt (T57). Artifacts persist
+          on disk, so a retry continues from what the model already wrote;
+        - a session *stopped for crossing the context cap* is not retried on the
+          same prompt — that would burn the same window again. It is handed to a
+          fresh session under a handover note (T74's continuation), which is a
+          genuinely different run with a different context, not a retry.
 
         A session that comes back healthy is returned as it stands. When the
-        last allowed attempt crashes there is no verdict left to trust, so
-        `AllAttemptsCrashed` is raised (T57) and the task is parked by
-        `process`; the crashed result is never returned to a stage.
-
-        An over-cap stop is checked first (T74) and raises `OverContextBudget`
-        on the spot: it outranks the crash path — a session we stopped on
-        purpose is not a child that died and gets no retry at all — and the
-        result is never returned, so a stage cannot route on the partial
-        verdict a stopped session left behind.
+        last allowed crash attempt dies there is no verdict left to trust, so
+        `AllAttemptsCrashed` is raised (T57); when the last allowed continuation
+        still trips, `OverContextBudget` is raised (T74). Neither result is ever
+        returned to a stage, so no stage can route on the partial verdict of a
+        session that never finished.
 
         Call sites pass a `Stage` member (T30); `SessionRunner` converts it at
         the stats edge, so the value travelling through here stays whatever the
         caller handed over. `slice_id` and `iteration` travel in `kw` and are
-        read back out of it for the exception payload, with the same defaults
-        `SessionRunner.run` uses.
+        read back out of it for the note and the exception payload, with the
+        same defaults `SessionRunner.run` uses.
         """
-        for attempt in range(self.max_crash_retries + 1):
-            r = self.runner.run(model, workdir, prompt, task_id=task_id,
-                                stage=stage, **kw)
-            if r.over_context_budget:
+        session_prompt = prompt
+        handed_over = 0
+        while True:
+            r = self._run_attempts(model, workdir, session_prompt,
+                                   task_id=task_id, stage=stage, **kw)
+            if not r.over_context_budget:
+                return r
+            if handed_over >= self.max_context_continuations:
                 raise OverContextBudget(
                     task_id, stage,
                     slice_id=kw.get("slice_id"),
@@ -132,12 +151,47 @@ class Pipeline:
                     peak_tokens=r.peak_tokens,
                     context_limit=r.context_limit,
                     out_file=r.out_file)
-            if not r.crashed:
+            handed_over += 1
+            note = write_note(
+                handover_dir(self._task_dir(task_id), r.out_file),
+                ContinuationNote(
+                    stage=stage,
+                    attempt=handed_over,
+                    peak_tokens=r.peak_tokens,
+                    context_limit=r.context_limit,
+                    slice_id=kw.get("slice_id"),
+                    iteration=kw.get("iteration", 1),
+                    output_path=r.out_file),
+                r.output)
+            self.log(f"  ⚠ {_stage_value(stage)} crossed the context cap "
+                     f"(peak={r.peak_tokens}, limit={r.context_limit}); "
+                     f"handing over to a clean session "
+                     f"({handed_over}/{self.max_context_continuations}) — "
+                     f"{note.note_path}")
+            session_prompt = continuation_prompt(prompt, note)
+
+    def _run_attempts(self, model, workdir, prompt, *, task_id,
+                      stage: Stage | str, **kw) -> SessionResult:
+        """One prompt, crash-retried. Returns the healthy result or the trip.
+
+        The over-cap check comes first (T74): it outranks the crash path — a
+        session we stopped on purpose is not a child that died — so a tripped
+        session costs exactly one runner call and is handed back for the
+        handover rather than retried on the same context.
+        """
+        for attempt in range(self.max_crash_retries + 1):
+            r = self.runner.run(model, workdir, prompt, task_id=task_id,
+                                stage=stage, **kw)
+            if r.over_context_budget or not r.crashed:
                 return r
             if attempt < self.max_crash_retries:
                 self.log(f"  ⚠ {stage} crashed (rc/timeout); retrying "
                          f"({attempt+1}/{self.max_crash_retries}) — artifacts preserved")
         raise AllAttemptsCrashed(task_id, stage, self.max_crash_retries + 1)
+
+    def _task_dir(self, task_id) -> Path | None:
+        """The task's `active/` dir, or None for a session with no task."""
+        return self.lifecycle.task_dir(task_id) if task_id else None
 
     # ------------------------------------------------------------------
     # top level
@@ -222,7 +276,8 @@ class Pipeline:
             outcome = self.stage_holistic(ctx)
             return outcome
         except OverContextBudget as e:
-            # The one catch site (T74). Crossing the cap is neither a content
+            # The one catch site (T74), reached only after every handover to a
+            # clean session also tripped. Crossing the cap is neither a content
             # verdict nor a process death, so it parks whatever stage it
             # happened on — and it is caught here rather than in a stage for
             # the same reason as T57: no stage may route on the partial output
