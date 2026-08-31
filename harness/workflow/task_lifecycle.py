@@ -285,6 +285,7 @@ class TaskLifecycle:
         `task.json` (F1.5: new fields, signature unchanged)."""
         task_dir = self.task_dir(task.id)
         (task_dir / "artifacts" / "progress").mkdir(parents=True, exist_ok=True)
+        (task_dir / "artifacts" / "sessions").mkdir(parents=True, exist_ok=True)
         (task_dir / "prompts").mkdir(exist_ok=True)
         (task_dir / "original.md").write_text(task.body)
         now = _now()

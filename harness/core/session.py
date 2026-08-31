@@ -20,6 +20,12 @@ from . import prompts
 from .config import Config, DEFAULT_CONTEXT_WINDOW
 from .enums import Stage, Verdict
 from .stats import SessionRecord, StatsStore
+from .transcripts import (
+    TranscriptRecord,
+    next_sequence,
+    resolve_task_dir,
+    write_transcript,
+)
 from external.pi_cli import (
     PiSessionResult,
     run_pi_session,
@@ -120,7 +126,20 @@ class SessionRunner:
                 "model": model,
             }
         result = run_pi_session(**kwargs)
-        
+
+        # Transcript sequence is read *before* this session's stats row exists
+        # so the first session of a task is `001`; the on-disk count inside
+        # `next_sequence` keeps a resumed task's numbering past its restored
+        # transcripts. A task id with no queue directory (direct runner use)
+        # yields None and skips the transcript entirely.
+        transcript_task_dir = (
+            resolve_task_dir(self.cfg.queue_dir, task_id) if task_id else None
+        )
+        transcript_seq = (
+            next_sequence(len(self.store.for_task(task_id)), transcript_task_dir)
+            if transcript_task_dir is not None else None
+        )
+
         # `result.output` is assistant text only (T17 removed the stderr splice),
         # so stderr can never fabricate a verdict here.
         # Process edge: the model's `VERDICT:` line is a raw string. Convert it
@@ -146,6 +165,25 @@ class SessionRunner:
         ))
         self.log(f"  ◀ {stage_value} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
+
+        if transcript_task_dir is not None:
+            write_transcript(transcript_task_dir, TranscriptRecord(
+                sequence=transcript_seq,
+                task_id=task_id,
+                stage=stage_value,
+                timestamp=_now(),
+                model=model,
+                duration_s=round(result.duration_s, 1),
+                peak_tokens=result.peak_tokens,
+                rc=result.rc,
+                verdict=verdict.value,
+                crashed=result.crashed,
+                prompt=full_prompt,
+                output=result.output,
+                stderr=result.stderr or result.err,
+                slice_id=slice_id,
+                iteration=iteration,
+            ))
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.
