@@ -58,7 +58,11 @@ flowchart TD
     S5 -->|Holistic Pass & Gate Clean| Done
     S5 -->|Holistic Fail / Gate Refusal| Parked
 
-    S1 -.->|Crash / Cap / Max Loops| Parked
+    Handover["Clean Session\n(Handover Note)"]
+
+    S1 -.->|Over Cap: Warning| Handover
+    Handover -.->|Continue Same Stage| S1
+    S1 -.->|Crash / Max Loops / Cap Exhausted| Parked
     S2 -.->|Unresolved Kickback| Parked
     S3 -.->|Fit Loop Exceeded| Parked
     S4 -.->|Review Loop Exceeded| Parked
@@ -244,6 +248,33 @@ The harness maps dedicated model roles in `config.json` to optimize accuracy, do
 
 ---
 
+### Context Budget, Warning Trips & Handover
+
+Every pi session runs with `--max-tokens <maxPromptTokens>` (default 60 000).
+The stream watcher (`external/pi_cli.py`) stops the child the moment its usage
+crosses that cap and reports `context_budget_exceeded`; `SessionRunner` records
+the trip in `sessions.jsonl` and lifts it onto
+`SessionResult.over_context_budget`.
+
+The trip is a **warning, not a termination**. `Pipeline._run` responds by:
+
+1. writing a handover note to
+   `queue/active/<task_id>/artifacts/progress/handover-<stage>[-slice-<id>]-<n>.md`
+   — stage, slice, iteration, peak vs. cap, the partial output path, and the
+   text the stopped session did emit;
+2. starting a **clean session** on the same stage, under the same prompt and
+   verdict protocol, preceded by a pointer to that note and an instruction to
+   inspect `git status` / `git log` / the artifacts and continue rather than
+   redo;
+3. repeating up to `maxContextContinuations` (default 3) times.
+
+A rescued session's verdict is returned to its stage as if nothing happened: the
+run continues, nothing is parked. Only when every continuation has tripped does
+the stage raise `OverContextBudget`, and the task parks with the `## Handoff`
+block in its review summary.
+
+---
+
 ## Configuration Reference (`config.json`)
 
 ```json
@@ -257,6 +288,7 @@ The harness maps dedicated model roles in `config.json` to optimize accuracy, do
   "tokenBudget": 60000,
   "maxPromptTokens": 60000,
   "maxCrashRetries": 2,
+  "maxContextContinuations": 3,
   "maxSpecKickbacks": 3,
   "maxSliceCheckLoops": 3,
   "maxSliceImplement": 5,
@@ -326,7 +358,8 @@ work/
     review/           Executive summaries (.md) generated for every terminal task
     done/             Successfully merged tasks
     failed/           Tasks rejected at feasibility (kickout)
-    parked/           Tasks halted due to budget overruns or review/crash limits
+    parked/           Tasks halted for review/crash limits, or a context budget
+                      overrun that survived every handover
   stats/
     sessions.jsonl    Unified JSONL telemetry per session
   logs/
