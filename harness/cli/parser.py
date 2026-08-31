@@ -92,12 +92,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_repo_flag(resume_parser)
 
     # unpark (with requeue alias)
-    unpark_parser = subparsers.add_parser("unpark", help="Move a parked/failed task back to pending")
-    unpark_parser.add_argument("task_id", help="Task ID to unpark")
+    unpark_parser = subparsers.add_parser("unpark", help="Resume a parked/failed task (synonym for resume)")
+    unpark_parser.add_argument("task_id", help="Task ID to unpark / resume")
+    unpark_parser.add_argument("--yes", "-y", dest="yes", action="store_true",
+                               default=False, help="Skip the confirmation prompt")
+    unpark_parser.add_argument("--fresh", dest="fresh", action="store_true",
+                               default=False,
+                               help="Drop all checkpoints and restart from scratch")
     
     # Add requeue as an alias
     requeue_parser = subparsers.add_parser("requeue", help=argparse.SUPPRESS)
     requeue_parser.add_argument("task_id", help=argparse.SUPPRESS)
+    requeue_parser.add_argument("--yes", "-y", dest="yes", action="store_true",
+                                default=False, help=argparse.SUPPRESS)
+    requeue_parser.add_argument("--fresh", dest="fresh", action="store_true",
+                                default=False, help=argparse.SUPPRESS)
+
+    # restart
+    restart_parser = subparsers.add_parser("restart", help="Restart a task from scratch (deletes checkpoints)")
+    restart_parser.add_argument("task_id", help="Task ID to restart")
+    restart_parser.add_argument("--yes", "-y", dest="yes", action="store_true",
+                                default=False, help="Skip the confirmation prompt")
 
     # requeue-claims (operator command: recover stranded claims from claimed/)
     requeue_claims_parser = subparsers.add_parser(

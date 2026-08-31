@@ -18,8 +18,15 @@ from pathlib import Path
 VERDICT_RE = re.compile(r"VERDICT\s*:\s*([A-Za-z_]+)", re.IGNORECASE)
 VERDICT_JSON_RE = re.compile(r'"verdict"\s*:\s*"([A-Za-z_]+)"', re.IGNORECASE)
 
+from external.hardened_process import spawn, terminate_process_group
+
 HEARTBEAT_S = 30          # log a heartbeat every 30s while a session runs
-HARD_TIMEOUT_S = 5400     # 90 min absolute cap per session
+# Fallback wall-clock cap for callers that pass no explicit `timeout_s`.
+# Production sessions no longer use this number: `harness/core/session.py`
+# hands down the config key `sessionTimeout` (default 3600s), a deliberate
+# policy *reduction* from the old 90-min cap (spec FR-4.1 / §5). This constant
+# stays as the last-resort bound for direct callers (tests, ad-hoc tools).
+HARD_TIMEOUT_S = 5400
 WATCHDOG_GRACE_S = 5      # kill-then-reap grace for the wall-clock watchdog
 TERMINATE_GRACE_S = 5     # SIGTERM-then-SIGKILL grace in the shared stop helper
 TIMEOUT_ERR_PREFIX = "wall-clock timeout"  # err prefix that marks a timeout exit
@@ -287,23 +294,13 @@ def _terminate_reap(proc: subprocess.Popen, *, grace_s: float = TERMINATE_GRACE_
 
     One stop path for both reasons we stop early — the wall-clock watchdog and
     the over-context-cap trip — so a session is never torn down two different
-    ways. Terminating before killing lets pi close its own streams; the kill is
-    only for a child that ignores SIGTERM. Reaping here is what makes the
-    caller's later `wait()` return at once instead of blocking on a pipe a live
-    child still holds open. A child that already exited is not an error: both
-    callers race against a natural exit.
+    ways. The stop is delegated to the hardened runner's
+    `terminate_process_group`, which signals the child's whole process group
+    (pi spawns tool children; a lone `proc.terminate()` would orphan them) and
+    reaps. A child that already exited is not an error: both callers race
+    against a natural exit.
     """
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
-    try:
-        proc.wait(timeout=grace_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    terminate_process_group(proc, grace_s=grace_s)
 
 
 def _extract_text_from_message(msg: dict) -> str:
@@ -465,6 +462,7 @@ def run_pi_session(
     log,
     max_context_tokens: int | None = None,
     ui_context: dict | None = None,
+    timeout_s: float | None = None,
 ) -> PiSessionResult:
     """Run a pi subprocess and return the raw result.
     
@@ -479,6 +477,11 @@ def run_pi_session(
             Checked against every streamed usage value, so a session that walks
             past the ceiling is stopped while it is still consuming context
             rather than after it returns. Exactly the cap does not trip.
+        timeout_s: Hard wall-clock cap for the session, from the config key
+            `sessionTimeout` (default 3600). None falls back to
+            `HARD_TIMEOUT_S`. On expiry the whole process group is stopped
+            (SIGTERM, grace, SIGKILL) and the result is a crash carrying the
+            `wall-clock timeout` error prefix — never silently swallowed.
         
     Returns:
         PiSessionResult with all raw subprocess data: `output` is assistant text,
@@ -487,6 +490,7 @@ def run_pi_session(
         was in force.
     """
     workdir = Path(workdir)
+    timeout_limit = HARD_TIMEOUT_S if timeout_s is None else float(timeout_s)
     t0 = time.monotonic()
     peak = 0
     text_parts: list[str] = []
@@ -584,13 +588,9 @@ def run_pi_session(
         with _spawn_lock:
             # Belt and braces: eliminate any spurious / excess pi instances before spawn
             shut_spurious_pi_processes(max_allowed=get_max_concurrent_pi() - 1, log=log)
-            proc = subprocess.Popen(
-                pi_cmd,
-                cwd=workdir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            # Hardened launch: own session, so the wall-clock watchdog's
+            # group stop takes pi *and* its tool children down together.
+            proc = spawn(pi_cmd, cwd=workdir)
             register_pi_process(proc, cmd=pi_cmd, workdir=workdir, model=model)
 
         assert proc.stdout is not None
@@ -618,7 +618,7 @@ def run_pi_session(
         drain_thread = threading.Thread(target=drain_stderr, daemon=True)
         drain_thread.start()
 
-        deadline = t0 + HARD_TIMEOUT_S
+        deadline = t0 + timeout_limit
 
         def watchdog():
             # A blocked read() yields no line, so the in-loop deadline check below
@@ -661,7 +661,7 @@ def run_pi_session(
 
         for line in proc.stdout:
             if time.monotonic() > deadline:
-                err = (f"{TIMEOUT_ERR_PREFIX} after {HARD_TIMEOUT_S}s "
+                err = (f"{TIMEOUT_ERR_PREFIX} after {timeout_limit}s "
                        f"(child still streaming)")
                 crashed = True
                 break
@@ -758,7 +758,7 @@ def run_pi_session(
     if killed_by_watchdog.is_set():
         crashed = True
         if not err.startswith(TIMEOUT_ERR_PREFIX):
-            err = (f"{TIMEOUT_ERR_PREFIX} after {HARD_TIMEOUT_S}s"
+            err = (f"{TIMEOUT_ERR_PREFIX} after {timeout_limit:g}s"
                    + (f": {err}" if err else ""))
     with stderr_lock:
         stderr_txt = "".join(stderr_parts)

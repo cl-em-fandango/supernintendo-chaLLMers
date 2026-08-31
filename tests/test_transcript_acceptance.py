@@ -86,6 +86,9 @@ def _scripted_pi(bin_dir: Path, script_path: Path, prompt_log: Path) -> None:
     """
     body = textwrap.dedent(f"""
         import json, os, signal, sys
+        if "--list-models" in sys.argv:
+            print("m")
+            sys.exit(0)
         with open({str(script_path)!r}) as fh:
             script = json.load(fh)
         response = script.pop(0)

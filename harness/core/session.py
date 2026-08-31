@@ -130,6 +130,11 @@ class SessionRunner:
             "log": self.log,
             "max_context_tokens": self.cfg.max_prompt_tokens,
         }
+        # The hard wall-clock cap for the session: the config key
+        # `sessionTimeout` (default 3600s), handed down so a wedged pi is
+        # group-killed on the configured clock instead of pi_cli's fallback.
+        if "timeout_s" in sig.parameters:
+            kwargs["timeout_s"] = self.cfg.session_timeout
         if "ui_context" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
             kwargs["ui_context"] = {
                 "task_id": task_id,

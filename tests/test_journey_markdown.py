@@ -330,7 +330,10 @@ def _markdown_links(text: str) -> list[str]:
 def _write_fake_pi(bin_dir: Path) -> None:
     """An executable `pi` that answers with one canned `message_end` event."""
     body = textwrap.dedent(f"""
-        import json
+        import json, sys
+        if "--list-models" in sys.argv:
+            print("m")
+            sys.exit(0)
         event = {{
             "type": "message_end",
             "message": {{

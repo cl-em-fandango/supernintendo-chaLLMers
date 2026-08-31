@@ -52,6 +52,9 @@ def _fake_pi(bin_dir: Path, body: str) -> None:
     (bin_dir / "pi").write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, signal, sys\n"
+        "if '--list-models' in sys.argv:\n"
+        "    print('m')\n"
+        "    sys.exit(0)\n"
         "try:\n"
         + textwrap.indent(body.strip("\n"), "    ") + "\n"
         "finally:\n"

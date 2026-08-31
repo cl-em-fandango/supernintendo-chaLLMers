@@ -78,6 +78,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.core.config import load            # noqa: E402
+from harness.core.environment import assert_containerized  # noqa: E402
 from harness.core.providers import TaskProvider, create_provider  # noqa: E402
 from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
 from harness.workflow.cycle import (CycleAction,  # noqa: E402
@@ -495,6 +496,7 @@ def cmd_status() -> int:
 
 
 def main() -> int:
+    assert_containerized("supervisor.py")
     args = sys.argv[1:]
     cmd = args[0] if args else "status"
     if cmd == "run":

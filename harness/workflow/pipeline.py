@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
+from ..core.health import HealthOutcome, wait_for_healthy_server
 from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
@@ -95,8 +96,29 @@ class OverContextBudget(Exception):
                          f"limit={context_limit}")
 
 
+class ServerUnhealthy(Exception):
+    """The FR-5.1 pre-flight exhausted its backoff before a dispatch.
+
+    Deliberately distinct from `AllAttemptsCrashed`: no session was ever
+    spawned, so no crash-retry attempt was spent. `Pipeline.process`
+    catches it once and parks with the reason — the checkpointed prefix
+    stays intact, so a later `--continue` resumes once the server is back.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str, attempts: int,
+                 waited_s: float):
+        self.task_id = task_id
+        self.stage = stage
+        self.attempts = attempts
+        self.waited_s = waited_s
+        super().__init__(f"LLM server unhealthy: {attempts} health probes "
+                         f"over {waited_s:.1f}s before "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
 class Pipeline:
-    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
+    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
+                 health_wait=wait_for_healthy_server):
         self.cfg = cfg
         self.runner = runner
         self.log = log
@@ -107,6 +129,10 @@ class Pipeline:
         # A trip is a warning, so the first response is a handover, not a park;
         # this is the bound on how often we hand over before calling it.
         self.max_context_continuations = cfg.get("maxContextContinuations", 3)
+        # FR-5.1 pre-flight, injectable so tests observe the gate without
+        # a live server. The default reads the policy from config; with no
+        # endpoint configured it is a no-op (NFR-2).
+        self.health_wait = health_wait
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
         """Run a session, retrying a crash and handing over on a cap trip.
@@ -177,6 +203,7 @@ class Pipeline:
         handover rather than retried on the same context.
         """
         for attempt in range(self.max_crash_retries + 1):
+            self._health_preflight(task_id, stage)
             r = self.runner.run(model, workdir, prompt, task_id=task_id,
                                 stage=stage, **kw)
             if r.over_context_budget or not r.crashed:
@@ -190,6 +217,22 @@ class Pipeline:
         """The task's `active/` dir, or None for a session with no task."""
         return self.lifecycle.task_dir(task_id) if task_id else None
 
+    def _health_preflight(self, task_id: str, stage: Stage | str) -> None:
+        """FR-5.1: never dispatch a session to a known-unhealthy server.
+
+        Runs before every `runner.run` call — including before a crash
+        retry, where the server may have died between attempts — so an
+        outage is waited out instead of burning crash-retry attempts.
+        With no endpoint configured the gate is DISABLED and this is a
+        no-op: no probe, no sleep, no log line (NFR-2). Exhausted backoff
+        raises `ServerUnhealthy`, a distinct outcome that never reaches
+        the crash path.
+        """
+        gate = self.health_wait(self.cfg.health_policy(), log=self.log)
+        if gate.outcome is HealthOutcome.UNHEALTHY:
+            raise ServerUnhealthy(task_id, stage, gate.attempts,
+                                  gate.total_wait_s)
+
     # ------------------------------------------------------------------
     # top level
     # ------------------------------------------------------------------
@@ -201,7 +244,8 @@ class Pipeline:
         completed stages. A fresh task (no task.json) is intaken as before.
         """
         task_dir = self.lifecycle.task_dir(task.id)
-        if self.lifecycle.task_json_path(task.id).exists():
+        resumed = self.lifecycle.task_json_path(task.id).exists()
+        if resumed:
             state = self.lifecycle.load_state(task.id)
             skipped = [s.value for s in state.checkpointed_stages]
             self.log(f"═══ task {task.id} ═══")
@@ -258,6 +302,8 @@ class Pipeline:
         except Exception as e:
             self.lifecycle.park(task.id, f"git setup failed: {e}")
             return "parked"
+        if resumed and not self._clean_worktree_on_resume(task.id, workdir):
+            return "parked"
 
         ctx = StageContext(task.id, task_dir, workdir)
         outcome = "parked"
@@ -309,8 +355,42 @@ class Pipeline:
             self.lifecycle.park(task.id, str(e))
             outcome = "parked"
             return outcome
+        except ServerUnhealthy as e:
+            # The one catch site (FR-5.1). The server was unreachable, so no
+            # session ever ran and no crash retry was spent; parking keeps the
+            # checkpointed prefix intact for a later `--continue` once the
+            # server is back. Distinct from the crash path above by design.
+            self.lifecycle.park(task.id, str(e))
+            outcome = "parked"
+            return outcome
         finally:
             self._persist_journey_readout(task.id, task_dir)
+
+    def _clean_worktree_on_resume(self, task_id: str, workdir: Path) -> bool:
+        """FR-5.3: discard the uncommitted residue of a killed attempt before
+        the resumed waterfall starts, so partial edits cannot leak into the
+        next slice. Runs only on a resume (a fresh intake has no residue) and
+        only after `ensure_branch` put the worktree on the task branch — the
+        helper itself refuses trunk/detached HEAD as a second line of defence.
+
+        A clean tree is a no-op. A refused or failed cleanup parks the task:
+        proceeding with residue we could not discard is exactly the leak this
+        requirement exists to prevent (fail-closed, NFR-1).
+        """
+        from ..core.gitops import discard_task_residue
+        try:
+            discarded = discard_task_residue(workdir, task_id,
+                                             self.cfg.trunk_branch)
+        except Exception as e:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: FAILED: {e}")
+            self.lifecycle.park(task_id, f"worktree cleanup on resume failed: {e}")
+            return False
+        if discarded:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: discarded "
+                     f"{len(discarded)} uncommitted path(s), e.g. {discarded[:5]}")
+        else:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: clean (no residue)")
+        return True
 
     def _persist_journey_readout(self, task_id: str, task_dir: Path) -> None:
         """Persist the journey readouts (ASCII + Markdown) and log the summary."""
