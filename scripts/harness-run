@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# harness-run — resource-bounded, auto-restarting container runner for the
+# harness (spec FR-2).
+#
+# Launches the harness-sandbox container with cgroup limits so agent sessions
+# cannot starve the host LLM server (the container carries oom_score_adj=+500
+# and is therefore the kernel's first kill candidate), then restarts
+# `python3 harness.py run --continue` until it exits 0. The harness-side crash
+# circuit breaker (FR-5.4) bounds the loop per task, so it cannot spin forever
+# on one poisoned task.
+#
+# Usage: scripts/harness-run [extra args forwarded to `harness.py run --continue`]
+#
+# Environment overrides:
+#   HARNESS_ENGINE         podman|docker (default: first found on PATH)
+#   HARNESS_DRY_RUN        1 = print the assembled command and exit 0
+#   IMAGE_TAG              image (default harness-sandbox:frozen-latest)
+#   WORK_DIR               repo work dir (default: workDir from config.json)
+#   HARNESS_CONFIG         path to config.json (default <repo root>/config.json)
+#   HARNESS_QUEUE_DIR      queue dir mount (default ${WORK_DIR}/queue)
+#   PI_AGENT_DIR           host pi agent dir staged writable (default ~/.pi/agent)
+#   HARNESS_MEM            --memory          (default 4g)
+#   HARNESS_MEM_SWAP       --memory-swap     (default 4g, equals memory => no swap)
+#   HARNESS_CPUSET         --cpuset-cpus     (default 8-15)
+#   HARNESS_CPU_QUOTA      --cpus            (default 8.0)
+#   HARNESS_PIDS_LIMIT     --pids-limit      (default 300)
+#   HARNESS_RESTART_SLEEP  seconds between restarts (default 3)
+#   HARNESS_SYSFS_DIR      sysfs root for the CPU-count fail-fast check
+#
+# Note: errexit is deliberately NOT enabled — the restart loop must survive
+# non-zero container exits; undefined variables are the failure mode guarded.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+IMAGE_TAG="${IMAGE_TAG:-harness-sandbox:frozen-latest}"
+CONFIG_FILE="${HARNESS_CONFIG:-${REPO_ROOT}/config.json}"
+MEM_LIMIT="${HARNESS_MEM:-4g}"
+MEM_SWAP_LIMIT="${HARNESS_MEM_SWAP:-4g}"
+CPUSET="${HARNESS_CPUSET:-8-15}"
+CPU_QUOTA="${HARNESS_CPU_QUOTA:-8.0}"
+PIDS_LIMIT="${HARNESS_PIDS_LIMIT:-300}"
+RESTART_SLEEP="${HARNESS_RESTART_SLEEP:-3}"
+OOM_SCORE_ADJ=500
+PI_AGENT_DIR="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
+PI_AGENT_MOUNT="/home/harnessuser/.pi/agent"
+PI_AGENT_STAGE=""
+
+# ---------------------------------------------------------------------------
+# Engine detection (FR-2.1): podman first, then docker; HARNESS_ENGINE wins.
+# ---------------------------------------------------------------------------
+ENGINE_CMD=""
+detect_engine() {
+    local requested="${HARNESS_ENGINE:-}"
+    if [ -n "$requested" ]; then
+        if [ "$requested" != "podman" ] && [ "$requested" != "docker" ]; then
+            echo "Error: HARNESS_ENGINE must be 'podman' or 'docker', got '${requested}'." >&2
+            return 1
+        fi
+        if ! command -v "$requested" >/dev/null 2>&1; then
+            echo "Error: HARNESS_ENGINE=${requested} but '${requested}' is not in PATH." >&2
+            return 1
+        fi
+        ENGINE_CMD="$requested"
+        return 0
+    fi
+    local candidate
+    for candidate in podman docker; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            ENGINE_CMD="$candidate"
+            return 0
+        fi
+    done
+    echo "Error: neither podman nor docker found in PATH." >&2
+    echo "       Install one of them, or set HARNESS_ENGINE to an installed engine." >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Work directory resolution (FR-2.2): WORK_DIR env wins, else config workDir.
+# ---------------------------------------------------------------------------
+resolve_work_dir() {
+    if [ -n "${WORK_DIR:-}" ]; then
+        return 0
+    fi
+    if [ ! -r "$CONFIG_FILE" ]; then
+        echo "Error: cannot read config '${CONFIG_FILE}' to resolve workDir." >&2
+        echo "       Set WORK_DIR explicitly or point HARNESS_CONFIG at a readable config.json." >&2
+        return 1
+    fi
+    WORK_DIR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workDir"])' "$CONFIG_FILE" 2>/dev/null)"
+    if [ -z "$WORK_DIR" ]; then
+        echo "Error: no workDir in config '${CONFIG_FILE}' and WORK_DIR is not set." >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# cpuset fail-fast (spec §7): refuse a cpuset wider than the machine.
+# ---------------------------------------------------------------------------
+max_index_in_list() {
+    local spec="$1" max=-1 part num
+    local IFS=','
+    for part in $spec; do
+        num="${part##*-}"
+        case "$num" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        if (( num > max )); then max=$num; fi
+    done
+    if (( max < 0 )); then return 1; fi
+    echo "$max"
+}
+
+assert_cpuset_fits_host() {
+    local requested_max host_max online_file
+    online_file="${HARNESS_SYSFS_DIR:-/sys}/devices/system/cpu/online"
+    if [ -r "$online_file" ]; then
+        host_max="$(max_index_in_list "$(tr -d '[:space:]' < "$online_file")")" || return 0
+    elif command -v nproc >/dev/null 2>&1; then
+        host_max=$(( $(nproc) - 1 ))
+    else
+        return 0  # Cannot determine the host CPU count; skip the check.
+    fi
+    requested_max="$(max_index_in_list "$CPUSET")"
+    if [ -z "$requested_max" ]; then
+        echo "Error: HARNESS_CPUSET='${CPUSET}' is not a valid CPU list (e.g. 8-15 or 0,2-4)." >&2
+        return 1
+    fi
+    if (( requested_max > host_max )); then
+        echo "Error: --cpuset-cpus ${CPUSET} requests CPU ${requested_max}, but this host only has CPUs 0-${host_max}." >&2
+        echo "       Set HARNESS_CPUSET to a range within 0-${host_max} (leave some cores for the LLM server)." >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Writable pi auth staging (FR-2.2): mirrors scripts/run-sandbox.sh — pi
+# writes auth.json.lock next to auth.json, so the mount must be writable.
+# ---------------------------------------------------------------------------
+stage_pi_auth() {
+    if [ ! -f "${PI_AGENT_DIR}/auth.json" ]; then
+        return 0
+    fi
+    PI_AGENT_STAGE="$(mktemp -d /tmp/harness-pi-agent.XXXXXX)" || return 1
+    cp -r "${PI_AGENT_DIR}/." "${PI_AGENT_STAGE}/" 2>/dev/null || true
+}
+
+cleanup_pi_auth_stage() {
+    if [ -n "${PI_AGENT_STAGE:-}" ]; then
+        rm -rf "$PI_AGENT_STAGE"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Assemble the engine command (FR-2.2 through FR-2.4).
+# ---------------------------------------------------------------------------
+build_run_command() {
+    local -n out_ref="$1"
+    local selinux=""
+    if [ "$ENGINE_CMD" = "podman" ]; then
+        selinux=":z"  # SELinux label flag; plain docker may reject it.
+    fi
+    out_ref=(
+        "$ENGINE_CMD" run --rm -i
+        --memory "$MEM_LIMIT"
+        --memory-swap "$MEM_SWAP_LIMIT"
+        --cpuset-cpus "$CPUSET"
+        --cpus "$CPU_QUOTA"
+        --pids-limit "$PIDS_LIMIT"
+        --oom-score-adj "$OOM_SCORE_ADJ"
+        -v "${WORK_DIR}:${WORK_DIR}${selinux}"
+        -v "${WORK_DIR}:/workspace${selinux}"
+        -v "${QUEUE_DIR}:${QUEUE_DIR}${selinux}"
+        -w "$WORK_DIR"
+        --tmpfs /tmp
+    )
+    if [ -n "$PI_AGENT_STAGE" ]; then
+        # Writable on purpose — read-only breaks pi's auth.json.lock.
+        out_ref+=(-v "${PI_AGENT_STAGE}:${PI_AGENT_MOUNT}${selinux}")
+    fi
+    out_ref+=("$IMAGE_TAG" python3 harness.py run --continue "${FORWARD_ARGS[@]}")
+}
+
+# ---------------------------------------------------------------------------
+# Restart loop (FR-2.5): exit 0 ends the loop; 137 (OOM) and any other code
+# resume from checkpoint after a short sleep.
+# ---------------------------------------------------------------------------
+run_restart_loop() {
+    local -n run_cmd_ref="$1"
+    local exit_code
+    while true; do
+        "${run_cmd_ref[@]}"
+        exit_code=$?
+        if [ "$exit_code" -eq 0 ]; then
+            echo "==> Harness completed successfully (exit 0). Exiting loop."
+            break
+        elif [ "$exit_code" -eq 137 ]; then
+            echo "==> Container terminated by OOM killer (exit 137). Resuming from checkpoint..."
+            sleep "$RESTART_SLEEP"
+        else
+            echo "==> Harness crashed with code ${exit_code}. Checking retry threshold and resuming..."
+            sleep "$RESTART_SLEEP"
+        fi
+    done
+}
+
+main() {
+    FORWARD_ARGS=("$@")
+    detect_engine || exit 1
+    resolve_work_dir || exit 1
+    QUEUE_DIR="${HARNESS_QUEUE_DIR:-${WORK_DIR}/queue}"
+    assert_cpuset_fits_host || exit 1
+    stage_pi_auth || exit 1
+    trap cleanup_pi_auth_stage EXIT
+
+    local run_cmd
+    build_run_command run_cmd
+
+    if [ "${HARNESS_DRY_RUN:-}" = "1" ]; then
+        echo "${run_cmd[*]}"
+        exit 0
+    fi
+    run_restart_loop run_cmd
+}
+
+main "$@"
