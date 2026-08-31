@@ -459,6 +459,12 @@ def render_task_journey_markdown(rows: list[dict], task_id: str | None = None,
          f"**Bounces/blocks:** {analysis.bounces_count} · "
          f"**Loops/retries:** {analysis.loops_count}"),
         "",
+        "## Flowchart",
+        "",
+        "```mermaid",
+        *_mermaid_flowchart(analysis, links),
+        "```",
+        "",
         "## Sessions",
         "",
         "| # | Stage / Target | Model | Duration | Tokens | Verdict | Transcript |",
@@ -485,6 +491,69 @@ def render_task_journey_markdown(rows: list[dict], task_id: str | None = None,
                             "Execution time was evenly distributed")
     lines += _markdown_stage_summary(rows, analysis.task_id)
     return "\n".join(lines) + "\n"
+
+
+MERMAID_NODE_ID_FMT = "N{}"
+MERMAID_TRANSCRIPT_DIR = "sessions"
+
+_MERMAID_ESCAPES = (
+    ("#", "#35;"),      # entity marker first, or the rest would double-escape
+    ('"', "#quot;"),
+    ("[", "#91;"),
+    ("]", "#93;"),
+    ("|", "#124;"),
+    ("`", "#96;"),
+)
+
+
+def _sanitize_mermaid(text: str) -> str:
+    """Make arbitrary text safe inside a quoted Mermaid label or edge label.
+
+    Quotes, brackets, pipes and backticks end a label or a diagram line; `#`
+    starts a Mermaid entity. All become numeric/named entities so the diagram
+    parses regardless of stage, model or verdict names. Non-ASCII (emoji, "→")
+    passes through untouched — Mermaid reads it fine inside quotes.
+    """
+    cleaned = " ".join(str(text).split())
+    for char, entity in _MERMAID_ESCAPES:
+        cleaned = cleaned.replace(char, entity)
+    return cleaned
+
+
+def _mermaid_label(step: JourneyStep) -> str:
+    """One node label: stage/slice/iteration and the verdict it ended on."""
+    return _sanitize_mermaid(f"{_target_name(step)} → {step.verdict}")
+
+
+def _mermaid_flowchart(analysis: JourneyAnalysis,
+                       links: list[str | None]) -> list[str]:
+    """The Mermaid `flowchart LR` body: nodes, edges, and one click per transcript.
+
+    One node per session in chronological order; consecutive sessions are
+    edged forward, with a dashed labelled edge where a bounce sent the work
+    back (kickback/fail) or a loop re-entered a stage (retry n). Every node
+    with a transcript carries a `click` to its file, relative to `artifacts/`;
+    nodes without one (pre-feature sessions, failed writes) get no click line.
+    """
+    lines = ["flowchart LR"]
+    for step in analysis.steps:
+        node_id = MERMAID_NODE_ID_FMT.format(step.index)
+        lines.append(f'    {node_id}["{_mermaid_label(step)}"]')
+    for src, dst in zip(analysis.steps, analysis.steps[1:]):
+        src_id = MERMAID_NODE_ID_FMT.format(src.index)
+        dst_id = MERMAID_NODE_ID_FMT.format(dst.index)
+        if src.is_bounce:
+            label = _sanitize_mermaid(src.outcome)
+            lines.append(f"    {src_id} -.->|{label}| {dst_id}")
+        elif dst.is_loop:
+            lines.append(f"    {src_id} -.->|retry {dst.iteration}| {dst_id}")
+        else:
+            lines.append(f"    {src_id} --> {dst_id}")
+    for step, filename in zip(analysis.steps, links):
+        if filename:
+            lines.append(f'    click {MERMAID_NODE_ID_FMT.format(step.index)} '
+                         f'"{MERMAID_TRANSCRIPT_DIR}/{filename}"')
+    return lines
 
 
 def _target_name(step: JourneyStep) -> str:
