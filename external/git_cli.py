@@ -238,6 +238,11 @@ def discard_task_residue(workdir: Path, task_id: str, trunk: str) -> list[str]:
     refuses — raising, never cleaning — on the trunk/base branch, a detached
     HEAD, or any other branch. Callers invoke it right after `ensure_branch`
     has put the worktree on the task branch.
+
+    Fail-closed (NFR-1): the discard commands run with `check=True` and the
+    worktree is re-probed afterwards — a discard that failed or only partly
+    succeeded (stale `index.lock`, permissions, corrupt index) raises so the
+    caller parks the task instead of resuming with residue intact.
     """
     workdir = Path(workdir)
     branch = f"pi/{task_id}"
@@ -248,8 +253,13 @@ def discard_task_residue(workdir: Path, task_id: str, trunk: str) -> list[str]:
             f"{current or 'a detached HEAD'}, not the task branch {branch}; "
             f"cleanup never runs against {trunk} or a branch it does not own")
     discarded = dirty_paths(workdir)
-    _git(workdir, "reset", "-q", "--hard", "HEAD", check=False)
-    _git(workdir, "clean", "-fd", check=False)
+    _git(workdir, "reset", "-q", "--hard", "HEAD")
+    _git(workdir, "clean", "-fd")
+    remaining = dirty_paths(workdir)
+    if remaining:
+        raise RuntimeError(
+            f"worktree cleanup for {task_id} did not clear the residue: "
+            f"{remaining[:5]} still dirty after reset+clean")
     return discarded
 
 

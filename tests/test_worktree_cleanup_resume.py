@@ -87,6 +87,17 @@ class DiscardTaskResidueTest(unittest.TestCase):
             discard_task_residue(self.repo, "t1", "pi/trunk")
         self.assertTrue((self.repo / "human.md").exists())
 
+    def test_stale_index_lock_fails_closed(self):
+        # a discard that cannot execute must raise, not report success
+        self._make_dirty()
+        (self.repo / ".git" / "index.lock").write_text("")
+        with self.assertRaises(RuntimeError):
+            discard_task_residue(self.repo, "t1", "pi/trunk")
+        # the residue is still there — and we did not claim it was discarded
+        self.assertEqual((self.repo / "tracked.md").read_text(),
+                         "half-written edit\n")
+        self.assertTrue((self.repo / "scratch" / "deep" / "tmp.txt").exists())
+
     def test_refuses_a_foreign_branch(self):
         _git(self.repo, "checkout", "-b", "pi/t2")
         (self.repo / "human.md").write_text("another task's work\n")
@@ -181,6 +192,32 @@ class PipelineResumeCleanupTest(unittest.TestCase):
         status = self.pipeline.process(self._task())
         self.assertEqual(status, "done")
         self.assertNotIn("WORKTREE-CLEANUP", "\n".join(self.lines))
+
+    def test_cleanup_failure_parks_the_task(self):
+        # NFR-1 fail-closed: a discard that fails must park the task, not
+        # resume with the killed attempt's residue still in the worktree.
+        self._crash_like_resume_state()
+        import external.git_cli as git_cli
+        real_git = git_cli._git
+
+        def locked_git(cwd, *args, **kw):
+            # simulate a stale .git/index.lock: the write commands fail
+            if args and args[0] in ("reset", "clean"):
+                raise RuntimeError(
+                    f"git {' '.join(args)} failed: Unable to create "
+                    f"'.git/index.lock': File exists.")
+            return real_git(cwd, *args, **kw)
+
+        git_cli._git = locked_git
+        self.addCleanup(setattr, git_cli, "_git", real_git)
+        status = self.pipeline.process(self._task())
+        self.assertEqual(status, "parked")
+        joined = "\n".join(self.lines)
+        self.assertIn("WORKTREE-CLEANUP t1: FAILED", joined)
+        # the residue was NOT discarded and no session was dispatched
+        self.assertTrue((self.repo / "residue.md").exists())
+        self.assertTrue((self.repo / "untracked-junk.txt").exists())
+        self.assertEqual(self.runner.calls, [])
 
     def test_crash_before_any_checkpoint_still_cleans(self):
         # task.json exists but nothing is checkpointed: the full task re-runs
