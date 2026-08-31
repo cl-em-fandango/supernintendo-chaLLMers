@@ -136,7 +136,8 @@ def _base_summary(task_id: str, td: Path, original: str, reason: str) -> str:
         "\n"
         f"- spec: `{td}/artifacts/spec.md`\n"
         f"- slices: `{td}/artifacts/slices.md`\n"
-        f"- session outputs: `{td}/artifacts/*.out`\n"
+        f"- journey: `{td}/artifacts/journey.md`\n"
+        f"- session transcripts: `{td}/artifacts/sessions/`\n"
     )
 
 

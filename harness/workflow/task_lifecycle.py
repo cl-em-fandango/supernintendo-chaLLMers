@@ -407,7 +407,8 @@ class TaskLifecycle:
 
 - spec: `{td}/artifacts/spec.md`
 - slices: `{td}/artifacts/slices.md`
-- session outputs: `{td}/artifacts/*.out`
+- journey: `{td}/artifacts/journey.md`
+- session transcripts: `{td}/artifacts/sessions/`
 """
         if handoff is not None:
             body += _handoff_section(handoff)
