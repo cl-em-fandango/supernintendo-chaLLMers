@@ -137,6 +137,19 @@ assert_cpuset_fits_host() {
 }
 
 # ---------------------------------------------------------------------------
+# Queue directory fail-fast (spec §9): launching against a missing queue dir
+# would let the engine create it root-owned (or mount an empty one), so the
+# runner refuses to launch — before dry-run print, before any engine call.
+# ---------------------------------------------------------------------------
+assert_queue_dir() {
+    if [ ! -d "$QUEUE_DIR" ]; then
+        echo "Error: queue directory '${QUEUE_DIR}' does not exist." >&2
+        echo "       Create it, or set HARNESS_QUEUE_DIR / WORK_DIR to a tree that has one." >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Writable pi auth staging (FR-2.2): mirrors scripts/run-sandbox.sh — pi
 # writes auth.json.lock next to auth.json, so the mount must be writable.
 # ---------------------------------------------------------------------------
@@ -212,6 +225,7 @@ main() {
     detect_engine || exit 1
     resolve_work_dir || exit 1
     QUEUE_DIR="${HARNESS_QUEUE_DIR:-${WORK_DIR}/queue}"
+    assert_queue_dir || exit 1
     assert_cpuset_fits_host || exit 1
     stage_pi_auth || exit 1
     trap cleanup_pi_auth_stage EXIT

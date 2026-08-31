@@ -9,8 +9,9 @@ The CPU-count fail-fast check is pinned via ``HARNESS_SYSFS_DIR`` fakes.
 Covers: engine detection and ``HARNESS_ENGINE`` override, workdir/queue/auth
 mounts (``:z`` on the podman path only, auth staged writable), ``--tmpfs
 /tmp``, the five limit flags with defaults and env overrides,
-``oom_score_adj``, image tag, cpuset-wider-than-machine fail-fast, argument
-forwarding, and the bounded restart loop (exit 137 / other / 0).
+``oom_score_adj``, image tag, cpuset-wider-than-machine fail-fast, missing
+queue dir fail-fast, argument forwarding, and the bounded restart loop
+(exit 137 / other / 0).
 """
 from __future__ import annotations
 
@@ -304,6 +305,40 @@ class TestAuthStagingEdgeCases(_HarnessRunScriptBase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("/home/harnessuser/.pi/agent", result.stdout)
+
+
+class TestQueueDirFailFast(_HarnessRunScriptBase):
+    """Spec §9: a missing queue dir aborts the launch, never a silent mount."""
+
+    def test_missing_queue_dir_exits_nonzero_before_launch(self) -> None:
+        self.install_fake_engine("podman")
+        result = self.run_script(
+            dry_run=False,
+            env_overrides={"HARNESS_QUEUE_DIR": str(self.base / "no-queue")},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("queue directory", result.stderr)
+        self.assertEqual(self.engine_invocations(), [])
+
+    def test_missing_queue_dir_fails_dry_run_too(self) -> None:
+        """Dry-run is a config check too — a broken queue must not print a
+        command that would fail moments later at launch."""
+        self.install_fake_engine("podman")
+        result = self.run_script(
+            env_overrides={"HARNESS_QUEUE_DIR": str(self.base / "no-queue")},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("queue directory", result.stderr)
+
+    def test_file_where_queue_dir_expected_is_rejected(self) -> None:
+        self.install_fake_engine("podman")
+        as_file = self.base / "queue-file"
+        as_file.write_text("not a directory\n")
+        result = self.run_script(
+            env_overrides={"HARNESS_QUEUE_DIR": str(as_file)},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("queue directory", result.stderr)
 
 
 class TestRestartLoop(_HarnessRunScriptBase):

@@ -201,6 +201,17 @@ class SetLlmOomPriorityScriptTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("0 PID(s) protected", result.stdout)
 
+    def test_rerun_with_live_pids_is_an_idempotent_noop(self) -> None:
+        """§7.3: re-running over an already-protected PID stays exit 0 and
+        leaves the value at -1000 (systemd timer friendly)."""
+        score = self.make_pid("4100")
+        for attempt in (1, 2):
+            result = self.run_script(llama="4100")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 PID(s) protected [4100]", result.stdout)
+            self.assertEqual(score.read_text().strip(), "-1000",
+                             f"value drifted on re-run #{attempt}")
+
     # -- FR-3.3: one-line summary ------------------------------------------------
 
     def test_summary_lists_protected_and_skipped(self) -> None:

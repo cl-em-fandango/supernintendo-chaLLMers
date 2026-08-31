@@ -145,6 +145,38 @@ class OutputCapTest(unittest.TestCase):
         self.assertTrue(result.stdout_truncated)
         self.assertTrue(result.stderr_truncated)
 
+    def test_output_exactly_at_cap_is_not_flagged(self):
+        """§9 boundary: the cap is 'at most N' — N characters fit, unflagged."""
+        spew = "import sys; sys.stdout.write('a' * 1024)"
+        result = run(["python3", "-c", spew],
+                     limits=GuardrailLimits(timeout_s=30.0,
+                                            max_output_bytes=1024))
+        self.assertEqual(result.stdout, "a" * 1024)
+        self.assertFalse(result.stdout_truncated)
+
+    def test_one_character_past_cap_is_flagged(self):
+        """§9 boundary: N+1 characters truncate to N and flag the cap."""
+        spew = "import sys; sys.stdout.write('a' * 1025)"
+        result = run(["python3", "-c", spew],
+                     limits=GuardrailLimits(timeout_s=30.0,
+                                            max_output_bytes=1024))
+        self.assertEqual(result.stdout, "a" * 1024)
+        self.assertTrue(result.stdout_truncated)
+
+    def test_cap_counts_decoded_characters_not_raw_bytes(self):
+        """FR-4.2: streams are read in text mode, so the cap is characters.
+
+        1000 'é' are 2000 UTF-8 bytes but exactly 1000 decoded characters:
+        at the character cap, so nothing is truncated even though the raw
+        byte count is double the cap value.
+        """
+        spew = "import sys; sys.stdout.buffer.write('\u00e9'.encode('utf-8') * 1000)"
+        result = run(["python3", "-c", spew],
+                     limits=GuardrailLimits(timeout_s=30.0,
+                                            max_output_bytes=1000))
+        self.assertEqual(result.stdout, "\u00e9" * 1000)
+        self.assertFalse(result.stdout_truncated)
+
     def test_under_cap_keeps_everything_unflagged(self):
         result = run(["bash", "-c", "echo short"],
                      limits=GuardrailLimits(timeout_s=10.0,
