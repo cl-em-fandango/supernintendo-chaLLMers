@@ -6,6 +6,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from external.bash_ulimit import (
+    DEFAULT_ULIMIT_NPROC,
+    DEFAULT_ULIMIT_VMEM_KB,
+)
+from external.hardened_process import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_TOOL_TIMEOUT_S,
+    GuardrailLimits,
+)
+
 # Window assumed for a model whose window is neither mapped nor spelled out in
 # its name. Everything on the local server is 128k unless stated otherwise.
 DEFAULT_CONTEXT_WINDOW = 131072
@@ -19,6 +29,10 @@ CONTEXT_RESERVE = 8192
 
 # Never budget below this, however small the window.
 MIN_MODEL_BUDGET = 4096
+
+# Wall-clock cap for one pi session (config key `sessionTimeout`). The
+# deliberate reduction from pi_cli's old 90-min hard cap (spec FR-4.1/§5).
+DEFAULT_SESSION_TIMEOUT_S = 3600
 
 
 @dataclass
@@ -131,6 +145,46 @@ class Config:
 
     def get(self, key: str, default=None):
         return self.raw.get(key, default)
+
+    # ------------------------------------------------------------------
+    # Subprocess guardrails (FR-4). Missing keys fall back to the defaults
+    # shown here without erroring; the defaults live in the modules that
+    # enforce them (external/hardened_process.py, external/bash_ulimit.py).
+    # ------------------------------------------------------------------
+
+    @property
+    def session_timeout(self) -> int:
+        """Hard wall-clock cap for one pi session (`sessionTimeout`)."""
+        return int(self.raw.get("sessionTimeout", DEFAULT_SESSION_TIMEOUT_S))
+
+    @property
+    def tool_timeout(self) -> int:
+        """Hard timeout for harness-run shell helpers (`toolTimeout`)."""
+        return int(self.raw.get("toolTimeout", DEFAULT_TOOL_TIMEOUT_S))
+
+    @property
+    def max_output_bytes(self) -> int:
+        """Per-stream capture cap for subprocess output (`maxOutputBytes`)."""
+        return int(self.raw.get("maxOutputBytes", DEFAULT_MAX_OUTPUT_BYTES))
+
+    @property
+    def tool_ulimit_nproc(self) -> int:
+        """Max processes per wrapped shell (`toolUlimitNproc`)."""
+        return int(self.raw.get("toolUlimitNproc", DEFAULT_ULIMIT_NPROC))
+
+    @property
+    def tool_ulimit_vmem_kb(self) -> int:
+        """Max virtual memory per wrapped shell in KiB (`toolUlimitVmemKB`)."""
+        return int(self.raw.get("toolUlimitVmemKB", DEFAULT_ULIMIT_VMEM_KB))
+
+    def guardrail_limits(self) -> GuardrailLimits:
+        """The FR-4 knobs as one explicit parameters object for `external/`."""
+        return GuardrailLimits(
+            timeout_s=self.tool_timeout,
+            max_output_bytes=self.max_output_bytes,
+            ulimit_nproc=self.tool_ulimit_nproc,
+            ulimit_vmem_kb=self.tool_ulimit_vmem_kb,
+        )
 
 
 def load(path: str | Path) -> Config:

@@ -8,6 +8,11 @@
   "maxSliceFuncReview": 5,
   "maxSliceCheckLoops": 3,
   "maxCrashRetries": 2,
+  "sessionTimeout": 3600,
+  "toolTimeout": 60,
+  "maxOutputBytes": 2097152,
+  "toolUlimitNproc": 50,
+  "toolUlimitVmemKB": 8388608,
   "autonomousQueueTarget": 5,
   "trunkBranch": "pi/trunk",
   "modelContext": {

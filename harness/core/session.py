@@ -110,6 +110,11 @@ class SessionRunner:
             "log": self.log,
             "max_context_tokens": self.cfg.max_prompt_tokens,
         }
+        # The hard wall-clock cap for the session: the config key
+        # `sessionTimeout` (default 3600s), handed down so a wedged pi is
+        # group-killed on the configured clock instead of pi_cli's fallback.
+        if "timeout_s" in sig.parameters:
+            kwargs["timeout_s"] = self.cfg.session_timeout
         if "ui_context" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
             kwargs["ui_context"] = {
                 "task_id": task_id,
@@ -147,6 +152,41 @@ class SessionRunner:
         self.log(f"  ◀ {stage_value} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
 
+<<<<<<< Updated upstream
+=======
+        # The Stderr section is the child's stderr and nothing else; the run's
+        # own failure text (`err`) is metadata, so a session that died with no
+        # stderr still shows an empty Stderr fence rather than a synthesized one.
+        if transcript_task_dir is not None:
+            write_transcript(transcript_task_dir, TranscriptRecord(
+                sequence=transcript_seq,
+                task_id=task_id,
+                stage=stage_value,
+                timestamp=_now(),
+                model=model,
+                duration_s=round(result.duration_s, 1),
+                peak_tokens=result.peak_tokens,
+                rc=result.rc,
+                verdict=verdict.value,
+                crashed=result.crashed,
+                prompt=full_prompt,
+                output=result.output,
+                # The Stderr section is the child's stderr and nothing else;
+                # the run's own failure text (`err`) is metadata, so a session
+                # that died with no stderr still shows an empty Stderr fence.
+                stderr=result.stderr,
+                error=result.err or "",
+                slice_id=slice_id,
+                iteration=iteration,
+            ), self.log)
+            # The workdir `.out`/`.err` capture only pipes the child; its
+            # contents are now durably in the transcript, so no hidden
+            # `.pi-session-*` file survives in the implementation workdir.
+            # The `task_id=None` fallback path keeps the legacy placement —
+            # direct runner users still get the capture where it always was.
+            _cleanup_transient_capture(result.out_file, self.log)
+
+>>>>>>> Stashed changes
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.
         if verdict is Verdict.UNKNOWN or result.peak_tokens == 0:
