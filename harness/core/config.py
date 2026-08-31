@@ -15,6 +15,13 @@ from external.hardened_process import (
     DEFAULT_TOOL_TIMEOUT_S,
     GuardrailLimits,
 )
+from .health import (
+    DEFAULT_HEALTH_BACKOFF_BASE_S,
+    DEFAULT_HEALTH_BACKOFF_CAP_S,
+    DEFAULT_HEALTH_MAX_ATTEMPTS,
+    DEFAULT_HEALTH_TIMEOUT_S,
+    HealthPolicy,
+)
 
 # Window assumed for a model whose window is neither mapped nor spelled out in
 # its name. Everything on the local server is 128k unless stated otherwise.
@@ -184,6 +191,41 @@ class Config:
             max_output_bytes=self.max_output_bytes,
             ulimit_nproc=self.tool_ulimit_nproc,
             ulimit_vmem_kb=self.tool_ulimit_vmem_kb,
+        )
+
+    # ------------------------------------------------------------------
+    # LLM health pre-flight (FR-5.1). The gate is disabled-safe: with no
+    # `llmHealthUrl` configured it is a no-op and existing behavior is
+    # preserved (NFR-2). `llmHealthEnabled` can switch it off explicitly
+    # even when a URL is present.
+    # ------------------------------------------------------------------
+
+    @property
+    def llm_health_url(self) -> str:
+        """Model-server health endpoint (`llmHealthUrl`); empty disables."""
+        return str(self.raw.get("llmHealthUrl", "")).strip()
+
+    @property
+    def llm_health_enabled(self) -> bool:
+        """True only with an endpoint configured and not explicitly disabled
+        (`llmHealthEnabled`, default true when a URL is present)."""
+        if not self.llm_health_url:
+            return False
+        return bool(self.raw.get("llmHealthEnabled", True))
+
+    def health_policy(self) -> HealthPolicy:
+        """The FR-5.1 knobs as one explicit parameters object."""
+        return HealthPolicy(
+            url=self.llm_health_url,
+            enabled=self.llm_health_enabled,
+            timeout_s=float(self.raw.get("llmHealthTimeoutS",
+                                         DEFAULT_HEALTH_TIMEOUT_S)),
+            max_attempts=int(self.raw.get("llmHealthMaxAttempts",
+                                          DEFAULT_HEALTH_MAX_ATTEMPTS)),
+            backoff_base_s=float(self.raw.get("llmHealthBackoffBaseS",
+                                              DEFAULT_HEALTH_BACKOFF_BASE_S)),
+            backoff_cap_s=float(self.raw.get("llmHealthBackoffCapS",
+                                             DEFAULT_HEALTH_BACKOFF_CAP_S)),
         )
 
 

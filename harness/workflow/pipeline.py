@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
+from ..core.health import HealthOutcome, wait_for_healthy_server
 from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
@@ -85,14 +86,39 @@ class OverContextBudget(Exception):
                          f"limit={context_limit}")
 
 
+class ServerUnhealthy(Exception):
+    """The FR-5.1 pre-flight exhausted its backoff before a dispatch.
+
+    Deliberately distinct from `AllAttemptsCrashed`: no session was ever
+    spawned, so no crash-retry attempt was spent. `Pipeline.process`
+    catches it once and parks with the reason — the checkpointed prefix
+    stays intact, so a later `--continue` resumes once the server is back.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str, attempts: int,
+                 waited_s: float):
+        self.task_id = task_id
+        self.stage = stage
+        self.attempts = attempts
+        self.waited_s = waited_s
+        super().__init__(f"LLM server unhealthy: {attempts} health probes "
+                         f"over {waited_s:.1f}s before "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
 class Pipeline:
-    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
+    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
+                 health_wait=wait_for_healthy_server):
         self.cfg = cfg
         self.runner = runner
         self.log = log
         self.provider = provider
         self.lifecycle = TaskLifecycle(cfg, log)
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
+        # FR-5.1 pre-flight, injectable so tests observe the gate without
+        # a live server. The default reads the policy from config; with no
+        # endpoint configured it is a no-op (NFR-2).
+        self.health_wait = health_wait
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
         """Run a session, retrying on crash. Artifacts persist on disk, so a
@@ -116,6 +142,7 @@ class Pipeline:
         `SessionRunner.run` uses.
         """
         for attempt in range(self.max_crash_retries + 1):
+            self._health_preflight(task_id, stage)
             r = self.runner.run(model, workdir, prompt, task_id=task_id,
                                 stage=stage, **kw)
             if r.over_context_budget:
@@ -132,6 +159,22 @@ class Pipeline:
                 self.log(f"  ⚠ {stage} crashed (rc/timeout); retrying "
                          f"({attempt+1}/{self.max_crash_retries}) — artifacts preserved")
         raise AllAttemptsCrashed(task_id, stage, self.max_crash_retries + 1)
+
+    def _health_preflight(self, task_id: str, stage: Stage | str) -> None:
+        """FR-5.1: never dispatch a session to a known-unhealthy server.
+
+        Runs before every `runner.run` call — including before a crash
+        retry, where the server may have died between attempts — so an
+        outage is waited out instead of burning crash-retry attempts.
+        With no endpoint configured the gate is DISABLED and this is a
+        no-op: no probe, no sleep, no log line (NFR-2). Exhausted backoff
+        raises `ServerUnhealthy`, a distinct outcome that never reaches
+        the crash path.
+        """
+        gate = self.health_wait(self.cfg.health_policy(), log=self.log)
+        if gate.outcome is HealthOutcome.UNHEALTHY:
+            raise ServerUnhealthy(task_id, stage, gate.attempts,
+                                  gate.total_wait_s)
 
     # ------------------------------------------------------------------
     # top level
@@ -249,6 +292,14 @@ class Pipeline:
             # dead process is a process failure, not a content verdict, so it
             # parks whatever stage it happened on — including the holistic one,
             # where a merge must not be attempted on unreviewed work.
+            self.lifecycle.park(task.id, str(e))
+            outcome = "parked"
+            return outcome
+        except ServerUnhealthy as e:
+            # The one catch site (FR-5.1). The server was unreachable, so no
+            # session ever ran and no crash retry was spent; parking keeps the
+            # checkpointed prefix intact for a later `--continue` once the
+            # server is back. Distinct from the crash path above by design.
             self.lifecycle.park(task.id, str(e))
             outcome = "parked"
             return outcome
