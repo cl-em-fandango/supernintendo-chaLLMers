@@ -29,6 +29,17 @@ version:
     model endpoint therefore stops costing a full probe-and-spawn every SLEEP_S
     forever. The sleep is still the interruptible _sleep(), so a stop is
     honoured mid-backoff.
+  - Managed interrupt (004): while <WORK_DIR>/state/interrupt.json exists the
+    loop spawns no child at all — not the status probe, not a work child — so
+    the operator holds the model. The check sits at the top of the cycle and
+    inside the interruptible _sleep(), so a request landing mid-backoff and a
+    `harness.py resume` landing mid-idle are both honored within ~1s. One line
+    is logged per state change, not per idle cycle; an idle cycle is not "no
+    progress", so it neither feeds the backoff streak nor the circuit breaker,
+    and it does not burn a MAX_CYCLES slot (the interrupt expects a resume,
+    not an exit). A running child is never killed or preempted to honor an
+    interrupt: the child stands down at its own session boundary and exits 0;
+    the supervisor then sees the file at its next cycle top and idles.
   - Tracks the child pi process and kills the whole process tree on stop,
     so a hung session can't orphan a model.
   - Circuit breaker: if the harness fails to launch N times in a row, revert
@@ -74,11 +85,15 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness.core.config import load            # noqa: E402
 from harness.core.environment import assert_containerized  # noqa: E402
+from harness.core.interrupt import (InterruptStatus,  # noqa: E402
+                                    interrupt_age_seconds, interrupt_path,
+                                    read_interrupt)
 from harness.core.providers import TaskProvider, create_provider  # noqa: E402
 from harness.workflow.continue_fresh import in_flight_task_dirs  # noqa: E402
 from harness.workflow.cycle import (CycleAction,  # noqa: E402
@@ -102,6 +117,10 @@ SLEEP_S = int(os.environ.get("SLEEP_S", "60"))
 MAX_SLEEP_S = int(os.environ.get("SUPERVISOR_MAX_SLEEP_S", "900"))  # backoff cap
 MAX_CYCLES = int(os.environ.get("MAX_CYCLES", "0"))   # 0 = unlimited
 FAIL_LIMIT = int(os.environ.get("FAIL_LIMIT", "3"))
+
+# Logged once when an active interrupt is first seen (or changes state) and
+# once when it clears — FR-6.3 wants one line per state change, not per cycle.
+INTERRUPT_CLEARED_LOG = "  ▶ interrupt cleared; resuming normal cycles"
 
 LOG_ENCODING = "utf-8"
 MAX_LOG_BYTES = int(os.environ.get("SUPERVISOR_MAX_LOG_BYTES", "5_000_000"))
@@ -306,6 +325,37 @@ def _queue_snapshot(provider: TaskProvider,
     )
 
 
+def _interrupt_active() -> Optional[InterruptStatus]:
+    """The operator's interrupt record for this work dir, or None.
+
+    Read-only: the supervisor never acknowledges, transitions or clears the
+    file — the child acknowledges at its own boundary, and only no-arg
+    `harness.py resume` (or quick-mode completion) clears it. A corrupt file
+    reads fail-safe as an active STAND_DOWN, with the recovery warning through
+    the supervisor log.
+    """
+    return read_interrupt(WORK_DIR, log=log)
+
+
+def _same_interrupt(previous: Optional[InterruptStatus],
+                    current: InterruptStatus) -> bool:
+    """True when `current` is the request already reported to the operator.
+
+    The idle state is logged once per state change (FR-6.3), so an unchanged
+    mode+state across idle cycles must not produce another line.
+    """
+    return (previous is not None and previous.mode is current.mode
+            and previous.state is current.state)
+
+
+def _interrupt_idle_line(status: InterruptStatus) -> str:
+    """The one line describing why the supervisor is spawning nothing."""
+    return (f"  ⏸ interrupt active (mode={status.mode.name} "
+            f"state={status.state.name} "
+            f"age={interrupt_age_seconds(status):.0f}s): spawning no child, "
+            "idling until `harness.py resume`")
+
+
 def run_loop() -> int:
     if not acquire_lock():
         return 1
@@ -347,12 +397,33 @@ def run_loop() -> int:
     cycle = 0
     failcount = 0
     idle_streak = 0   # consecutive cycles that changed nothing (T15 backoff)
+    reported: Optional[InterruptStatus] = None   # idle state already logged
     try:
         while not stop["flag"]:
             if STOPFILE.exists():
                 log("STOP file present; halting")
                 STOPFILE.unlink()
                 break
+
+            # --- managed interrupt: the operator holds the model (FR-6.3) ---
+            # Ahead of the cycle counter and of the status probe: an idle
+            # supervisor spawns no child at all, so it cannot trip the breaker
+            # probe, and it does not consume a MAX_CYCLES slot — an interrupt
+            # expects a resume, not an exit. Idling on request is not "no
+            # progress", so the backoff streak is untouched, and the running
+            # child (if one is still finishing its session) is left alone:
+            # it stands down at its own boundary and exits 0.
+            status = _interrupt_active()
+            if status is not None:
+                if not _same_interrupt(reported, status):
+                    log(_interrupt_idle_line(status))
+                    reported = status
+                _sleep(stop, SLEEP_S)
+                continue
+            if reported is not None:
+                log(INTERRUPT_CLEARED_LOG)
+                reported = None
+
             cycle += 1
             if MAX_CYCLES > 0 and cycle > MAX_CYCLES:
                 log(f"reached MAX_CYCLES={MAX_CYCLES}; halting")
@@ -407,6 +478,17 @@ def run_loop() -> int:
                 if rc != 0:
                     log(f"  {action.value} child exited rc={rc}")
 
+            # --- a child that stood down is the operator's doing, not a stall ---
+            # The child acknowledges at its own boundary (FR-6.2) and leaves
+            # the queue exactly where it found it, so the identity test below
+            # would read that as "no progress" and start a backoff the operator
+            # caused. Skip the accounting and idle instead: `_sleep` returns
+            # within ~1s of the file disappearing, so `resume` picks work straight
+            # back up (FR-3.3).
+            if _interrupt_active() is not None:
+                _sleep(stop, SLEEP_S)
+                continue
+
             # --- sleep: SLEEP_S after progress, doubling backoff after none ---
             # A blocked cycle ran no child, so its tasks cannot move and it
             # lands on this same path: idle, not an error. The test is identity,
@@ -430,9 +512,19 @@ def run_loop() -> int:
 
 
 def _sleep(stop: dict, seconds: int) -> None:
-    """Interruptible sleep."""
+    """Interruptible sleep.
+
+    Ends early on the stop flag or when the presence of the interrupt state
+    file changes since the sleep began: a stand-down request landing mid-
+    backoff is honored within ~1s (E6) instead of after the whole backoff, and
+    a `harness.py resume` landing mid-idle is honored within ~1s (FR-3.3).
+    The polling granularity is the existing 1s.
+    """
+    interrupted_at_start = interrupt_path(WORK_DIR).exists()
     end = time.monotonic() + seconds
     while not stop["flag"] and time.monotonic() < end:
+        if interrupt_path(WORK_DIR).exists() != interrupted_at_start:
+            return
         time.sleep(min(1.0, max(0.0, end - time.monotonic())))
 
 

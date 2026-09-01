@@ -116,9 +116,29 @@ class ServerUnhealthy(Exception):
                          f"{_stage_value(stage)} (task {task_id})")
 
 
+class StoodDown(Exception):
+    """An interrupt request was active at the boundary before a dispatch.
+
+    `Pipeline._run_attempts` raises this instead of spawning the next `pi`
+    session (spec FR-6.1: the safe boundary is immediately before a spawn).
+    Deliberately distinct from `AllAttemptsCrashed`/`ServerUnhealthy`: work
+    was not lost and the server is fine, so `Pipeline.process` catches it
+    once and returns without parking or crash-retrying (FR-6.2/FR-6.4) —
+    the task stays in `active/` with its checkpoints and claim (FR-6.5).
+    The request itself is already acknowledged (`requested -> paused`) by
+    the `stand_down_check` that answered True.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str):
+        self.task_id = task_id
+        self.stage = stage
+        super().__init__(f"stood down at session boundary before "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
 class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
-                 health_wait=wait_for_healthy_server):
+                 health_wait=wait_for_healthy_server, stand_down_check=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
@@ -133,6 +153,10 @@ class Pipeline:
         # a live server. The default reads the policy from config; with no
         # endpoint configured it is a no-op (NFR-2).
         self.health_wait = health_wait
+        # FR-6.1 boundary gate, injectable like `health_wait`: a callable
+        # answering True when an interrupt is active (and already
+        # acknowledged). None means the wiring has no interrupt to honor.
+        self.stand_down_check = stand_down_check
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
         """Run a session, retrying a crash and handing over on a cap trip.
@@ -203,6 +227,7 @@ class Pipeline:
         handover rather than retried on the same context.
         """
         for attempt in range(self.max_crash_retries + 1):
+            self._stand_down_preflight(task_id, stage)
             self._health_preflight(task_id, stage)
             r = self.runner.run(model, workdir, prompt, task_id=task_id,
                                 stage=stage, **kw)
@@ -216,6 +241,19 @@ class Pipeline:
     def _task_dir(self, task_id) -> Path | None:
         """The task's `active/` dir, or None for a session with no task."""
         return self.lifecycle.task_dir(task_id) if task_id else None
+
+    def _stand_down_preflight(self, task_id: str, stage: Stage | str) -> None:
+        """FR-6.1: never dispatch a session past an active interrupt.
+
+        Runs before every `runner.run` call — including before a crash
+        retry and before each context-cap continuation — so a task whose
+        waterfall started before the request spawns no further session.
+        Runs ahead of the health pre-flight: a harness that is standing
+        down must not wait on the server either. With no check wired this
+        is a no-op.
+        """
+        if self.stand_down_check is not None and self.stand_down_check():
+            raise StoodDown(task_id, stage)
 
     def _health_preflight(self, task_id: str, stage: Stage | str) -> None:
         """FR-5.1: never dispatch a session to a known-unhealthy server.
@@ -362,6 +400,16 @@ class Pipeline:
             # server is back. Distinct from the crash path above by design.
             self.lifecycle.park(task.id, str(e))
             outcome = "parked"
+            return outcome
+        except StoodDown:
+            # The one catch site (FR-6.2). An interrupt is neither a content
+            # verdict nor a process failure: no parking, no crash-retry, no
+            # revert streak. The task keeps its stage/slice checkpoints in
+            # active/ and its claim, for `resume` to continue later
+            # (FR-6.4/FR-6.5). The check already logged the stand-down and
+            # acknowledged the file; the calling loop sees the file at its
+            # own next boundary and unwinds.
+            outcome = "stood_down"
             return outcome
         finally:
             self._persist_journey_readout(task.id, task_dir)

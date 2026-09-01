@@ -57,7 +57,10 @@ def _cfg(work_dir: Path) -> Config:
 def _fake_pi(bin_dir: Path) -> None:
     """Write an executable `pi` that replies with one assistant message_end."""
     body = textwrap.dedent(f"""
-        import json
+        import json, sys
+        if "--list-models" in sys.argv:
+            print("m")
+            sys.exit(0)
         event = {{
             "type": "message_end",
             "message": {{

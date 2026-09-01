@@ -569,13 +569,7 @@ def run_pi_session(
     # somebody reads, which would otherwise stall stdout, then the reap, forever.
     drain_thread: threading.Thread | None = None
 
-    # Provider is overridable for tests / alternative backends (e.g. openrouter).
-    # When empty, unset, or 'none', --provider is omitted so pi resolves models
-    # directly by name from configured endpoints (e.g. models-store.json).
-    provider = os.environ.get("HARNESS_PI_PROVIDER", "")
-    pi_cmd = ["pi"]
-    if provider and provider.lower() not in ("none", "null", "disabled", "unset"):
-        pi_cmd.extend(["--provider", provider])
+    pi_cmd = ["pi"] + _provider_args()
     pi_cmd.extend([
         "--model", model,
         "--no-session", "--mode", "json", "-p", prompt,
@@ -795,6 +789,52 @@ def run_pi_session(
         over_context_budget=over_context_budget,
         context_limit=max_context_tokens,
     )
+
+
+def _provider_args() -> list[str]:
+    """The `--provider` argv pair, or empty when pi should resolve names itself.
+
+    Provider is overridable for tests / alternative backends (e.g. openrouter).
+    When empty, unset, or 'none', --provider is omitted so pi resolves models
+    directly by name from configured endpoints (e.g. models-store.json).
+    """
+    provider = os.environ.get("HARNESS_PI_PROVIDER", "")
+    if provider and provider.lower() not in ("none", "null", "disabled", "unset"):
+        return ["--provider", provider]
+    return []
+
+
+def build_quick_pi_cmd(model: str, prompt: str | None = None) -> list[str]:
+    """Build the `pi` argv for an operator's borrowed quick session (FR-2.3).
+
+    Same provider/model mechanics as a harness session, but no JSON streaming:
+    with a `prompt` the session is one-shot plain text; without one it is the
+    interactive TTY session, which takes no prompt argument at all.
+    """
+    cmd = ["pi"] + _provider_args() + ["--model", model]
+    if prompt is not None:
+        cmd.extend(["--no-session", "-p", prompt])
+    return cmd
+
+
+def run_quick_pi_session(*, model: str, workdir: str | Path,
+                         prompt: str | None = None) -> int:
+    """Run one operator-borrowed `pi` session with inherited stdio (FR-2.3).
+
+    No pipes, no JSON stream, no watchdog: the operator's terminal *is* the
+    session's UI and the session ends when the operator leaves it. The child
+    is registered with the pi-concurrency tracker like any harness spawn,
+    so the interrupt mechanism does not bypass the concurrency guard (C5).
+    Returns the child's exit code — the caller treats any code the same.
+    """
+    cmd = build_quick_pi_cmd(model, prompt)
+    with _spawn_lock:
+        proc = subprocess.Popen(cmd, cwd=str(workdir))
+        register_pi_process(proc, cmd=cmd, workdir=workdir, model=model)
+    try:
+        return proc.wait()
+    finally:
+        unregister_pi_process(proc.pid)
 
 
 def _extract_verdict(output: str) -> str:

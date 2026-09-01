@@ -8,6 +8,7 @@ from .core.logsink import LogSink
 from .core.providers import create_provider
 from .core.session import SessionRunner
 from .core.stats import StatsStore
+from .core.stand_down import StandDownWatcher
 from .workflow.pipeline import Pipeline
 from .workflow.task_lifecycle import QUEUE_LOCATIONS_ALL
 
@@ -39,5 +40,7 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
     store = StatsStore(cfg.stats_path)
     runner = SessionRunner(cfg, store, log=log)
     provider = create_provider(cfg)
-    pipeline = Pipeline(cfg, runner, log=log, provider=provider)
+    stand_down = StandDownWatcher(getattr(cfg, "work_dir", None), log=log)
+    pipeline = Pipeline(cfg, runner, log=log, provider=provider,
+                        stand_down_check=stand_down)
     return cfg, store, runner, provider, pipeline, log

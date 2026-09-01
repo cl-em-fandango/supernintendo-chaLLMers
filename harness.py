@@ -14,7 +14,11 @@ Usage — subcommands and flags exactly as cli/parser.py defines them:
   harness.py board               Kanban-style queue view with executive summary
                                  (hidden alias: kanban)
   harness.py journey [task_id]   Show workflow journey graph & bottleneck analysis
-  harness.py resume <task_id>    Resume a task from its last checkpoint
+  harness.py interrupt           Request a managed stand-down of the harness
+                                 (--stand-down, --no-wait, --timeout SECONDS,
+                                 --model NAME, --prompt TEXT)
+  harness.py resume [task_id]    Resume a task from its last checkpoint, or
+                                 with no task_id clear an active interrupt
                                  (--yes / -y, --fresh)
   harness.py unpark <task_id>    Resume a parked/failed task (synonym for resume)
                                  (--yes / -y, --fresh; hidden alias: requeue)
@@ -74,6 +78,12 @@ def main() -> int:
         return handlers.cmd_board()
     elif args.command == "journey":
         return handlers.cmd_journey(task_id=args.task_id, save=args.save)
+    elif args.command == "interrupt":
+        return handlers.cmd_interrupt(stand_down=args.stand_down,
+                                      no_wait=args.no_wait,
+                                      timeout=args.timeout,
+                                      model=args.model,
+                                      prompt=args.prompt)
     elif args.command == "resume":
         return handlers.cmd_resume(args.task_id, args.yes, fresh=args.fresh,
                                    repo=args.repo)

@@ -6,8 +6,10 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from ..workflow.autonomous import AutonomousGenerator
@@ -19,8 +21,19 @@ from ..core.board import (TERMINAL_LOCATIONS, BoardSummary, BoardTask,
                           classify_origin, collapse_task_stats, render_board,
                           write_board)
 from ..core.claim_metadata import OWNER_UNKNOWN, read_metadata
+from ..core.interrupt import (
+    InterruptMode,
+    InterruptState,
+    clear_interrupt,
+    interrupt_age_seconds,
+    read_interrupt,
+    write_interrupt,
+)
 from ..core.providers import Task
+from ..core.stand_down import StandDownWatcher
 from ..core.stats import render_report, render_task_journey
+from external.pi_cli import run_quick_pi_session
+
 from ..composition import build
 
 # Shown under the status table while claims exist. Names the command that
@@ -61,9 +74,51 @@ def _slug(name: str) -> str:
     return (re.sub(r"[^a-zA-Z0-9-]+", "_", name).strip("_")[:60] or "task")
 
 
+def _interrupt_takes_work_away(cfg, log) -> bool:
+    """Top guard for single-session commands: True when an interrupt is active.
+
+    `run`, `run-one`, `run-task` and `resume <task_id>` have no in-run
+    boundary, so honoring the file (FR-5.4, FR-3.1) means taking no work at
+    all: the caller returns 0 without claiming or spawning `pi` against the
+    model the operator reclaimed. The file is only *read*, never cleared or
+    transitioned — only no-arg `resume` or quick-mode completion may do that.
+    A corrupt file reads fail-safe as an active stand-down (FR-5.3).
+
+    A cfg without a `work_dir` (a partial wiring) has no state file to read,
+    so it has no interrupt — same defensive read as `_requeue_stale_enabled`.
+    """
+    work_dir = getattr(cfg, "work_dir", None)
+    if work_dir is None:
+        return False
+    status = read_interrupt(work_dir, log=log)
+    if status is None:
+        return False
+    log(f"interrupt active (mode={status.mode.name} state={status.state.name}): "
+        f"taking no work; `harness.py resume` clears the request")
+    return True
+
+
+def _stand_down_at_boundary(cfg, log) -> bool:
+    """Session-boundary check for the run loops: True when the loop must stop.
+
+    Called where the loop would otherwise take new work (FR-6.1: the safe
+    boundary is immediately before spawning a new `pi` session). When an
+    interrupt is active the request is acknowledged (`requested -> paused`,
+    via the one owner of that file), and the caller unwinds by returning 0:
+    no parking, no crash-retry, tasks stay in `active/` with their
+    checkpoints and claims (FR-6.2/FR-6.4/FR-6.5).
+
+    A cfg without a `work_dir` (a partial wiring) has no state file to read,
+    so it has no interrupt — same defensive read as `_requeue_stale_enabled`.
+    """
+    return StandDownWatcher(getattr(cfg, "work_dir", None), log=log)()
+
+
 def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
                  repo: str | Path | None = None) -> int:
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _interrupt_takes_work_away(cfg, log):
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
@@ -96,6 +151,8 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
     unattributable one — see `_requeue_stale_claims` for why it is off.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _interrupt_takes_work_away(cfg, log):
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     owner = _new_owner_id("run")
@@ -107,6 +164,12 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
         if continue_:
             resume_in_flight(pipeline.lifecycle, pipeline, log=log)
         while True:
+            if _stand_down_at_boundary(cfg, log):
+                # The boundary before this cycle's claim/spawn (FR-6.1):
+                # acknowledge, stop taking work, unwind through the
+                # finally-block claim hand-back — no parking, no
+                # crash-retry, exit 0 (FR-6.2/FR-6.4).
+                return 0
             if not provider.count_pending():
                 log("pending queue empty")
                 break
@@ -124,7 +187,8 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
             log("queue empty -> entering autonomous mode")
             gen = AutonomousGenerator(cfg, runner, provider, log=log)
             target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
-            gen.run(target_repo)
+            gen.run(target_repo,
+                    stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
         return 0
     finally:
         _release_run_claims(provider, claimed, owner, log)
@@ -159,6 +223,8 @@ def cmd_run_one(repo: str | Path | None = None) -> int:
     move a claim another invocation is holding. Not used by the supervisor.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _interrupt_takes_work_away(cfg, log):
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     owner = _new_owner_id("run-one")
@@ -200,6 +266,10 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False,
     nobody can be shown to hold — where they are: `_requeue_stale_claims`.
     """
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _stand_down_at_boundary(cfg, log):
+        # An interrupt was already active when the loop started: acknowledge
+        # it and unwind before claiming anything (FR-5.4, FR-6.2).
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     owner = _new_owner_id("run-task-loop")
@@ -209,6 +279,12 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False,
     if continue_:
         resume_in_flight(pipeline.lifecycle, pipeline, log=log)
     while True:
+        if _stand_down_at_boundary(cfg, log):
+            # The boundary between tasks, and the check immediately before
+            # this cycle's fetch/claim/spawn: acknowledge, stop taking work,
+            # unwind with the checkpoints and claims where they are (FR-6.1,
+            # FR-6.2) — no parking, no crash-retry, exit 0 (FR-6.4).
+            return 0
         tasks = provider.fetch_pending(claim=True, owner=owner)
         if not tasks:
             log("pending queue empty")
@@ -363,11 +439,16 @@ def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
 
 def cmd_autonomous(repo: str | Path | None = None) -> int:
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _stand_down_at_boundary(cfg, log):
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     gen = AutonomousGenerator(cfg, runner, provider, log=log)
     target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
-    gen.run(target_repo)
+    # The generator owns the per-attempt boundary: it is what spawns the
+    # suggest/review `pi` sessions, so the stand-down check travels with the
+    # loop rather than only guarding its single call site.
+    gen.run(target_repo, stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
     return 0
 
 
@@ -391,6 +472,35 @@ def _claim_labels(provider) -> list[str]:
     return labels
 
 
+def _format_interrupt_age(seconds: float) -> str:
+    """One interrupt age as a short operator-readable duration (`42s`, `5m03s`, `2h05m`)."""
+    whole = int(max(seconds, 0.0))
+    hours, rem = divmod(whole, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _interrupt_status_line(cfg, log) -> None:
+    """Print the interrupt line (spec FR-4.1) when one is active; nothing when not.
+
+    Shared by `status` and `board`: mode and state render as their Enum
+    names (STAND_DOWN/QUICK, REQUESTED/PAUSED), the age counts from
+    `requested_at`. A corrupt file reads fail-safe as STAND_DOWN/REQUESTED
+    through `read_interrupt`, which sends its recovery warning to `log`, so
+    the surface shows the fail-safe record plus the hint (spec FR-5.3).
+    """
+    status = read_interrupt(cfg.work_dir, log=log)
+    if status is None:
+        return
+    age = _format_interrupt_age(interrupt_age_seconds(status))
+    log(f"interrupt: mode={status.mode.name} state={status.state.name} "
+        f"age={age}")
+
+
 def cmd_status() -> int:
     cfg, store, runner, provider, pipeline, log = build()
     claims = _claim_labels(provider)
@@ -401,6 +511,7 @@ def cmd_status() -> int:
         log(CLAIMS_STRANDED_WARNING.format(count=len(claims)))
     log()
     log(render_report(store.all()))
+    _interrupt_status_line(cfg, log)
     return 0
 
 
@@ -569,6 +680,9 @@ def cmd_board() -> int:
                                       stats=aggregate_stats(store.all())),
                          _board_context())
     write_board(board, sys.stdout)
+    # The board's output stream is stdout, so the interrupt line (and a
+    # corrupt-file warning) travels there too, not through the logger.
+    _interrupt_status_line(cfg, lambda line: print(line))
     return 0
 
 
@@ -614,10 +728,244 @@ def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
     return 0
 
 
-def cmd_resume(task_id: str, yes: bool = False, fresh: bool = False,
+# Default `interrupt --stand-down` wait: one session cap plus a minute of
+# slack, so a session that just started still finishes inside the wait
+# (spec FR-1.2). `--timeout N` overrides it.
+INTERRUPT_WAIT_EXTRA_S = 60
+
+# How often the wait polls the state file. The acknowledgement is a file
+# rename, so faster polling buys nothing; 1s matches the granularity the
+# supervisor's interruptible sleep already uses.
+INTERRUPT_POLL_INTERVAL_S = 1.0
+
+# Printed when the harness has acknowledged and released the model
+# (spec FR-1.2). Operator-visible contract — keep verbatim.
+STAND_DOWN_COMPLETE = ("harness stood down — model released "
+                       "(task(s) left in active/ at checkpoints)")
+
+
+class StandDownWaitResult(Enum):
+    """How a wait-for-pause ended. Discrete internal state: an Enum."""
+    PAUSED = "paused"
+    CLEARED = "cleared"
+    TIMED_OUT = "timed_out"
+
+
+def wait_for_paused(work_dir: Path, timeout: float,
+                    poll_interval: float = INTERRUPT_POLL_INTERVAL_S
+                    ) -> StandDownWaitResult:
+    """Poll the interrupt state file until `state=paused` (spec FR-1.2).
+
+    PAUSED when a run loop acknowledged the request; CLEARED when the file
+    disappeared first (a `resume` or a quick-mode completion took the request
+    away, so the stand-down that was asked for will never happen); TIMED_OUT
+    when `timeout` seconds elapsed with the request still pending — the
+    request is left in place either way. A corrupt file reads fail-safe as
+    REQUESTED, so the wait runs to its timeout.
+    """
+    deadline = time.monotonic() + max(float(timeout), 0.0)
+    while True:
+        status = read_interrupt(work_dir)
+        if status is None:
+            return StandDownWaitResult.CLEARED
+        if status.state is InterruptState.PAUSED:
+            return StandDownWaitResult.PAUSED
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return StandDownWaitResult.TIMED_OUT
+        time.sleep(min(poll_interval, remaining))
+
+
+def cmd_interrupt(stand_down: bool = False, no_wait: bool = False,
+                  timeout: float | None = None, model: str | None = None,
+                  prompt: str | None = None,
+                  poll_interval: float = INTERRUPT_POLL_INTERVAL_S) -> int:
+    """Request a managed stand-down of the harness (spec FR-1), or — without
+    `--stand-down` — borrow the model for a quick session and auto-resume
+    (spec FR-2).
+
+    Writes the interrupt state file; the run loops honor it at their next
+    session boundary. Idempotent: a second stand-down request while one is
+    active changes nothing but the log and returns 0 (E1). Works with no
+    harness running — the file simply records the request for the next start
+    (FR-1.4). Unless `--no-wait` is given the command then polls the file
+    until the harness acknowledges (FR-1.2); on timeout the request stays in
+    place and the command exits non-zero with the running session's log
+    pointer (FR-1.3).
+    """
+    if not stand_down:
+        return _cmd_interrupt_quick(model=model, prompt=prompt,
+                                    timeout=timeout,
+                                    poll_interval=poll_interval)
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    existing = read_interrupt(cfg.work_dir, log=log)
+    if existing is not None:
+        log(f"interrupt already active (mode={existing.mode.name} "
+            f"state={existing.state.name}); request unchanged")
+        return 0
+    write_interrupt(cfg.work_dir, InterruptMode.STAND_DOWN,
+                    InterruptState.REQUESTED, requester_pid=os.getpid())
+    log("interrupt requested: harness will stand down at the next "
+        "session boundary")
+    if no_wait:
+        return 0
+    wait_s = (cfg.session_timeout + INTERRUPT_WAIT_EXTRA_S
+              if timeout is None else float(timeout))
+    result = wait_for_paused(cfg.work_dir, wait_s,
+                             poll_interval=poll_interval)
+    if result is StandDownWaitResult.PAUSED:
+        print(STAND_DOWN_COMPLETE)
+        return 0
+    if result is StandDownWaitResult.CLEARED:
+        log("interrupt request was cleared before the harness paused; "
+            "nothing is stood down (harness.py status shows the run state)")
+        return 1
+    log(f"timed out after {wait_s:.0f}s waiting for the harness to pause; "
+        "the request stays in place — the harness will still stand down at "
+        "its next session boundary")
+    log(f"running session log: {cfg.logs_dir / 'harness.log'}")
+    return 1
+
+
+# Log-only transition emitted immediately before a quick-mode request file is
+# deleted (spec FR-5.2): `resuming` never lives in the file, only in the log.
+QUICK_RESUMING_LOG = "resuming"
+
+
+def _operator_has_tty() -> bool:
+    """True when a real terminal is attached for an interactive pi session."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _resolve_quick_model(cfg, requested: str | None, log) -> str | None:
+    """Resolve `--model NAME` to one concrete model for a quick session.
+
+    A valid name is a configured model (`models.*` string values or
+    `modelContext` keys) or a role key whose value is a single model string.
+    Pool-valued names (`fastPool`, `randomPool`) are rejected: the quick
+    session pins one fixed model, not a pool (FR-2.3). Without `--model` the
+    default is `models.technicalWriter`. Returns None (with the reason on
+    `log`) when the name cannot be resolved — always *before* any state is
+    written, so a bad name never pauses the harness (E7).
+    """
+    if requested is None:
+        default = cfg.models.get("technicalWriter")
+        if isinstance(default, str) and default.strip():
+            return default.strip()
+        log("interrupt: models.technicalWriter is not configured; "
+            "pass --model NAME")
+        return None
+    value = cfg.models.get(requested)
+    if isinstance(value, (list, tuple, set)):
+        log(f"interrupt: '{requested}' is a model pool; the quick session "
+            "pins one fixed model — pass a concrete model name instead")
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if requested in cfg.model_context_map or requested in cfg.configured_models:
+        return requested
+    log(f"interrupt: unknown model '{requested}'; it must be a configured "
+        "model (a models.* value or a modelContext key)")
+    return None
+
+
+def _cancel_quick_request(work_dir: Path, log, reason: str) -> int:
+    """Cancel a quick request (FR-2.5): log the reason, log `resuming`
+    (log-only transition, FR-5.2), delete the file. Non-zero exit."""
+    log(reason)
+    log(QUICK_RESUMING_LOG)
+    clear_interrupt(work_dir)
+    return 1
+
+
+def _cmd_interrupt_quick(model: str | None, prompt: str | None,
+                         timeout: float | None,
+                         poll_interval: float) -> int:
+    """Quick mode (spec FR-2): stand the harness down, borrow the model for
+    one `pi` session, resume automatically when that session exits.
+
+    All validation (model resolution, already-active check, TTY check) runs
+    *before* the request file is written, so a refused request never pauses
+    anything. Once the harness has paused, the session runs with inherited
+    stdio; on its exit (any code) the file is deleted and the harness
+    resumes without a manual step. If this process is killed before that
+    cleanup, the file remains and the harness stays paused (fail-safe) —
+    recover with `harness.py resume` (FR-2.5, E3).
+    """
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    resolved_model = _resolve_quick_model(cfg, model, log)
+    if resolved_model is None:
+        return 1
+    if prompt is None and not _operator_has_tty():
+        log("interrupt: no TTY attached; run through `scripts/harness-run` "
+            "for an interactive quick session, or pass --prompt TEXT for a "
+            "one-shot session")
+        return 1
+    existing = read_interrupt(cfg.work_dir, log=log)
+    if existing is not None:
+        log(f"interrupt: quick mode refused — an interrupt is already active "
+            f"(mode={existing.mode.name} state={existing.state.name}); "
+            "recover with `harness.py resume`")
+        return 1
+    write_interrupt(cfg.work_dir, InterruptMode.QUICK,
+                    InterruptState.REQUESTED, requester_pid=os.getpid())
+    log("interrupt requested (quick): harness will pause at the next "
+        "session boundary")
+    wait_s = (cfg.session_timeout + INTERRUPT_WAIT_EXTRA_S
+              if timeout is None else float(timeout))
+    result = wait_for_paused(cfg.work_dir, wait_s,
+                             poll_interval=poll_interval)
+    if result is StandDownWaitResult.TIMED_OUT:
+        return _cancel_quick_request(
+            cfg.work_dir, log,
+            f"timed out after {wait_s:.0f}s waiting for the harness to "
+            "pause; quick request cancelled")
+    if result is StandDownWaitResult.CLEARED:
+        log("interrupt: quick request was cleared before the harness paused "
+            "(harness.py resume?); no session was started")
+        return 1
+    rc = run_quick_pi_session(model=resolved_model,
+                              workdir=cfg.repo_dir or Path.cwd(),
+                              prompt=prompt)
+    log(f"quick session exited (rc={rc})")
+    log(QUICK_RESUMING_LOG)
+    clear_interrupt(cfg.work_dir)
+    print("quick session finished — the harness resumes at its next boundary")
+    return 0
+
+
+def _resume_clear_interrupt(repo: str | Path | None = None) -> int:
+    """No-arg `resume`: clear an active interrupt and let the run continue
+    (spec FR-3.2). Idempotent: with no file, prints and exits 0."""
+    cfg, _store, _runner, _provider, _pipeline, log = build(repo=repo)
+    status = read_interrupt(cfg.work_dir, log=log)
+    if status is None:
+        print("no interrupt active")
+        return 0
+    duration = interrupt_age_seconds(status)
+    log(f"interrupt cleared: mode={status.mode.name} "
+        f"state={status.state.name} requested_at={status.requested_at} "
+        f"duration={duration:.0f}s")
+    clear_interrupt(cfg.work_dir)
+    print("interrupt cleared — the harness resumes at its next boundary")
+    return 0
+
+
+def cmd_resume(task_id: str | None = None, yes: bool = False,
+               fresh: bool = False,
                repo: str | Path | None = None) -> int:
-    """Resume a task from its last checkpoint (spec FR3)."""
+    """Resume a task from its last checkpoint (spec FR3), or with no
+    task_id, clear an active interrupt (spec FR-3.2)."""
+    if task_id is None:
+        return _resume_clear_interrupt(repo=repo)
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
+    if _interrupt_takes_work_away(cfg, log):
+        # FR-3.1: with an interrupt active, `resume <task_id>` stands down at
+        # its (only) boundary by taking no work — and does not clear the file.
+        return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     return resume_task(task_id, yes, cfg, pipeline,

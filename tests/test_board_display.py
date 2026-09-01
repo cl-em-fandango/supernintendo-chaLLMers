@@ -250,7 +250,8 @@ class _StreamFixture(unittest.TestCase):
         active.mkdir()
         (active / "worker").mkdir()
         (active / "auto-gen").mkdir()
-        cfg = types.SimpleNamespace(queue_dir=self.dir,
+        cfg = types.SimpleNamespace(work_dir=self.dir,
+                                    queue_dir=self.dir,
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")
         provider = DirectoryTaskProvider(self.pending, self.claimed,

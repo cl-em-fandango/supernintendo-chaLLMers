@@ -63,6 +63,9 @@ def _fake_pi(bin_dir: Path) -> None:
     """
     body = textwrap.dedent(f"""
         import json, sys
+        if "--list-models" in sys.argv:
+            print("m")
+            sys.exit(0)
         sys.stderr.write({STDERR_TEXT!r})
         event = {{
             "type": "message_end",

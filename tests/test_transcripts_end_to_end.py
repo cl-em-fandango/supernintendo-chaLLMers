@@ -94,6 +94,9 @@ def _scripted_pi(bin_dir: Path, script_path: Path, prompt_log: Path,
     """
     body = textwrap.dedent(f"""
         import json, sys
+        if "--list-models" in sys.argv:
+            print("m")
+            sys.exit(0)
         with open({str(script_path)!r}) as fh:
             script = json.load(fh)
         response = script.pop(0)
@@ -172,6 +175,10 @@ class EndToEndArtifactsTest(unittest.TestCase):
 
         self.cfg = _cfg(self.work_dir)
         self.repo = _make_repo(self.work_dir / "repo")
+        # Deterministic repo resolution (F7): the pipeline parks a task whose
+        # workdir resolves under the queue, so the fixture must name the
+        # target repo exactly like config.json `repoDir` would.
+        self.cfg.repo_dir = self.repo
         self.store = StatsStore(self.cfg.stats_path)
         self.lines: list[str] = []
         self.runner = SessionRunner(self.cfg, self.store, log=self.lines.append)
