@@ -193,9 +193,24 @@ def _parse_completed_slices(raw, log=print) -> list:
 
 
 class TaskLifecycle:
-    def __init__(self, cfg: Config, log=print):
+    def __init__(self, cfg: Config, log=print, handoff_sync=None,
+                 stage_change_sync=None):
         self.cfg = cfg
         self.log = log
+        # Optional GitHub handoff hook (spec FR-2.5, FR-3): a callable
+        # `(task_id, stage, prose, slice_id, iteration)`. Built by the
+        # composition root only when GitHub sync is enabled; it posts the
+        # handoff comment and runs the in-flight sync pass. None keeps
+        # every write site a no-op (FR-0.1). The hook swallows its own
+        # failures (NFR-1), so this layer imports nothing from the sync.
+        self.handoff_sync = handoff_sync
+        # Optional GitHub stage-change hook (spec FR-3): a callable
+        # `(task_id)` wired by the composition root to the sync dispatcher.
+        # Every queue-location transition calls it once, after the move.
+        # None (GitHub unconfigured) keeps every hook a no-op (FR-0.1,
+        # NFR-2); the hook swallows its own failures (NFR-1), so a sync
+        # error can never change a move.
+        self.stage_change_sync = stage_change_sync
 
     # ------------------------------------------------------------------
     # dirs
@@ -303,28 +318,50 @@ class TaskLifecycle:
         # original.md exists from here on, so the workdir can be resolved and
         # recorded before any git or session work starts (F7).
         self.record_workdir(task_dir)
+        self._sync_stage_change(task.id)
         return task_dir
 
     def park(self, task_id: str, reason: str,
-             handoff: Handoff | None = None) -> None:
+             handoff: Handoff | None = None,
+             from_: str = "active") -> None:
         """Park a task. `handoff` (T75) is passed only by the over-cap park site
         in `Pipeline.process`; when present its sections are appended to the
-        review file. A park without one renders exactly what it rendered before."""
-        self._terminal_move(task_id, TaskStatus.PARKED, "parked", "PARKED", reason,
-                            handoff=handoff)
+        review file. A park without one renders exactly what it rendered before.
+
+        `from_` is the queue location the task moves *from* (GitHub-sync park,
+        spec FR-1.3/FR-2.2): a task staged in `pending/`, `claimed/`, `review/`,
+        `done/` or `failed/` parks through the same status-stamp/summary path
+        as an active one. A task file parks as a task dir whose `original.md`
+        is the file's content; a task dir moves whole."""
+        self._terminal_move(task_id, TaskStatus.PARKED, "parked", "PARKED",
+                            reason, handoff=handoff, from_=from_)
         self.log(f"  task {task_id} PARKED: {reason}")
+        self._sync_stage_change(task_id)
 
     def fail(self, task_id: str, reason: str) -> None:
         self._terminal_move(task_id, TaskStatus.FAILED, "failed", "KICKED OUT", reason)
         self.log(f"  task {task_id} FAILED: {reason}")
+        self._sync_stage_change(task_id)
 
     def complete(self, task_id: str, summary: str) -> None:
         self._terminal_move(task_id, TaskStatus.DONE, "done", "DONE", summary)
         self.log(f"  task {task_id} DONE")
+        self._sync_stage_change(task_id)
+
+    def _sync_stage_change(self, task_id: str) -> None:
+        """Fire the GitHub stage-change hook once, after a move (spec FR-3).
+
+        Last act of every transition, and the hook itself never raises
+        (NFR-1): a sync failure is logged there and changes nothing about
+        the move that already happened. No hook wired (GitHub disabled)
+        means no call at all (FR-0.1, NFR-2)."""
+        if self.stage_change_sync is not None:
+            self.stage_change_sync(task_id)
 
     def _terminal_move(self, task_id: str, status: TaskStatus, where: str,
                        summary_status: str, text: str,
-                       handoff: Handoff | None = None) -> None:
+                       handoff: Handoff | None = None,
+                       from_: str = "active") -> None:
         """Move a task dir into its terminal queue subdirectory, then record it.
 
         The move is the lifecycle authority, so it runs first and its failures
@@ -338,10 +375,16 @@ class TaskLifecycle:
         guarded separately so a failed `task.json` does not also lose the review
         summary, and vice versa.
         """
-        src = self.task_dir(task_id)
+        src = self._terminal_source(task_id, from_)
         dst = self.cfg.queue_dir / where / task_id
-        if src.exists():
+        if src.is_dir():
             shutil.move(str(src), str(dst))
+        elif src.is_file():
+            # A task *file* (pending/, claimed/, review/) has no dir yet; the
+            # terminal record is a dir, so the file lands in it as
+            # `original.md` (spec FR-1.3).
+            dst.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst / "original.md"))
         try:
             self._stamp_status(task_id, status, where)
         except OSError as exc:
@@ -354,6 +397,39 @@ class TaskLifecycle:
             self.log(f"  ⚠ {task_id} is in {where}/ but the review summary write "
                      f"failed on {self.review_summary_path(task_id)}: {exc}; "
                      f"no review summary was written")
+            return
+        self._post_handoff(task_id, summary_status, text, handoff)
+
+    def _post_handoff(self, task_id: str, summary_status: str, text: str,
+                      handoff: Handoff | None) -> None:
+        """Mirror this terminal event onto the task's issue (spec FR-2.5).
+
+        A park-with-handoff comments the `Handoff` prose (the handoff event
+        itself); every other terminal move comments the executive-summary
+        text. No hook wired (GitHub disabled) means nothing happens here
+        (FR-0.1); the hook swallows its own errors, and the task has left
+        the in-flight locations with this move, so the pass for this event
+        is the move's stage-change hook — never a second one (FR-3)."""
+        if self.handoff_sync is None:
+            return
+        if handoff is not None:
+            self.handoff_sync(task_id, _handoff_value(handoff.stage),
+                              _handoff_section(handoff).strip(),
+                              handoff.slice_id, handoff.iteration)
+            return
+        self.handoff_sync(task_id, summary_status, text, None, None)
+
+    def _terminal_source(self, task_id: str, from_: str) -> Path:
+        """Where `task_id` currently lives in `from_`: a task dir, or the bare
+        task file (`pending/`, `claimed/`, `review/` stage tasks as `<id>.md`).
+
+        The dir form wins when both exist; neither existing is not an error
+        here — `_terminal_move` moves nothing and the caller's own existence
+        check decides what a missing task means."""
+        directory = self.task_dir(task_id, from_)
+        if directory.is_dir():
+            return directory
+        return directory.with_name(f"{task_id}.md")
 
     def review_summary_path(self, task_id: str) -> Path:
         """The review summary file for `task_id` (one path, two users: the

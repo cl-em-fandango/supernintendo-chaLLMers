@@ -1,10 +1,12 @@
 """Command handlers for the harness CLI."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -29,12 +31,15 @@ from ..core.interrupt import (
     read_interrupt,
     write_interrupt,
 )
+from ..core.process_lock import LockHeldError, ProcessLock, RUN_LOCK_NAME
 from ..core.providers import Task
 from ..core.stand_down import StandDownWatcher
+from ..core.syncd import SyncdLoop, SyncdParams
+from external.harness_cli import spawn_harness_run_task_loop
 from ..core.stats import render_report, render_task_journey
 from external.pi_cli import run_quick_pi_session
 
-from ..composition import build
+from ..composition import build, build_github_api, build_sync_engine
 
 # Shown under the status table while claims exist. Names the command that
 # clears them (it exists now — T12), so the line is something to type.
@@ -114,20 +119,55 @@ def _stand_down_at_boundary(cfg, log) -> bool:
     return StandDownWatcher(getattr(cfg, "work_dir", None), log=log)()
 
 
+@contextlib.contextmanager
+def _run_lock(cfg, log):
+    """Hold `<workDir>/run.lock` for the life of a run command (FR-4.3).
+
+    The daemon reads this lock before spawning, so a harness run started by
+    hand blocks spawning equally. Yields False — without holding anything —
+    when a live process already holds the lock; the caller returns non-zero.
+    A cfg without a `work_dir` (a partial wiring, same defensive read as
+    `_requeue_stale_enabled`) has no lock to take and yields True: the run
+    proceeds unrecorded rather than dying on an absent attribute.
+    """
+    work_dir = getattr(cfg, "work_dir", None)
+    if work_dir is None:
+        yield True
+        return
+    lock = ProcessLock(Path(work_dir), RUN_LOCK_NAME)
+    try:
+        lock.acquire()
+    except LockHeldError as exc:
+        log(f"harness run refused: {exc}")
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        lock.release()
+
+
 def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
                  repo: str | Path | None = None) -> int:
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
     if _interrupt_takes_work_away(cfg, log):
         return 0
-    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
-        runner.validate_models()
-    task = Task(id=_slug(Path(file).stem), body=Path(file).read_text(),
-                source=f"cli:{file}")
-    if fresh:
-        fresh_restart(task.id, cfg, log=log)
-    if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
-    pipeline.process(task)
+    with _run_lock(cfg, log) as acquired:
+        if not acquired:
+            # FR-4.3: a hand-started single-task run is a harness run — it
+            # holds `run.lock` for its life so the daemon (and a peer
+            # command) sees it and never starts a second concurrent
+            # pipeline against the model.
+            return 1
+        if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+            runner.validate_models()
+        task = Task(id=_slug(Path(file).stem),
+                    body=Path(file).read_text(), source=f"cli:{file}")
+        if fresh:
+            fresh_restart(task.id, cfg, log=log)
+        if continue_:
+            resume_in_flight(pipeline.lifecycle, pipeline, log=log)
+        pipeline.process(task)
     return 0
 
 
@@ -153,45 +193,52 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
     cfg, store, runner, provider, pipeline, log = build(repo=repo)
     if _interrupt_takes_work_away(cfg, log):
         return 0
-    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
-        runner.validate_models()
-    owner = _new_owner_id("run")
-    _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
-                          enabled=_requeue_stale_enabled(cfg, requeue_stale),
-                          log=log, owner=owner)
-    claimed: list[Task] = []
-    try:
-        if continue_:
-            resume_in_flight(pipeline.lifecycle, pipeline, log=log)
-        while True:
-            if _stand_down_at_boundary(cfg, log):
-                # The boundary before this cycle's claim/spawn (FR-6.1):
-                # acknowledge, stop taking work, unwind through the
-                # finally-block claim hand-back — no parking, no
-                # crash-retry, exit 0 (FR-6.2/FR-6.4).
-                return 0
-            if not provider.count_pending():
-                log("pending queue empty")
-                break
-            tasks = provider.fetch_pending(claim=True, limit=1, owner=owner)
-            task = tasks[0]
-            claimed.extend(tasks)
-            log(f"processing {task.id}")
-            try:
-                pipeline.process(task)
-            except Exception as e:
-                # one bad task must not strand the rest of the queue
-                log(f"  task {task.id} raised {type(e).__name__}: {e}; skipping")
-                continue
-        if not provider.fetch_pending():
-            log("queue empty -> entering autonomous mode")
-            gen = AutonomousGenerator(cfg, runner, provider, log=log)
-            target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
-            gen.run(target_repo,
-                    stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
-        return 0
-    finally:
-        _release_run_claims(provider, claimed, owner, log)
+    with _run_lock(cfg, log) as acquired:
+        if not acquired:
+            # Another harness holds the run lock (FR-4.3): refuse rather
+            # than run a second concurrent pipeline against the model.
+            return 1
+        if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+            runner.validate_models()
+        owner = _new_owner_id("run")
+        _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
+                              enabled=_requeue_stale_enabled(cfg, requeue_stale),
+                              log=log, owner=owner)
+        claimed: list[Task] = []
+        try:
+            if continue_:
+                resume_in_flight(pipeline.lifecycle, pipeline, log=log)
+            while True:
+                if _stand_down_at_boundary(cfg, log):
+                    # The boundary before this cycle's claim/spawn (FR-6.1):
+                    # acknowledge, stop taking work, unwind through the
+                    # finally-block claim hand-back — no parking, no
+                    # crash-retry, exit 0 (FR-6.2/FR-6.4).
+                    return 0
+                if not provider.count_pending():
+                    log("pending queue empty")
+                    break
+                tasks = provider.fetch_pending(claim=True, limit=1,
+                                               owner=owner)
+                task = tasks[0]
+                claimed.extend(tasks)
+                log(f"processing {task.id}")
+                try:
+                    pipeline.process(task)
+                except Exception as e:
+                    # one bad task must not strand the rest of the queue
+                    log(f"  task {task.id} raised {type(e).__name__}: {e}; skipping")
+                    continue
+            if not provider.fetch_pending():
+                log("queue empty -> entering autonomous mode")
+                gen = AutonomousGenerator(cfg, runner, provider, log=log,
+                                          sync_engine=getattr(pipeline, "sync_engine", None))
+                target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+                gen.run(target_repo,
+                        stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
+            return 0
+        finally:
+            _release_run_claims(provider, claimed, owner, log)
 
 
 def _release_run_claims(provider, claimed: list[Task], owner: str, log) -> int:
@@ -270,31 +317,36 @@ def cmd_run_task_loop(continue_: bool = False, requeue_stale: bool = False,
         # An interrupt was already active when the loop started: acknowledge
         # it and unwind before claiming anything (FR-5.4, FR-6.2).
         return 0
-    if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
-        runner.validate_models()
-    owner = _new_owner_id("run-task-loop")
-    _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
-                          enabled=_requeue_stale_enabled(cfg, requeue_stale),
-                          log=log, owner=owner)
-    if continue_:
-        resume_in_flight(pipeline.lifecycle, pipeline, log=log)
-    while True:
-        if _stand_down_at_boundary(cfg, log):
-            # The boundary between tasks, and the check immediately before
-            # this cycle's fetch/claim/spawn: acknowledge, stop taking work,
-            # unwind with the checkpoints and claims where they are (FR-6.1,
-            # FR-6.2) — no parking, no crash-retry, exit 0 (FR-6.4).
-            return 0
-        tasks = provider.fetch_pending(claim=True, owner=owner)
-        if not tasks:
-            log("pending queue empty")
-            return 0
-        task = tasks[0]
-        log(f"processing {task.id} ({len(tasks)} pending)")
-        pipeline.process(task)
-        for other in tasks[1:]:
-            if provider.requeue_claim(other, owner=owner):
-                log(f"  requeued unprocessed claim: {other.id}")
+    with _run_lock(cfg, log) as acquired:
+        if not acquired:
+            # Another harness holds the run lock (FR-4.3): refuse rather
+            # than run a second concurrent pipeline against the model.
+            return 1
+        if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
+            runner.validate_models()
+        owner = _new_owner_id("run-task-loop")
+        _requeue_stale_claims(provider, CLAIM_STALE_HOURS,
+                              enabled=_requeue_stale_enabled(cfg, requeue_stale),
+                              log=log, owner=owner)
+        if continue_:
+            resume_in_flight(pipeline.lifecycle, pipeline, log=log)
+        while True:
+            if _stand_down_at_boundary(cfg, log):
+                # The boundary between tasks, and the check immediately before
+                # this cycle's fetch/claim/spawn: acknowledge, stop taking
+                # work, unwind with the checkpoints and claims where they are
+                # (FR-6.1, FR-6.2) — no parking, no crash-retry, exit 0.
+                return 0
+            tasks = provider.fetch_pending(claim=True, owner=owner)
+            if not tasks:
+                log("pending queue empty")
+                return 0
+            task = tasks[0]
+            log(f"processing {task.id} ({len(tasks)} pending)")
+            pipeline.process(task)
+            for other in tasks[1:]:
+                if provider.requeue_claim(other, owner=owner):
+                    log(f"  requeued unprocessed claim: {other.id}")
 
 
 @dataclass(frozen=True)
@@ -443,7 +495,8 @@ def cmd_autonomous(repo: str | Path | None = None) -> int:
         return 0
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
-    gen = AutonomousGenerator(cfg, runner, provider, log=log)
+    gen = AutonomousGenerator(cfg, runner, provider, log=log,
+                              sync_engine=getattr(pipeline, "sync_engine", None))
     target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
     # The generator owns the per-attempt boundary: it is what spawns the
     # suggest/review `pi` sessions, so the stand-down check travels with the
@@ -690,6 +743,93 @@ def cmd_report() -> int:
     _, store, *_ = build()
     print(render_report(store.all()))
     return 0
+
+
+# Operator-visible contract (spec FR-3, AC-1): this exact line, exit 0, when
+# GitHub is unconfigured. Keep verbatim.
+GITHUB_SYNC_DISABLED = "github sync disabled"
+
+
+def cmd_sync() -> int:
+    """Run one manual two-way GitHub sync pass (spec FR-3, manual).
+
+    Disabled-safe (FR-0.1): with `githubPat` or `githubRepo` empty or absent
+    the whole feature is inert — the disabled line is printed, nothing else
+    happens, and the command exits 0.
+
+    With GitHub configured one full two-way pass runs and its summary line
+    is logged (FR-3, manual). A rate-limit/auth abort is a reported pass,
+    not an error: the summary carries `ABORTED` and the exit is 0 — the
+    unfinished work rolls to the next pass (spec edge 9). Any other
+    failure is reported, never a crash (NFR-1): the command exits
+    non-zero with the (PAT-scrubbed) error.
+    """
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    if not cfg.github_sync_enabled:
+        log(GITHUB_SYNC_DISABLED)
+        return 0
+    api = build_github_api(cfg, log=log)
+    engine = build_sync_engine(cfg, log=log, api=api)
+    try:
+        # A manual pass is the no-task-id dispatch: one full two-way pass
+        # (spec FR-3, manual).
+        report = engine.on_stage_change()
+    except Exception as exc:
+        log(f"github sync pass failed: {exc}")
+        return 1
+    log(report.summary_line())
+    return 0
+
+
+def _register_syncd_signals(loop, log) -> None:
+    """SIGINT/SIGTERM stop the daemon after its current pass (FR-4.6).
+
+    The handler only flips the loop's stop flag and logs; the loop then
+    finishes the pass it is in, removes `syncd.lock`, and `cmd_syncd`
+    exits 0. Handlers are registered for the daemon's life only — this
+    command is the daemon, so nothing restores them.
+
+    The `log()` call inside the handler is not strictly async-signal-safe
+    (review note, slice 11): it is accepted because the harness log sink
+    is a buffered line write and CPython runs handlers between bytecodes,
+    not inside a lock. The behavioural part — `request_stop()` — is
+    flag-only and signal-safe on its own.
+    """
+    def _handler(signum, frame) -> None:  # noqa: ARG001 - signal signature
+        log(f"syncd: signal {signum} received; finishing the current pass")
+        loop.request_stop()
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
+
+def cmd_syncd() -> int:
+    """Run the sync daemon (spec FR-4, AC-9/AC-10/AC-11).
+
+    The daemon owns `syncd.lock` (a second invocation exits non-zero with
+    the lock message), and per interval runs a full sync pass plus the
+    spawn check. With GitHub unconfigured the sync callable is None — the
+    pass skips the sync entirely (zero HTTP, FR-0.1/NFR-2) and the daemon
+    is a local `pending/` watcher only. Spawning goes through the same
+    entry point as `harness run-task-loop` (FR-4.2b) and only happens when
+    no run holds `run.lock` (FR-4.3).
+    """
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    sync = None
+    if cfg.github_sync_enabled:
+        api = build_github_api(cfg, log=log)
+        engine = build_sync_engine(cfg, log=log, api=api)
+        # The no-task-id dispatch is one full two-way pass per poll
+        # (FR-4.2a).
+        sync = engine.on_stage_change
+    loop = SyncdLoop(SyncdParams(
+        work_dir=cfg.work_dir,
+        sync_interval_s=cfg.github_sync_interval_s,
+        sync=sync,
+        spawn=spawn_harness_run_task_loop,
+        log=log))
+    _register_syncd_signals(loop, log)
+    return loop.run()
 
 
 def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
@@ -969,7 +1109,8 @@ def cmd_resume(task_id: str | None = None, yes: bool = False,
     if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
         runner.validate_models()
     return resume_task(task_id, yes, cfg, pipeline,
-                       lifecycle=pipeline.lifecycle, log=log, fresh=fresh)
+                       lifecycle=pipeline.lifecycle, log=log, fresh=fresh,
+                       sync_engine=getattr(pipeline, "sync_engine", None))
 
 
 def cmd_unpark(task_id: str, yes: bool = False, fresh: bool = False) -> int:

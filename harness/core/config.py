@@ -43,6 +43,13 @@ MIN_MODEL_BUDGET = 4096
 # deliberate reduction from pi_cli's old 90-min hard cap (spec FR-4.1/§5).
 DEFAULT_SESSION_TIMEOUT_S = 3600
 
+# GitHub sync (sync-with-github-issues FR-0/FR-4). `githubApiBaseUrl` exists
+# for GitHub Enterprise Server installs; the shipped default is github.com.
+DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
+
+# Daemon poll interval in seconds (`githubSyncIntervalS`).
+DEFAULT_GITHUB_SYNC_INTERVAL_S = 60
+
 
 @dataclass
 class Config:
@@ -229,6 +236,47 @@ class Config:
         if not self.llm_health_url:
             return False
         return bool(self.raw.get("llmHealthEnabled", True))
+
+    # ------------------------------------------------------------------
+    # GitHub issue sync (sync-with-github-issues FR-0). Disabled-safe like
+    # `llmHealthUrl`: with `githubPat` or `githubRepo` empty/absent the whole
+    # feature is inert — no HTTP calls, sync hooks are no-ops, nothing logs
+    # an error (FR-0.1, NFR-2).
+    # ------------------------------------------------------------------
+
+    @property
+    def github_pat(self) -> str:
+        """Personal Access Token (`githubPat`); empty disables the sync.
+
+        Never logged, never written to stats rows, task files or issue
+        comments (FR-0.2).
+        """
+        return str(self.raw.get("githubPat", "")).strip()
+
+    @property
+    def github_repo(self) -> str:
+        """The one synced repository as `owner/name` (`githubRepo`);
+        empty disables the sync."""
+        return str(self.raw.get("githubRepo", "")).strip()
+
+    @property
+    def github_api_base_url(self) -> str:
+        """REST API root (`githubApiBaseUrl`); override for GHES. An empty
+        configured value falls back to github.com rather than disabling."""
+        url = str(self.raw.get("githubApiBaseUrl",
+                               DEFAULT_GITHUB_API_BASE_URL)).strip()
+        return url or DEFAULT_GITHUB_API_BASE_URL
+
+    @property
+    def github_sync_interval_s(self) -> int:
+        """Daemon poll interval in seconds (`githubSyncIntervalS`)."""
+        return int(self.raw.get("githubSyncIntervalS",
+                                DEFAULT_GITHUB_SYNC_INTERVAL_S))
+
+    @property
+    def github_sync_enabled(self) -> bool:
+        """True only with both a PAT and a repo configured (FR-0.1)."""
+        return bool(self.github_pat and self.github_repo)
 
     def health_policy(self) -> HealthPolicy:
         """The FR-5.1 knobs as one explicit parameters object."""

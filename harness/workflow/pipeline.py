@@ -14,6 +14,7 @@ from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
 from ..core.stats import render_task_journey_markdown
+from ..core.sync_stage_change_hook import run_stage_change_hook
 from ..core.transcripts import (
     list_transcripts,
     match_rows_to_transcripts,
@@ -138,12 +139,28 @@ class StoodDown(Exception):
 
 class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
-                 health_wait=wait_for_healthy_server, stand_down_check=None):
+                 health_wait=wait_for_healthy_server, stand_down_check=None,
+                 handoff_sync=None, sync_engine=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
         self.provider = provider
-        self.lifecycle = TaskLifecycle(cfg, log)
+        # GitHub handoff hook (spec FR-2.5, FR-3): posts the handoff
+        # comment and runs the in-flight sync pass. Built by the
+        # composition root only when sync is enabled; shared with the
+        # lifecycle so every write site posts through one dedup map.
+        self.handoff_sync = handoff_sync
+        # The GitHub sync dispatcher (spec FR-3), built once by the
+        # composition root and shared with the lifecycle hook sites; None
+        # when GitHub is unconfigured, which makes every hook a no-op
+        # (FR-0.1, NFR-2).
+        self.sync_engine = sync_engine
+        self.lifecycle = TaskLifecycle(
+            cfg, log, handoff_sync=handoff_sync,
+            stage_change_sync=(
+                (lambda task_id: run_stage_change_hook(sync_engine, task_id,
+                                                       log=log))
+                if sync_engine is not None else None))
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
         # How many *clean* sessions one stage may be handed to after a cap trip.
         # A trip is a warning, so the first response is a handover, not a park;
@@ -208,8 +225,10 @@ class Pipeline:
                     context_limit=r.context_limit,
                     slice_id=kw.get("slice_id"),
                     iteration=kw.get("iteration", 1),
-                    output_path=r.out_file),
-                r.output)
+                    output_path=r.out_file,
+                    task_id=task_id or ""),
+                r.output,
+                handoff_sync=self.handoff_sync)
             self.log(f"  ⚠ {_stage_value(stage)} crossed the context cap "
                      f"(peak={r.peak_tokens}, limit={r.context_limit}); "
                      f"handing over to a clean session "
