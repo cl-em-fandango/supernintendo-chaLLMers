@@ -1,8 +1,10 @@
 {
   "workDir": "/srv/pi-harness",
   "repoDir": "/srv/pi-harness/harness_build",
-  "tokenBudget": 60000,
-  "maxPromptTokens": 60000,
+  "githubPat":  "",
+  "githubRepo": "supernintendo-chaLLMers",
+  "tokenBudget": 80000,
+  "maxPromptTokens": 80000,
   "maxSpecKickbacks": 3,
   "maxSliceImplement": 5,
   "maxSliceTechReview": 5,
