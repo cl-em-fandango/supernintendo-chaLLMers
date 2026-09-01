@@ -275,6 +275,79 @@ block in its review summary.
 
 ---
 
+## Checkpointing, Resume & Operator Tooling
+
+### Pipeline Checkpointing and Resume
+
+Every successful stage appends to `checkpointed_stages` in `task.json` (atomic
+temp+rename write) and stamps `last_updated`; completed slices are checkpointed
+the same way. Re-entry skips checkpointed stages and slices, so a crash or
+restart never re-burns upstream work:
+
+- `harness.py resume <task_id>` — resume a parked/failed/active task from its
+  last checkpoint (`--fresh` drops all checkpoints and starts over).
+- `harness.py run --continue` / `run-task-loop --continue` — also pick up
+  in-flight tasks in `active/`, skipping their completed stages.
+- `harness.py restart <task_id>` — delete the active dir and stale review
+  summary and start the task from scratch.
+
+### Full Interaction Logging
+
+Every `pi` session is archived as a Markdown transcript under
+`queue/active/<task_id>/artifacts/sessions/`, named
+`NNN-<stage>[-slice-<id>][-iter-<n>].md`. Each transcript holds the exact
+prompt sent, the full assistant output, the child's stderr (when non-empty),
+and the session metadata (stage, model, duration, peak tokens, rc, verdict,
+crashed). Sequence numbers survive process restarts and never reuse a number
+on disk. The journey command renders a task's full session flow with loop,
+bounce and hotspot analysis:
+
+```bash
+python3 harness.py journey [task_id] [--save]   # --save writes <statsDir>/journeys/<task_id>-journey.txt
+```
+
+### Kanban Board
+
+```bash
+python3 harness.py board
+```
+
+A terminal kanban view of `pending / claimed / active / review / parked /
+failed / done` with an executive summary: per-task stage, checkpoints, owner,
+session stats and terminal reason. `done/` is capped to the 10 most recently
+updated tasks. Auto-generated tasks (`auto-*`) are coloured differently from
+user-created ones; colour is dropped automatically when stdout is not a TTY or
+`NO_COLOR` is set.
+
+---
+
+## Managed Interruption
+
+Release the llama.cpp model to the operator without killing the harness:
+
+```bash
+python3 harness.py interrupt                    # quick mode: borrow the model, auto-resume
+python3 harness.py interrupt --stand-down       # stop work until `harness.py resume`
+```
+
+- **Quick mode** pauses the harness at its next session boundary, spawns one
+  `pi` session on your terminal against the chosen model (`--model NAME`,
+  default `models.technicalWriter`; or `--prompt "..."` for a one-shot query),
+  and resumes the run automatically when that session exits.
+- **Stand-down mode** stops the harness taking work and keeps it down until
+  `python3 harness.py resume` (no task_id). Tasks stay in `active/` at their
+  checkpoints.
+- State lives in `<workDir>/state/interrupt.json` (atomic writes). A corrupt or
+  orphaned request file is treated as an active stand-down — fail-safe: the
+  model stays with the operator; recover with `harness.py resume`.
+- `--no-wait` returns immediately after writing the request; `--timeout S`
+  bounds the wait for the harness to pause (default: sessionTimeout + 60s).
+- An interrupt never reclaims stale claims by itself; reclaim remains an
+  explicit operator action (`requeue-claims`, or `--requeue-stale` on
+  `run`/`run-task-loop`).
+
+---
+
 ## Configuration Reference (`config.json`)
 
 ```json
@@ -355,13 +428,18 @@ work/
         task.json     Checkpoint status, recorded workdir, slice progress
         original.md   Initial task card
         artifacts/    spec.md, slices.md, review logs, progress notes
+          sessions/   Markdown transcript per pi session (prompt, output,
+                      stderr, metadata), linked from the journey graph
     review/           Executive summaries (.md) generated for every terminal task
     done/             Successfully merged tasks
     failed/           Tasks rejected at feasibility (kickout)
     parked/           Tasks halted for review/crash limits, or a context budget
                       overrun that survived every handover
+  state/
+    interrupt.json    Managed-interrupt state (absent = no interrupt active)
   stats/
     sessions.jsonl    Unified JSONL telemetry per session
+    journeys/         Journey graphs saved via `journey --save`
   logs/
     harness.log       Full pipeline execution log (rotated at 5MB)
     supervisor.log    Supervisor lifecycle log
@@ -392,8 +470,24 @@ python3 harness.py autonomous
 python3 harness.py status
 python3 harness.py report
 
+# Kanban-style queue view with executive summary
+python3 harness.py board
+
+# Journey graph + bottleneck analysis for a task
+python3 harness.py journey [task_id] [--save]
+
 # Resume a parked/active task from its latest checkpoint
 python3 harness.py resume <task_id> [--yes] [--fresh]
+
+# Clear an active interrupt and resume the run (no task_id)
+python3 harness.py resume
+
+# Restart a task from scratch (deletes checkpoints)
+python3 harness.py restart <task_id> [--yes]
+
+# Managed interruption: release the model to the operator
+python3 harness.py interrupt [--stand-down] [--no-wait] [--timeout SECONDS]
+                             [--model NAME] [--prompt TEXT]
 
 # Requeue a parked or failed task back to pending
 python3 harness.py unpark <task_id>
