@@ -24,6 +24,7 @@ from .transcripts import (
     TranscriptRecord,
     next_sequence,
     resolve_task_dir,
+    write_pooled_transcript,
     write_transcript,
 )
 from external.pi_cli import (
@@ -149,11 +150,17 @@ class SessionRunner:
         # Transcript sequence is read *before* this session's stats row exists
         # so the first session of a task is `001`; the on-disk count inside
         # `next_sequence` keeps a resumed task's numbering past its restored
-        # transcripts. A task id with no queue directory (direct runner use)
-        # yields None and skips the transcript entirely.
+        # transcripts. A *provided* task id with no queue directory is the
+        # C2 case: the skip gets an explicit warning naming the stage and the
+        # reason, so "no transcript" is never silent. A genuinely absent task
+        # id (`task_id is None`, the autonomous loop) is *not* the C2 case and
+        # stays quiet here — its recording is FR-7's pooled pool, not a skip.
         transcript_task_dir = (
             resolve_task_dir(self.cfg.queue_dir, task_id) if task_id else None
         )
+        if task_id and transcript_task_dir is None:
+            self.log(f"  ! no transcript written for stage {stage_value}: "
+                     f"task dir not found for {task_id}")
         transcript_seq = (
             next_sequence(len(self.store.for_task(task_id)), transcript_task_dir)
             if transcript_task_dir is not None else None
@@ -185,34 +192,50 @@ class SessionRunner:
         self.log(f"  ◀ {stage_value} rc={result.rc} tokens={result.peak_tokens} verdict={verdict} "
                  f"crashed={result.crashed} ({result.duration_s:.0f}s)")
 
+        transcript = TranscriptRecord(
+            sequence=transcript_seq,
+            task_id=task_id,
+            stage=stage_value,
+            timestamp=_now(),
+            model=model,
+            duration_s=round(result.duration_s, 1),
+            peak_tokens=result.peak_tokens,
+            rc=result.rc,
+            verdict=verdict.value,
+            crashed=result.crashed,
+            prompt=full_prompt,
+            output=result.output,
+            # The Stderr section is the child's stderr and nothing else;
+            # the run's own failure text (`err`) is metadata, so a session
+            # that died with no stderr still shows an empty Stderr fence.
+            stderr=result.stderr,
+            error=result.err or "",
+            slice_id=slice_id,
+            iteration=iteration,
+        )
+        # FR-6 cleanup ordering is the whole point: the workdir
+        # `.out`/`.err` capture is deleted *only after* its content is durably
+        # in a transcript (either pool). A failed write keeps the capture —
+        # deleting it first would throw away the only copy of the stderr.
+        # A session that gets no transcript at all (unresolvable task id, the
+        # C2 skip) keeps the legacy capture placement: content is never lost
+        # twice.
         if transcript_task_dir is not None:
-            write_transcript(transcript_task_dir, TranscriptRecord(
-                sequence=transcript_seq,
-                task_id=task_id,
-                stage=stage_value,
-                timestamp=_now(),
-                model=model,
-                duration_s=round(result.duration_s, 1),
-                peak_tokens=result.peak_tokens,
-                rc=result.rc,
-                verdict=verdict.value,
-                crashed=result.crashed,
-                prompt=full_prompt,
-                output=result.output,
-                # The Stderr section is the child's stderr and nothing else;
-                # the run's own failure text (`err`) is metadata, so a session
-                # that died with no stderr still shows an empty Stderr fence.
-                stderr=result.stderr,
-                error=result.err or "",
-                slice_id=slice_id,
-                iteration=iteration,
-            ), self.log)
-            # The workdir `.out`/`.err` capture only pipes the child; its
-            # contents are now durably in the transcript, so no hidden
-            # `.pi-session-*` file survives in the implementation workdir.
-            # The `task_id=None` fallback path keeps the legacy placement —
-            # direct runner users still get the capture where it always was.
-            _cleanup_transient_capture(result.out_file, self.log)
+            transcript_path = write_transcript(transcript_task_dir,
+                                               transcript, self.log)
+            if transcript_path is not None:
+                _cleanup_transient_capture(result.out_file, self.log)
+        elif task_id is None:
+            # FR-7: the autonomous loop has no task dir and no journey to
+            # link from, so its sessions land in the work-dir transcript pool
+            # instead of being skipped. The log line names the pool file; a
+            # failed pooled write emits its own skip-warning (FR-5 C4
+            # fallback), keeps the capture, and the run continues.
+            pool_path = write_pooled_transcript(self.cfg.work_dir,
+                                                transcript, self.log)
+            if pool_path is not None:
+                self.log(f"  · pooled transcript: {pool_path}")
+                _cleanup_transient_capture(result.out_file, self.log)
 
         # Diagnostic: when the session came back empty or unparseable, log the
         # raw output tail so we can see what pi actually returned.

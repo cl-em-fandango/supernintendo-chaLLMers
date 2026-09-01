@@ -22,7 +22,8 @@ combination):
   with a transcript has exactly one `click`, and hostile names never appear
   raw in the diagram;
 - AC 7: no `.pi-session-*` capture survives in the workdir when `task_id` is
-  set; the `task_id=None` fallback still leaves the legacy `.out` file;
+  set; the `task_id=None` session is pooled (FR-7) and its capture is removed
+  once the pooled transcript is durable (FR-6);
 - AC 8: the exec summary lists `journey.md` and `sessions/` and no longer
   mentions `*.out`;
 - AC 9: a resumed task (transcripts restored, stats store gone) numbers past
@@ -365,16 +366,20 @@ class AcceptanceSweepTest(unittest.TestCase):
         self.assertEqual(leftovers, [],
                          f"hidden capture files survived: {leftovers}")
 
-    def test_ac7_task_id_none_fallback_keeps_legacy_capture(self):
+    def test_ac7_task_id_none_pools_transcript_and_removes_capture(self):
         self.script_path.write_text(json.dumps(
             [{"output": SPEC_OUT, "tokens": 10}]))
         result = self.runner.run("m", self.work_repo, "Direct use.",
                                  stage="manual")
         self.assertTrue(result.ok)
-        legacy = list(self.work_repo.glob(".pi-session-*.out"))
-        self.assertEqual(len(legacy), 1, "legacy .out must still be written")
         self.assertEqual(list(self.sessions_dir.glob("*.md")), [],
-                         "no transcript without a task id")
+                         "no task transcript without a task id")
+        pool = list((self.work_dir / "artifacts" / "sessions")
+                    .glob("*-manual.md"))
+        self.assertEqual(len(pool), 1,
+                         f"pooled transcript missing: {self.lines}")
+        # FR-6: the pooled transcript is the durable copy; the capture goes.
+        self.assertEqual(list(self.work_repo.glob(".pi-session-*")), [])
 
     # ------------------------------------------------------------------
     # AC 8: truthful exec summary

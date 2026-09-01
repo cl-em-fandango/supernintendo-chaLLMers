@@ -8,8 +8,10 @@ resolves inside the temp dir):
 
 - with a `task_id`, no hidden `.pi-session-*` capture (`.out` or `.err`)
   survives in the implementation workdir — the transcript holds the contents;
-- without a `task_id`, the legacy workdir `.out` capture stays exactly where
-  it always was;
+- with no `task_id` (FR-7 pool), the capture is removed once the pooled
+  transcript is durably written (FR-6 covers both pools);
+- a session that gets no transcript at all (unresolvable `task_id`) keeps the
+  legacy workdir `.out`/`.err` placement — content is never lost twice;
 - filenames carry `[-slice-<id>][-iter-<n>]`, and a retried stage
   (iteration 2, same stage/slice) gets its own file — nothing is overwritten;
 - a resumed task whose `artifacts/sessions/` was restored from a backup keeps
@@ -148,12 +150,30 @@ class WorkdirTranscriptCleanupTest(unittest.TestCase):
         self.assertIn(STDERR_TEXT.strip(), text)
 
     # ------------------------------------------------------------------
-    # (b) no task_id: legacy capture untouched
+    # (b) no task_id: pooled transcript written, capture removed (FR-6)
     # ------------------------------------------------------------------
-    def test_no_task_id_keeps_legacy_capture(self):
+    def test_pooled_session_removes_capture_after_pooled_write(self):
         result = self._run("direct use", task_id=None)
         self.assertTrue(result.ok)
-        self.assertFalse(self.sessions_dir.exists())
+        self.assertFalse(self.sessions_dir.exists(),
+                         "task-less sessions must not touch the task pool")
+        pool = sorted((self.work_dir / "artifacts" / "sessions").glob("*.md"))
+        self.assertEqual(len(pool), 1, f"pooled transcript missing: {self.lines}")
+        self.assertIn(ASSISTANT_TEXT, pool[0].read_text())
+        # FR-6: the pooled transcript is durable, so the capture goes too.
+        leftovers = sorted(p.name for p in self.work_repo.glob(".pi-session-*"))
+        self.assertEqual(leftovers, [],
+                         "capture survived a successful pooled transcript")
+
+    # ------------------------------------------------------------------
+    # (b2) no transcript at all: legacy capture untouched
+    # ------------------------------------------------------------------
+    def test_unresolvable_task_id_keeps_legacy_capture(self):
+        result = self._run("orphan", task_id="ghost-task")
+        self.assertTrue(result.ok)
+        warnings = [line for line in self.lines
+                    if "no transcript written for stage" in line]
+        self.assertEqual(len(warnings), 1, f"C2 warning expected: {self.lines}")
         legacy = list(self.work_repo.glob(".pi-session-*.out"))
         self.assertEqual(len(legacy), 1, f"legacy .out missing: {self.lines}")
         self.assertEqual(legacy[0].read_text(), ASSISTANT_TEXT)

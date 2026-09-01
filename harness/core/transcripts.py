@@ -10,11 +10,17 @@ Files land in `<task_dir>/artifacts/sessions/` named
 number derived from
 `max(stats rows for the task, transcripts already on disk) + 1` so numbering
 survives a process restart and never reuses a number already on disk.
+
+Sessions with no task association (the autonomous loop, `task_id=None`) have
+no task dir and no journey to link from. They are recorded in a work-dir-level
+pool, `<work_dir>/artifacts/sessions/`, in the same format, named with a
+sortable UTC timestamp prefix instead of a task sequence number.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 _TRANSCRIPT_NAME = re.compile(
@@ -29,9 +35,11 @@ class TranscriptRecord:
 
     `sequence` is the `NNN` in the filename; `prompt` is the full string sent
     to the model (context-budget note included), not the stage prompt alone.
+    A pooled (task-less) transcript has no sequence number and no task id —
+    its timestamp prefix is its only identity.
     """
-    sequence: int
-    task_id: str
+    sequence: int | None
+    task_id: str | None
     stage: str
     timestamp: str
     model: str
@@ -219,8 +227,12 @@ def render_transcript(record: TranscriptRecord) -> str:
     contents are unrelated, so one containing a ``` run cannot break another
     one's delimiter (see `_fenced`).
     """
+    if record.sequence is not None:
+        title = f"# Session {record.sequence:03d}: {record.stage} ({record.task_id})"
+    else:
+        title = f"# Session {record.stage} (pooled)"
     lines = [
-        f"# Session {record.sequence:03d}: {record.stage} ({record.task_id})",
+        title,
         "",
         f"- timestamp: {record.timestamp}",
         f"- stage: {record.stage}",
@@ -280,6 +292,67 @@ def write_transcript(task_dir: Path, record: TranscriptRecord, log) -> Path | No
         log(f"  ! transcript write failed for session "
             f"{record.sequence:03d}-{record.stage}: {exc}")
         return None
+
+
+def pooled_sessions_dir(work_dir: Path) -> Path:
+    """The work-dir-level transcript pool for sessions with no task."""
+    return Path(work_dir) / "artifacts" / "sessions"
+
+
+def pooled_timestamp(now: datetime | None = None) -> str:
+    """Sortable, collision-free UTC prefix for a pooled transcript name.
+
+    ISO-8601 basic format with microseconds (`YYYYMMDDTHHMMSS.ffffffZ`), so
+    lexicographic order is chronological order and two sessions recorded in
+    the same wall-clock second still get distinct names.
+    """
+    moment = now or datetime.now(timezone.utc)
+    return moment.strftime("%Y%m%dT%H%M%S.%fZ")
+
+
+def pooled_transcript_filename(stage: str, timestamp: str) -> str:
+    """`<timestamp>-<stage>.md` for one pooled transcript."""
+    return f"{timestamp}-{stage}.md"
+
+
+def write_pooled_transcript(work_dir: Path, record: TranscriptRecord,
+                            log) -> Path | None:
+    """Record a task-less session in the work-dir pool, warn-and-continue.
+
+    Same audit posture as `write_transcript`: a failed pooled write must not
+    abort the session that produced it, and per FR-5 C4 the fallback for a
+    pooled session that cannot be recorded is the explicit skip-warning naming
+    the stage and the reason — never silence.
+
+    Returns the path written, or None when the write failed.
+    """
+    try:
+        dest_dir = pooled_sessions_dir(work_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = _unique_pooled_path(dest_dir, record.stage)
+        path.write_text(render_transcript(record), encoding="utf-8",
+                        errors="replace")
+        return path
+    except OSError as exc:
+        log(f"  ! no pooled transcript written for stage "
+            f"{record.stage}: {exc}")
+        return None
+
+
+def _unique_pooled_path(dest_dir: Path, stage: str) -> Path:
+    """A pooled filename that does not collide with one already on disk.
+
+    Microsecond timestamps do not collide in practice; the `-<n>` suffix is a
+    belt-and-braces net for a clock adjustment landing two writes on the same
+    microsecond, so a pooled write can never overwrite its predecessor.
+    """
+    timestamp = pooled_timestamp()
+    path = dest_dir / pooled_transcript_filename(stage, timestamp)
+    n = 2
+    while path.exists():
+        path = dest_dir / f"{timestamp}-{stage}-{n}.md"
+        n += 1
+    return path
 
 
 def _fenced(content: str) -> str:

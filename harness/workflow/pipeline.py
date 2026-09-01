@@ -396,6 +396,7 @@ class Pipeline:
         """Persist the journey readouts (ASCII + Markdown) and log the summary."""
         if not hasattr(self.runner, "store") or self.runner.store is None:
             return
+        rows: list[dict] = []
         try:
             from ..core.stats import render_task_journey
             rows = self.runner.store.for_task(task_id)
@@ -405,11 +406,24 @@ class Pipeline:
             self.runner.store.write_task_journey(task_id)
             art_dir = task_dir / "artifacts"
             if art_dir.exists():
-                (art_dir / "journey.txt").write_text(journey_text)
-            self._persist_journey_markdown(task_id, rows)
+                # `errors="replace"`: a row carrying text that cannot be
+                # encoded (a lone surrogate from a broken child) must not
+                # take the whole readout down — the spec's encoding rule is
+                # replacement, never an escaped UnicodeEncodeError.
+                (art_dir / "journey.txt").write_text(
+                    journey_text, encoding="utf-8", errors="replace")
             self.log(f"\n{journey_text}")
         except Exception as e:
             self.log(f"  ⚠ could not persist workflow journey readout: {e}")
+        # The browsable Markdown journey gets its own guard: a failure on the
+        # legacy ASCII surface above must not cost the operator the transcript
+        # index, and a journey failure never changes the pipeline outcome.
+        if not rows:
+            return
+        try:
+            self._persist_journey_markdown(task_id, rows)
+        except Exception as e:
+            self.log(f"  ⚠ could not persist journey.md: {e}")
 
     def _persist_journey_markdown(self, task_id: str, rows: list[dict]) -> None:
         """Write `artifacts/journey.md` beside the transcripts it links to.
@@ -431,7 +445,8 @@ class Pipeline:
         transcripts = match_rows_to_transcripts(rows, list_transcripts(task_dir))
         (art_dir / "journey.md").write_text(
             render_task_journey_markdown(rows, task_id=task_id,
-                                         transcript_files=transcripts))
+                                         transcript_files=transcripts),
+            encoding="utf-8", errors="replace")
 
     def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
         """Per-stage terminal return contract (F2.1): feasibility failure is

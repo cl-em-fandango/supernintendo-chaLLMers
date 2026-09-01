@@ -14,8 +14,9 @@ real binary — `setUp` asserts `shutil.which` resolves inside the temp dir):
   list, the exact full prompt (context-budget note included) and the exact
   assistant output;
 - two sequential sessions number `001`, `002`;
-- `task_id=None` writes no transcript and keeps the legacy workdir `.out`
-  placement untouched;
+- `task_id=None` writes no *task* transcript (FR-7 pools it under the work
+  dir) and, once the pooled transcript is durable, the workdir `.out`
+  capture is removed (FR-6);
 - task intake creates `artifacts/sessions/` so the first session lands there.
 
 Run from the repo root:  python3 -m unittest tests.test_transcript_basic
@@ -175,14 +176,16 @@ class TranscriptBasicTest(unittest.TestCase):
         names = sorted(p.name for p in self.sessions_dir.iterdir())
         self.assertEqual(names, ["001-spec_author.md", "002-slicing.md"])
 
-    def test_no_task_id_writes_no_transcript_and_keeps_legacy_out(self):
+    def test_no_task_id_pools_transcript_and_removes_capture(self):
         result = self._run("direct use", task_id=None)
         self.assertTrue(result.ok)
         self.assertFalse(self.sessions_dir.exists())
-        # Legacy behavior: the hidden .out capture stays in the workdir.
-        legacy = list(self.work_repo.glob(".pi-session-*.out"))
-        self.assertEqual(len(legacy), 1, f"legacy .out missing: {self.lines}")
-        self.assertEqual(legacy[0].read_text(), ASSISTANT_TEXT)
+        # FR-7: the session is recorded in the work-dir pool instead.
+        pool = list((self.work_dir / "artifacts" / "sessions").glob("*.md"))
+        self.assertEqual(len(pool), 1, f"pooled transcript missing: {self.lines}")
+        self.assertIn(ASSISTANT_TEXT, pool[0].read_text())
+        # FR-6: the pooled transcript holds the content, so the capture goes.
+        self.assertEqual(list(self.work_repo.glob(".pi-session-*")), [])
 
     def test_intake_creates_sessions_dir(self):
         lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
