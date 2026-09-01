@@ -76,6 +76,19 @@ def build_parser() -> argparse.ArgumentParser:
     # report
     subparsers.add_parser("report", help="Print the stats report")
 
+    # sync
+    subparsers.add_parser(
+        "sync", help="Run one two-way GitHub issue sync pass (prints "
+                     "\"github sync disabled\" and exits 0 when githubPat/"
+                     "githubRepo are unconfigured)")
+
+    # syncd
+    subparsers.add_parser(
+        "syncd", help="Run the sync daemon: poll, sync, and spawn one "
+                      "harness run when pending/ has work and none is "
+                      "running (single instance via <workDir>/syncd.lock; "
+                      "exits non-zero when another syncd holds the lock)")
+
     # board (with hidden kanban alias)
     subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
     subparsers.add_parser("kanban", help=argparse.SUPPRESS)

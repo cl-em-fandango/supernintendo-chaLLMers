@@ -14,6 +14,7 @@ from ..core.config import Config
 from ..core.enums import CheckpointStage, Stage
 from ..core.providers import Task
 from .continue_fresh import fresh_restart, task_from_dir
+from ..core.sync_stage_change_hook import run_stage_change_hook
 from .pipeline import STAGE_SEQUENCE
 from .task_lifecycle import QUEUE_LOCATIONS, TaskLifecycle
 
@@ -72,7 +73,7 @@ def confirm_resume(task_id: str, yes: bool, log=print, input_fn=input) -> bool:
 
 def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
                lifecycle: TaskLifecycle, log=print, input_fn=input,
-               fresh: bool = False) -> int:
+               fresh: bool = False, sync_engine=None) -> int:
     """Run the full `resume <task_id>` flow (F3.2-F3.6). Returns the exit code."""
     # F3.2: search queue subdirs in order; first dir containing <id>/ wins.
     where = None
@@ -141,5 +142,9 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
     shutil.move(str(task_dir), str(active_dir))
     (cfg.queue_dir / "review" / f"{task_id}.md").unlink(missing_ok=True)
     log(f"  moved {where}/{task_id} -> active/{task_id}")
+    # The resume/requeue transition (spec FR-3): one sync pass for the moved
+    # task, after the move; the hook swallows sync failures (NFR-1) and is a
+    # no-op with GitHub unconfigured (FR-0.1, NFR-2).
+    run_stage_change_hook(sync_engine, task_id, log=log)
     pipeline.process(task_from_dir(active_dir, lifecycle))
     return 0

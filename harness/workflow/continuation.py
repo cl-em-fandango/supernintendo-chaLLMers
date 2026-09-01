@@ -47,6 +47,9 @@ class ContinuationNote:
     iteration: int = 1
     output_path: Path | None = None
     note_path: Path | None = None
+    # The task the handover belongs to, when there is one (a bare run has
+    # none). Only the GitHub handoff-comment poster needs it (spec FR-2.5).
+    task_id: str = ""
 
 
 def _wire(value) -> str:
@@ -123,15 +126,27 @@ def _note_text(note: ContinuationNote, partial_output: str) -> str:
 
 
 def write_note(notes_dir: Path, note: ContinuationNote,
-               partial_output: str) -> ContinuationNote:
+               partial_output: str,
+               handoff_sync=None) -> ContinuationNote:
     """Write one handover note and return the note carrying its path.
 
     Atomic (`write_atomic`), like every other harness artifact: a resuming
     session must never read a half-written handover.
+
+    `handoff_sync` (spec FR-2.5, FR-3) is the optional GitHub handoff
+    hook — a callable `(task_id, stage, prose, slice_id, iteration)`
+    wired by the composition root; it posts the handoff comment and runs
+    the in-flight sync pass. None (GitHub disabled, or a bare run with no
+    task) keeps this a no-op (FR-0.1). The hook swallows its own failures,
+    so a sync error never loses the note (NFR-1).
     """
     path = note_path(notes_dir, note.stage, note.slice_id, note.attempt)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(path, _note_text(note, partial_output))
+    text = _note_text(note, partial_output)
+    write_atomic(path, text)
+    if handoff_sync is not None and note.task_id:
+        handoff_sync(note.task_id, _wire(note.stage), text,
+                     note.slice_id, note.iteration)
     return replace(note, note_path=path)
 
 

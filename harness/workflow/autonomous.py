@@ -18,14 +18,20 @@ from ..core.config import Config
 from ..core.enums import Stage, Verdict
 from ..core.providers import Task
 from ..core.session import SessionRunner
+from ..core.sync_stage_change_hook import run_stage_change_hook
 
 
 class AutonomousGenerator:
-    def __init__(self, cfg: Config, runner: SessionRunner, provider, log=print):
+    def __init__(self, cfg: Config, runner: SessionRunner, provider, log=print,
+                 sync_engine=None):
         self.cfg = cfg
         self.runner = runner
         self.provider = provider
         self.log = log
+        # GitHub sync dispatcher (spec FR-3): a task landing in `pending/`
+        # is a stage change. None (GitHub unconfigured) keeps the hook a
+        # no-op (FR-0.1, NFR-2); the hook swallows its own failures (NFR-1).
+        self.sync_engine = sync_engine
 
     def _random_model(self, exclude: str | None = None) -> str:
         # Autonomous suggest/review is high-volume and low-stakes -> use fast models.
@@ -98,6 +104,9 @@ class AutonomousGenerator:
             dest = self.cfg.queue_dir / "pending" / f"{task_id}.md"
             dest.write_text(proposal)
             self.log(f"  ➕ queued task: {task_id}")
+            # The task only lands in `pending/` (spec FR-3): one sync pass
+            # for it, after the write; failures die inside the hook (NFR-1).
+            run_stage_change_hook(self.sync_engine, task_id, log=self.log)
             added += 1
 
         self.log(f"autonomous mode finished: added {added} tasks "

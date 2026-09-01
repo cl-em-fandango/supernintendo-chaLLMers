@@ -353,6 +353,7 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
 ```json
 {
   "workDir": "/home/donald/work",
+  "repoDir": "/srv/pi-harness/harness_build",
   "trunkBranch": "pi/trunk",
   "taskProvider": "directory",
   "directoryProvider": {
@@ -367,6 +368,11 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
   "maxSliceImplement": 5,
   "maxSliceTechReview": 5,
   "maxSliceFuncReview": 5,
+  "sessionTimeout": 3600,
+  "toolTimeout": 60,
+  "maxOutputBytes": 2097152,
+  "toolUlimitNproc": 50,
+  "toolUlimitVmemKB": 8388608,
   "autonomousQueueTarget": 5,
   "models": {
     "technicalWriter": "Qwen3.8-DFLASH2-TechnicalWriter",
@@ -413,6 +419,13 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
 }
 ```
 
+`repoDir` is the target git repository the pipeline branches and merges in;
+any subcommand accepts `--repo <path>` (`--repo-dir`) to override it. The
+guardrail keys bound execution: `sessionTimeout` is the wall-clock cap per pi
+session, `toolTimeout` the cap for wrapped shell helpers, `maxOutputBytes` the
+per-stream capture cap, and `toolUlimitNproc` / `toolUlimitVmemKB` the process
+and virtual-memory ulimits applied to wrapped shells.
+
 ---
 
 ## Directory & Queue Structure
@@ -452,7 +465,7 @@ work/
 
 ```bash
 # Process all pending tasks, then enter autonomous generation mode
-python3 harness.py run [--continue] [--requeue-stale]
+python3 harness.py run [--continue] [--requeue-stale] [--repo PATH]
 
 # Process a single specific task card
 python3 harness.py run-task <file.md> [--fresh] [--continue]

@@ -7,3 +7,4 @@ __pycache__/
 .chief-wiggum/
 .pi-session-*
 **/__pycache__/**
+config.json
