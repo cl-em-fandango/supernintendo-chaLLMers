@@ -1,1 +1,0 @@
-FAILED tests/test_pipeline_resume.py::PipelineResumeTest::test_resume_skips_checkpointed_stages

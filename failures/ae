@@ -1,1 +1,0 @@
-FAILED tests/test_git_commit_failure.py::SquashCommitFailureTest::test_cleanup_failure_raises_and_preserves_evidence

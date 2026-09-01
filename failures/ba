@@ -1,1 +1,0 @@
-FAILED tests/test_pipeline_resume.py::PipelineResumeTest::test_feasibility_kickback_keeps_checkpoint_prefix

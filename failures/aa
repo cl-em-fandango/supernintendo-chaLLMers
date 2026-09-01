@@ -1,1 +1,0 @@
-FAILED tests/test_claim_ownership.py::OwnedClaimTest::test_owned_claim_is_reported_as_a_claim_dataclass

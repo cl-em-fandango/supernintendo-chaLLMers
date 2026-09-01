@@ -1,5 +1,6 @@
 {
-  "workDir": "/home/donald/work",
+  "workDir": "/srv/pi-harness",
+  "repoDir": "/srv/pi-harness/harness_build",
   "tokenBudget": 60000,
   "maxPromptTokens": 60000,
   "maxSpecKickbacks": 3,
@@ -8,52 +9,54 @@
   "maxSliceFuncReview": 5,
   "maxSliceCheckLoops": 3,
   "maxCrashRetries": 2,
+  "maxContextContinuations": 3,
+  "sessionTimeout": 3600,
+  "toolTimeout": 60,
+  "maxOutputBytes": 2097152,
+  "toolUlimitNproc": 50,
+  "toolUlimitVmemKB": 8388608,
   "autonomousQueueTarget": 5,
   "trunkBranch": "pi/trunk",
   "modelContext": {
-    "QwenOptimised32k": 32768,
-    "QwenOptimised64k": 65536,
-    "OrinthOptimised32k": 32768,
-    "QwenOptimised128k": 131072,
-    "Ornith-1.5-35B-Q6_K.gguf": 131072,
-    "Qwen3.8-27B-Q4_K_M": 131072,
-    "Qwen3.8-27B-UD-Q4_K_XL": 131072,
-    "Qwen3.8-27B-UD-Q8_K_XL": 131072,
-    "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2": 131072,
-    "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P": 131072,
-    "Qwen3.8-DFLASH2-Implementer": 131072,
-    "Qwen3.8-DFLASH2-TechnicalWriter": 131072
+    "gemma-4-26B-A4B-it-UD-Q8_K_XL": 131072,
+    "GLM4.5-AIR_Q4_K_M": 131072,
+    "gpt-oss-120b-q5-k-m": 131072,
+    "Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L": 131072,
+    "Ornith-1.5-35B-Q6_K": 131072,
+    "Qwen3.8-27B-UD-Q6_K_XL_DFLASH2": 131072,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer": 131072,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter": 131072
   },
   "taskProvider": "directory",
   "directoryProvider": {
-    "pendingDir": "/home/donald/work/queue/pending"
+    "pendingDir": "/srv/pi-harness/queue/pending",
+    "activeDir": "/srv/pi-harness/queue/active",
+    "failedDir": "/srv/pi-harness/queue/failed",
+    "doneDir": "/srv/pi-harness/queue/done",
+    "reviewDir": "/srv/pi-harness/queue/review",
+    "parkedDir": "/srv/pi-harness/queue/parked",
+    "claimedDir": "/srv/pi-harness/queue/claimed"
+
   },
   "models": {
-    "technicalWriter": "Qwen3.8-DFLASH2-TechnicalWriter",
-    "implementer": "Qwen3.8-DFLASH2-Implementer",
-    "assessor": "Ornith-1.5-35B-Q6_K.gguf",
+    "technicalWriter": "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter",
+    "implementer": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer",
+    "assessor": "Ornith-1.5-35B-Q6_K",
     "fastPool": [
-      "QwenOptimised32k",
-      "QwenOptimised64k",
-      "OrinthOptimised32k",
-      "Ornith-1.5-35B-Q6_K.gguf",
-      "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
-      "Qwen3.8-27B-UD-Q8_K_XL",
-      "Qwen3.8-27B-Q4_K_M"
+      "Ornith-1.5-35B-Q6_K",
+      "gemma-4-26B-A4B-it-UD-Q8_K_XL",
+      "GLM4.5-AIR_Q4_K_M",
+      "gpt-oss-120b-q5-k-m",
+      "Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L"
     ],
     "randomPool": [
-      "QwenOptimised32k",
-      "QwenOptimised64k",
-      "QwenOptimised128k",
-      "OrinthOptimised32k",
-      "Ornith-1.5-35B-Q6_K.gguf",
-      "Qwen3.8-27B-Q4_K_M",
-      "Qwen3.8-27B-UD-Q4_K_XL",
-      "Qwen3.8-27B-UD-Q8_K_XL",
-      "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2",
-      "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P",
-      "Qwen3.8-DFLASH2-Implementer",
-      "Qwen3.8-DFLASH2-TechnicalWriter"
+      "Ornith-1.5-35B-Q6_K",
+      "gemma-4-26B-A4B-it-UD-Q8_K_XL",
+      "GLM4.5-AIR_Q4_K_M",
+      "gpt-oss-120b-q5-k-m",
+      "Kwaipilot_KAT-Coder-V2.5-Dev-Q6_K_L",
+      "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter",
+      "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer"
     ]
   }
 }

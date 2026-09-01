@@ -138,7 +138,8 @@ class SquashConflictCleanupTest(unittest.TestCase):
         self.assertTrue(G.merge_in_progress(self.dir))
 
     # -- added-path recording ---------------------------------------------
-    def test_added_paths_are_recorded_before_the_merge(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_added_paths_are_recorded_before_the_merge(self, _gate):
         """Only branch additions, captured while the tree is still untouched —
         the list is the allow-list the cleanup deletes from."""
         real = G._added_paths
@@ -159,7 +160,8 @@ class SquashConflictCleanupTest(unittest.TestCase):
         self.assertEqual(seen["unmerged"], "", "recorded after the merge started")
 
     # -- conflict cleanup through merge_to_trunk ---------------------------
-    def test_squash_conflict_raises_with_evidence(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_squash_conflict_raises_with_evidence(self, _gate):
         msg = self.abort_via_merge_to_trunk()
         self.assertIn("merge conflict", msg)
         self.assertIn("CONFLICT", msg, "git conflict output missing from the message")
@@ -181,7 +183,8 @@ class SquashConflictCleanupTest(unittest.TestCase):
         self.assertFalse((self.dir / "added_dir").exists(),
                          "directory emptied by the cleanup was not pruned")
 
-    def test_unrelated_untracked_file_survives_the_cleanup(self):
+    @mock.patch.object(G, "gate_applies", return_value=True)
+    def test_unrelated_untracked_file_survives_the_cleanup(self, _gate):
         """A file created *after* the cleanliness check is not ours to delete:
         the cleanup removes recorded paths only, never every `??` entry."""
         bystander = self.dir / "written_by_another_tool.txt"

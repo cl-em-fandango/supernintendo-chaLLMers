@@ -27,6 +27,12 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["ruff"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end integration tests that invoke real pi subprocess",
+]
+
 [tool.ruff]
 target-version = "py310"
 

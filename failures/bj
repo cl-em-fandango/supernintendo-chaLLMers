@@ -1,1 +1,0 @@
-FAILED tests/test_resume_cli.py::ResumeCliTest::test_resume_corrupt_task_json_resumes_from_spec

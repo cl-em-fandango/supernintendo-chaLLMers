@@ -5,6 +5,7 @@ from external.git_cli import (  # noqa: F401
     LAST_GOOD_TAG,
     GateNotApplicable,
     cleanup_branch,
+    discard_task_residue,
     ensure_branch,
     merge_to_trunk,
     verify_harness,

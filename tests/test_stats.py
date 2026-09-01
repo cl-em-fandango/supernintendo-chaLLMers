@@ -120,7 +120,7 @@ ROWS: list[dict] = [
         outcome="kickback", duration_s=600.0, peak_tokens=6000, task_id="t3"),
     row(model=MODEL_BETA, stage="tech_review", verdict="done", outcome="done",
         duration_s=700.0, peak_tokens=7000, task_id=None),
-    row(model=MODEL_BETA, stage="tech_review", verdict="error",
+    row(model=MODEL_BETA, stage="slice_implement", verdict="error",
         outcome="error", duration_s=800.0, peak_tokens=8000, task_id="t3"),
     row(model=MODEL_BETA, verdict="fail", outcome="fail",
         duration_s=900.0, peak_tokens=9000),

@@ -1,0 +1,18 @@
+{
+  "origin": "http://192.168.1.196",
+  "port": 8000,
+  "apiKey": "iamakey",
+  "contextOverrides": {
+    "Ornith-1.5-35B-Q6_K": 65536,
+    "Qwen3.8-27B-Q4_K_M": 65536,
+    "Qwen3.8-27B-UD-Q4_K_XL": 65536,
+    "Qwen3.8-27B-UD-Q8_K_XL": 65536,
+    "Qwen3.8-27B-UD-Q8_K_XL_DFLASH2": 65536,
+    "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P": 65536,
+    "Qwen3.8-DFLASH2-Implementer": 65536,
+    "Qwen3.8-DFLASH2-TechnicalWriter": 65536,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL": 65536,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer": 65536,
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter": 65536
+  }
+}

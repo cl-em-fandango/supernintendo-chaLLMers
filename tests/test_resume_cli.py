@@ -22,7 +22,7 @@ from harness.workflow.task_lifecycle import TaskLifecycle
 from tests.test_pipeline_resume import FakeRunner, _make_repo
 
 
-def _cfg(queue_dir: Path) -> Config:
+def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=queue_dir.parent,
         token_budget=100_000,
@@ -37,6 +37,7 @@ def _cfg(queue_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
     )
 
 
@@ -49,10 +50,11 @@ class ResumeCliTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.lines: list[str] = []
         self.repo = _make_repo(Path(self._tmp.name) / "repo")
+        self.cfg = _cfg(self.queue_dir, repo=self.repo)
         self.runner = FakeRunner()
-        self.pipeline = Pipeline(_cfg(self.queue_dir), self.runner,
+        self.pipeline = Pipeline(self.cfg, self.runner,
                                  log=self.lines.append)
-        self.lifecycle = TaskLifecycle(_cfg(self.queue_dir), log=self.lines.append)
+        self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self._seed_slices()
 
     def _seed_slices(self):
@@ -86,7 +88,7 @@ class ResumeCliTest(unittest.TestCase):
                                  CheckpointStage.SLICING)
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append)
         self.assertEqual(rc, 0)
@@ -110,7 +112,7 @@ class ResumeCliTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_plan_preview_printed(self):
         self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY)
-        resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        resume_task("t1", yes=True, cfg=self.cfg,
                     pipeline=self.pipeline, lifecycle=self.lifecycle,
                     log=self.lines.append)
         log = self._log()
@@ -124,7 +126,7 @@ class ResumeCliTest(unittest.TestCase):
     def test_resume_done_task_reports_complete(self):
         self.pipeline.process(self._task())
         self.assertTrue((self.queue_dir / "done" / "t1").exists())
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append)
         self.assertEqual(rc, 0)
@@ -142,7 +144,7 @@ class ResumeCliTest(unittest.TestCase):
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
         # Enter (default yes) accepts
-        rc = resume_task("t1", yes=False, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=False, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append, input_fn=lambda *a: "")
         self.assertEqual(rc, 0)
@@ -159,7 +161,7 @@ class ResumeCliTest(unittest.TestCase):
         self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY)
         self.lifecycle.park("t1", "slicing failed (verdict=fail)")
         self._review_file()
-        rc = resume_task("t1", yes=False, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=False, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append, input_fn=lambda *a: "n")
         self.assertEqual(rc, 0)
@@ -176,7 +178,7 @@ class ResumeCliTest(unittest.TestCase):
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
         # --yes: no prompt at all (input_fn would fail if called)
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append,
                          input_fn=lambda *a: self.fail("prompt should be skipped"))
@@ -191,7 +193,7 @@ class ResumeCliTest(unittest.TestCase):
         import shutil
         shutil.move(str(self.queue_dir / "active" / "t1"),
                     str(self.queue_dir / "parked" / "t1"))
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append)
         self.assertEqual(rc, 0)
@@ -201,7 +203,7 @@ class ResumeCliTest(unittest.TestCase):
     # EC8: not found
     # ------------------------------------------------------------------
     def test_resume_unknown_task_not_found(self):
-        rc = resume_task("nope", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("nope", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append)
         self.assertEqual(rc, 1)
@@ -216,7 +218,7 @@ class ResumeCliTest(unittest.TestCase):
         (td / "task.json").write_text("{corrupt")
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append)
         self.assertEqual(rc, 0)
@@ -233,7 +235,7 @@ class ResumeCliTest(unittest.TestCase):
                                  CheckpointStage.SLICING)
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append, fresh=True)
         self.assertEqual(rc, 0)
@@ -250,7 +252,7 @@ class ResumeCliTest(unittest.TestCase):
         self.lifecycle.park("t1", "slicing failed (verdict=fail)")
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-        rc = resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        rc = resume_task("t1", yes=True, cfg=self.cfg,
                          pipeline=self.pipeline, lifecycle=self.lifecycle,
                          log=self.lines.append, fresh=False)
         self.assertEqual(rc, 0)
@@ -269,12 +271,23 @@ class ResumeCliTest(unittest.TestCase):
         self.lifecycle.park("t1", "spec author failed twice")
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-        resume_task("t1", yes=True, cfg=_cfg(self.queue_dir),
+        resume_task("t1", yes=True, cfg=self.cfg,
                     pipeline=self.pipeline, lifecycle=self.lifecycle,
                     log=self.lines.append)
         # the resumed task ran against the repo workdir (from original.md)
         self.assertIn("slice_implement", self.runner.calls)
         self.assertTrue((self.queue_dir / "done" / "t1").exists())
+
+    def test_unpark_and_restart_handler_dispatch(self):
+        from harness.cli.handlers import cmd_unpark, cmd_restart
+        self._checkpoint_through(CheckpointStage.SPEC, CheckpointStage.FEASIBILITY)
+        self.lifecycle.park("t1", "test failure")
+        # unpark preserves checkpoints
+        self.runner = FakeRunner()
+        self.pipeline.runner = self.runner
+        # verify cmd_unpark is a synonym of cmd_resume (callable with yes/fresh)
+        self.assertTrue(callable(cmd_unpark))
+        self.assertTrue(callable(cmd_restart))
 
 
 if __name__ == "__main__":

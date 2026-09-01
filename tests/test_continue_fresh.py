@@ -28,7 +28,7 @@ from harness.workflow.task_lifecycle import TaskLifecycle
 from tests.test_pipeline_resume import FakeRunner, _make_repo
 
 
-def _cfg(queue_dir: Path) -> Config:
+def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=queue_dir.parent,
         token_budget=100_000,
@@ -43,6 +43,7 @@ def _cfg(queue_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
     )
 
 
@@ -55,10 +56,11 @@ class ContinueFreshTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.lines: list[str] = []
         self.repo = _make_repo(Path(self._tmp.name) / "repo")
+        self.cfg = _cfg(self.queue_dir, repo=self.repo)
         self.runner = FakeRunner()
-        self.pipeline = Pipeline(_cfg(self.queue_dir), self.runner,
+        self.pipeline = Pipeline(self.cfg, self.runner,
                                  log=self.lines.append)
-        self.lifecycle = TaskLifecycle(_cfg(self.queue_dir), log=self.lines.append)
+        self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self._seed_slices()
 
     def _seed_slices(self):

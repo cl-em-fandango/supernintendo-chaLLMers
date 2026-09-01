@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from harness.core.config import Config
-from harness.core.enums import CheckpointStage
+from harness.core.enums import CheckpointStage, Verdict
 from harness.core.providers import Task
 from harness.core.session import SessionResult
 from harness.workflow.params import StageContext
@@ -48,7 +48,13 @@ class CountingRunner:
             self.per_slice[slice_id] = self.per_slice.get(slice_id, 0) + 1
         out_file = Path(workdir) / f".pi-session-{stage}-{len(self.calls)}.out"
         out_file.write_text("VERDICT: pass")
-        return SessionResult(ok=True, verdict="pass", peak_tokens=0,
+        # The pipeline compares verdicts with `is` against Verdict members (T29),
+        # so the stub must hand back enum members, not plain strings.
+        if stage == "slice_implement":
+            verdict = Verdict.DONE
+        else:
+            verdict = Verdict.PASS
+        return SessionResult(ok=True, verdict=verdict, peak_tokens=0,
                              duration_s=0.0, output="VERDICT: pass",
                              out_file=out_file, crashed=False)
 
@@ -97,7 +103,13 @@ class SliceCheckpointTest(unittest.TestCase):
         return StageContext("t1", self.task_dir, self.work_repo)
 
     def _raw(self) -> dict:
-        return json.loads(self.lifecycle.task_json_path("t1").read_text())
+        # The task may have been moved to parked/ (or another terminal queue
+        # subdir) by the pipeline; search where it actually lives.
+        for where in ("active", "parked", "failed", "done"):
+            path = self.lifecycle.task_json_path("t1", where=where)
+            if path.exists():
+                return json.loads(path.read_text())
+        raise FileNotFoundError("task t1 not found")
 
     def _log(self) -> str:
         return "\n".join(self.lines)

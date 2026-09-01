@@ -72,7 +72,7 @@ def _git(cwd: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout
 
 
-def _cfg(work_dir: Path) -> Config:
+def _cfg(work_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=work_dir,
         token_budget=CAP,
@@ -87,6 +87,7 @@ def _cfg(work_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
         raw={},
     )
 
@@ -136,7 +137,8 @@ def _base_summary(task_id: str, td: Path, original: str, reason: str) -> str:
         "\n"
         f"- spec: `{td}/artifacts/spec.md`\n"
         f"- slices: `{td}/artifacts/slices.md`\n"
-        f"- session outputs: `{td}/artifacts/*.out`\n"
+        f"- journey: `{td}/artifacts/journey.md`\n"
+        f"- session transcripts: `{td}/artifacts/sessions/`\n"
     )
 
 
@@ -348,8 +350,8 @@ class ProcessHandoffIntegrationTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.work_dir = Path(self._tmp.name)
         self.queue = _make_queue(self.work_dir)
-        self.cfg = _cfg(self.work_dir)
         self.repo = _make_repo(self.work_dir / "repo")
+        self.cfg = _cfg(self.work_dir, repo=self.repo)
         self.lifecycle = TaskLifecycle(self.cfg, log=lambda *a: None)
         # A `slices.md` so a run that reaches the slice stage has work to trip on.
         td = self.queue / "active" / "t1"

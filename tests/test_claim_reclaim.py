@@ -465,7 +465,7 @@ class OperatorRequeueClaimsTest(_WiredFixture):
         self.assertEqual((self.pending / "002-b.md").read_text(),
                          "pending original")
         self.assertEqual((self.pending / "002-b-requeued.md").read_text(),
-                         "# 002-b\nbody of 002-b\n")
+                         "# 002-b\nbody of 002-b.md\n")
 
     def test_an_empty_claimed_directory_is_not_an_error(self):
         self.assertEqual(self._requeue(), 0)

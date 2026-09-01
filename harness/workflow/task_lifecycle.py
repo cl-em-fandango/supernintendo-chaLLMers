@@ -285,6 +285,7 @@ class TaskLifecycle:
         `task.json` (F1.5: new fields, signature unchanged)."""
         task_dir = self.task_dir(task.id)
         (task_dir / "artifacts" / "progress").mkdir(parents=True, exist_ok=True)
+        (task_dir / "artifacts" / "sessions").mkdir(parents=True, exist_ok=True)
         (task_dir / "prompts").mkdir(exist_ok=True)
         (task_dir / "original.md").write_text(task.body)
         now = _now()
@@ -406,7 +407,8 @@ class TaskLifecycle:
 
 - spec: `{td}/artifacts/spec.md`
 - slices: `{td}/artifacts/slices.md`
-- session outputs: `{td}/artifacts/*.out`
+- journey: `{td}/artifacts/journey.md`
+- session transcripts: `{td}/artifacts/sessions/`
 """
         if handoff is not None:
             body += _handoff_section(handoff)
@@ -430,15 +432,11 @@ class TaskLifecycle:
         return workdir
 
     def resolve_workdir(self, task_dir: Path) -> Path:
-        """If the task references an existing git repo, work there; else the
-        task dir. A missing `original.md` (partial crash, EC13) falls back to
-        the task dir rather than crashing."""
-        original = task_dir / "original.md"
-        if not original.exists():
-            self.log(f"  ⚠ {original} missing; using task dir as workdir")
-            return task_dir
-        for m in re.findall(r"/[a-zA-Z0-9_./-]+", original.read_text()):
-            p = Path(m)
-            if p.is_dir() and (p / ".git").exists():
-                return p
+        """Resolve the target repository workdir deterministically.
+
+        Uses `cfg.repo_dir` (configured in config.json or passed via CLI).
+        Falls back to `task_dir` (which the queue guard rejects) if no target
+        repo is configured. Never extracts paths from markdown."""
+        if self.cfg.repo_dir is not None:
+            return self.cfg.repo_dir
         return task_dir

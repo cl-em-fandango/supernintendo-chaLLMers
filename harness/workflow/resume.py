@@ -7,6 +7,7 @@ prints the resume plan from `task.json`, and resumes it via `process()`
 from __future__ import annotations
 
 import shutil
+import tempfile
 from pathlib import Path
 
 from ..core.config import Config
@@ -99,10 +100,26 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
                 source = state.source or "resume"
             except Exception:
                 pass
+        # Preserve artifacts (e.g. slices.md) across the fresh restart so the
+        # pipeline still has the generated outputs it needs to complete; a
+        # fresh restart drops checkpoints, not artefacts.
+        artifacts = task_dir / "artifacts"
+        artifacts_backup: Path | None = None
+        if artifacts.exists():
+            artifacts_backup = Path(tempfile.mkdtemp()) / artifacts.name
+            shutil.copytree(artifacts, artifacts_backup)
         fresh_restart(task_id, cfg, log=log)
         if where != "active":
             shutil.rmtree(task_dir)
             log(f"  --fresh: deleted {where}/{task_id}")
+        # Recreate the task dir with its artifacts so pipeline.process can
+        # complete; intake() only creates artifacts/progress/ and leaves any
+        # pre-existing artefacts in place.
+        if artifacts_backup is not None:
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / artifacts_backup.name).mkdir(parents=True)
+            shutil.rmtree(task_dir / artifacts_backup.name)
+            shutil.copytree(artifacts_backup, task_dir / artifacts_backup.name)
         pipeline.process(Task(id=task_id, body=body, source=source))
         return 0
 

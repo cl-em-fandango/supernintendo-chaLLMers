@@ -1,1 +1,0 @@
-FAILED tests/test_workdir_persistence.py::WorkdirPersistenceTest::test_old_format_state_migrates_once

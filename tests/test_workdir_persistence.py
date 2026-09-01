@@ -44,7 +44,7 @@ def _make_repo(root: Path) -> Path:
     return root
 
 from harness.core.config import Config
-from harness.core.enums import CheckpointStage
+from harness.core.enums import CheckpointStage, Verdict
 from harness.core.providers import Task
 from harness.core.session import SessionResult
 from harness.workflow import pipeline as pipeline_module
@@ -57,16 +57,16 @@ class FakeRunner:
     returns a scripted success verdict."""
 
     DEFAULTS = {
-        "spec_author": "done",
-        "spec_assess_ornith": "pass",
-        "spec_assess_tw": "pass",
-        "feasibility": "pass",
-        "slicing": "done",
-        "slice_check": "pass",
-        "slice_implement": "done",
-        "tech_review": "pass",
-        "func_review": "pass",
-        "holistic": "pass",
+        "spec_author": Verdict.DONE,
+        "spec_assess_ornith": Verdict.PASS,
+        "spec_assess_tw": Verdict.PASS,
+        "feasibility": Verdict.PASS,
+        "slicing": Verdict.DONE,
+        "slice_check": Verdict.PASS,
+        "slice_implement": Verdict.DONE,
+        "tech_review": Verdict.PASS,
+        "func_review": Verdict.PASS,
+        "holistic": Verdict.PASS,
     }
 
     def __init__(self, verdicts=None):
@@ -80,19 +80,20 @@ class FakeRunner:
         self.workdirs.append(str(workdir))
         workdir = Path(workdir)
         out_file = workdir / f".pi-session-{stage}-{len(self.calls)}.out"
-        out_file.write_text("VERDICT: " + self.verdicts.get(stage, "pass"))
+        verdict = self.verdicts.get(stage, Verdict.PASS)
+        out_file.write_text(f"VERDICT: {verdict.value}")
         if stage == "slice_implement" and (workdir / ".git").exists():
             (workdir / "work.md").write_text(f"slice work {len(self.calls)}\n")
             _git(workdir, "add", "-A")
             _git(workdir, "-c", "user.email=t@t", "-c", "user.name=t",
                  "commit", "-m", f"slice work {len(self.calls)}")
-        return SessionResult(ok=True, verdict=self.verdicts.get(stage, "pass"),
+        return SessionResult(ok=True, verdict=verdict,
                              peak_tokens=0, duration_s=0.0,
-                             output="VERDICT: pass", out_file=out_file,
+                             output=f"VERDICT: {verdict.value}", out_file=out_file,
                              crashed=False)
 
 
-def _cfg(queue_dir: Path) -> Config:
+def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
         work_dir=queue_dir.parent,
         token_budget=100_000,
@@ -107,6 +108,7 @@ def _cfg(queue_dir: Path) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
+        repo_dir=repo,
     )
 
 
@@ -119,7 +121,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.lines: list[str] = []
         self.repo = _make_repo(Path(self._tmp.name) / "repo")
-        self.cfg = _cfg(self.queue_dir)
+        self.cfg = _cfg(self.queue_dir, repo=self.repo)
         self.lifecycle = TaskLifecycle(self.cfg, log=self.lines.append)
         self.runner = FakeRunner()
         self.pipeline = Pipeline(self.cfg, self.runner, log=self.lines.append)
@@ -168,6 +170,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
 
         pipeline_module.ensure_branch = spy
         self.addCleanup(setattr, pipeline_module, "ensure_branch", real_ensure_branch)
+        self._seed_slices()
 
         status = self.pipeline.process(self._task())
 
@@ -197,7 +200,7 @@ class WorkdirPersistenceTest(unittest.TestCase):
         self.assertEqual(status, "done")
         # the resume added no resolution: the saved value was used as-is
         self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
-        self.assertNotIn("re-derived from original.md", self._log())
+        self.assertNotIn("resolved from config", self._log())
         self.assertEqual(self.runner.workdirs, [str(self.repo)] * len(self.runner.workdirs))
 
     # ------------------------------------------------------------------
@@ -210,14 +213,16 @@ class WorkdirPersistenceTest(unittest.TestCase):
             "created": "2026-01-01T00:00:00+00:00", "stage": "spec", "history": [],
         }))
         self.assertEqual(self.lifecycle.load_state("t1").workdir, "")
-        self.assertEqual(self.resolutions, [])
+        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
+        self._seed_slices()
 
         status = self.pipeline.process(self._task())
 
         self.assertEqual(status, "done")
-        self.assertIn("workdir not recorded for t1, re-derived from original.md",
+        self.assertIn("workdir not recorded for t1, resolved from config",
                       self._log())
-        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
+        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
+                                            self.queue_dir / "active" / "t1"])
         self.assertEqual(self._task_json()["workdir"], str(self.repo))
 
     def test_migrated_state_is_deterministic_thereafter(self):
@@ -226,20 +231,36 @@ class WorkdirPersistenceTest(unittest.TestCase):
             "id": "t1", "status": "active", "source": "directory:t1.md",
             "created": "2026-01-01T00:00:00+00:00", "stage": "spec", "history": [],
         }))
-        self.pipeline.process(self._task())
-        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
-        # Simulate a crash mid-slices, then resume: the recorded workdir wins
-        # even though original.md still names the repo.
+        # Manually checkpoint past slicing so the process resumes at slices
+        # instead of re-running spec/feasibility/slicing.
+        for stage in (CheckpointStage.SPEC, CheckpointStage.FEASIBILITY,
+                      CheckpointStage.SLICING):
+            self.lifecycle.checkpoint("t1", stage)
         self._seed_slices()
-        self.lifecycle.checkpoint("t1", CheckpointStage.SLICING)
+        status = self.pipeline.process(self._task())
+        # intake resolved once, migration resolved once; no further
+        # resolution — the recorded workdir is used thereafter.
+        self.assertEqual(status, "done")
+        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
+                                            self.queue_dir / "active" / "t1"])
+        self.assertIn("workdir not recorded for t1, resolved from config",
+                      self._log())
+        self.assertEqual(self._task_json()["workdir"], str(self.repo))
+        # A subsequent process resumes from the migrated state without
+        # re-deriving the workdir.
         self.runner = FakeRunner()
         self.pipeline.runner = self.runner
-
+        # Move the task back to active/ so process() sees the migrated state.
+        import shutil as _shutil
+        _shutil.move(str(self.queue_dir / "done" / "t1"),
+                     str(self.queue_dir / "active" / "t1"))
+        pre = len(self.lines)
         status = self.pipeline.process(self._task())
-
         self.assertEqual(status, "done")
-        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1"])
-        self.assertNotIn("re-derived from original.md", self._log())
+        self.assertEqual(self.resolutions, [self.queue_dir / "active" / "t1",
+                                            self.queue_dir / "active" / "t1"])
+        self.assertNotIn("resolved from config",
+                         "\n".join(self.lines[pre:]))
         self.assertEqual(self.runner.workdirs, [str(self.repo)] * len(self.runner.workdirs))
 
 

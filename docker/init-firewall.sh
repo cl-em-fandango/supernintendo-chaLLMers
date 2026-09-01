@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${DISABLE_FIREWALL:-0}" = "1" ]; then
+    echo "[firewall] Firewall disabled by DISABLE_FIREWALL=1"
+    exit 0
+fi
+
 # Configure outbound isolation using iptables
 # If running without root / NET_ADMIN capabilities, log a warning and proceed gracefully
 if ! command -v iptables >/dev/null 2>&1; then
@@ -25,7 +30,6 @@ if iptables -L -n >/dev/null 2>&1; then
     iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 
     # Allow communication to host / local LLM services (default bridge gateway / typical local networks)
-    # Default docker/podman bridge gateway is typically 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16
     iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
     iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
     iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
@@ -33,6 +37,7 @@ if iptables -L -n >/dev/null 2>&1; then
     # Allow HTTP / HTTPS outbound for package managers (PyPI / mirrors)
     iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
     iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 8000 -j ACCEPT
 
     # Allow Git SSH outbound if needed (port 22)
     iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT

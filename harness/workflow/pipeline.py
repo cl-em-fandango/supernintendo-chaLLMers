@@ -7,11 +7,20 @@ from pathlib import Path
 
 from ..core import prompts
 from ..core.config import Config
+from ..core.health import HealthOutcome, wait_for_healthy_server
 from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
 from ..core.providers import Task
 from ..core.session import SessionResult, SessionRunner
+from ..core.stats import render_task_journey_markdown
+from ..core.transcripts import (
+    list_transcripts,
+    match_rows_to_transcripts,
+    resolve_task_dir,
+)
+from .continuation import (ContinuationNote, continuation_prompt, handover_dir,
+                           write_note)
 from .params import StageContext
 from .spec_assessment import SpecAssessment, assess_spec
 from .task_lifecycle import Handoff, TaskLifecycle
@@ -53,14 +62,16 @@ class AllAttemptsCrashed(Exception):
 
 
 class OverContextBudget(Exception):
-    """One session was stopped for crossing the context cap (T74).
+    """A stage crossed the context cap and no handover could rescue it (T74).
 
     The trip itself happens in the stream (`external/pi_cli.py`) and is lifted
-    onto `SessionResult.over_context_budget` by `SessionRunner`; this exception
-    is the *routing* of that trip. `_run` raises it before the crash-retry
-    branch, so an over-cap session is never retried — re-running a session that
-    already proved too big for the window would only burn the same context
-    again — and its partial verdict never reaches a stage.
+    onto `SessionResult.over_context_budget` by `SessionRunner`. A trip is a
+    budget *warning*, not a verdict, so `_run` no longer treats the first one as
+    terminal: it writes a handover note and resumes the stage in a clean session
+    (`workflow/continuation.py`). This exception is raised only when
+    `maxContextContinuations` fresh sessions have all tripped on the same stage
+    — the point where the work really is too big for one session and a human or
+    a re-slice is needed.
 
     It carries everything a handoff needs, because the session that tripped is
     the only place those values exist: the stage, slice id and iteration the
@@ -85,40 +96,101 @@ class OverContextBudget(Exception):
                          f"limit={context_limit}")
 
 
+class ServerUnhealthy(Exception):
+    """The FR-5.1 pre-flight exhausted its backoff before a dispatch.
+
+    Deliberately distinct from `AllAttemptsCrashed`: no session was ever
+    spawned, so no crash-retry attempt was spent. `Pipeline.process`
+    catches it once and parks with the reason — the checkpointed prefix
+    stays intact, so a later `--continue` resumes once the server is back.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str, attempts: int,
+                 waited_s: float):
+        self.task_id = task_id
+        self.stage = stage
+        self.attempts = attempts
+        self.waited_s = waited_s
+        super().__init__(f"LLM server unhealthy: {attempts} health probes "
+                         f"over {waited_s:.1f}s before "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
+class StoodDown(Exception):
+    """An interrupt request was active at the boundary before a dispatch.
+
+    `Pipeline._run_attempts` raises this instead of spawning the next `pi`
+    session (spec FR-6.1: the safe boundary is immediately before a spawn).
+    Deliberately distinct from `AllAttemptsCrashed`/`ServerUnhealthy`: work
+    was not lost and the server is fine, so `Pipeline.process` catches it
+    once and returns without parking or crash-retrying (FR-6.2/FR-6.4) —
+    the task stays in `active/` with its checkpoints and claim (FR-6.5).
+    The request itself is already acknowledged (`requested -> paused`) by
+    the `stand_down_check` that answered True.
+    """
+
+    def __init__(self, task_id: str, stage: Stage | str):
+        self.task_id = task_id
+        self.stage = stage
+        super().__init__(f"stood down at session boundary before "
+                         f"{_stage_value(stage)} (task {task_id})")
+
+
 class Pipeline:
-    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None):
+    def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
+                 health_wait=wait_for_healthy_server, stand_down_check=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
         self.provider = provider
         self.lifecycle = TaskLifecycle(cfg, log)
         self.max_crash_retries = cfg.get("maxCrashRetries", 2)
+        # How many *clean* sessions one stage may be handed to after a cap trip.
+        # A trip is a warning, so the first response is a handover, not a park;
+        # this is the bound on how often we hand over before calling it.
+        self.max_context_continuations = cfg.get("maxContextContinuations", 3)
+        # FR-5.1 pre-flight, injectable so tests observe the gate without
+        # a live server. The default reads the policy from config; with no
+        # endpoint configured it is a no-op (NFR-2).
+        self.health_wait = health_wait
+        # FR-6.1 boundary gate, injectable like `health_wait`: a callable
+        # answering True when an interrupt is active (and already
+        # acknowledged). None means the wiring has no interrupt to honor.
+        self.stand_down_check = stand_down_check
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
-        """Run a session, retrying on crash. Artifacts persist on disk, so a
-        retry continues from what the model already wrote rather than restarting.
+        """Run a session, retrying a crash and handing over on a cap trip.
+
+        Two failures with two responses:
+
+        - a *dead child* is retried on the same prompt (T57). Artifacts persist
+          on disk, so a retry continues from what the model already wrote;
+        - a session *stopped for crossing the context cap* is not retried on the
+          same prompt — that would burn the same window again. It is handed to a
+          fresh session under a handover note (T74's continuation), which is a
+          genuinely different run with a different context, not a retry.
 
         A session that comes back healthy is returned as it stands. When the
-        last allowed attempt crashes there is no verdict left to trust, so
-        `AllAttemptsCrashed` is raised (T57) and the task is parked by
-        `process`; the crashed result is never returned to a stage.
-
-        An over-cap stop is checked first (T74) and raises `OverContextBudget`
-        on the spot: it outranks the crash path — a session we stopped on
-        purpose is not a child that died and gets no retry at all — and the
-        result is never returned, so a stage cannot route on the partial
-        verdict a stopped session left behind.
+        last allowed crash attempt dies there is no verdict left to trust, so
+        `AllAttemptsCrashed` is raised (T57); when the last allowed continuation
+        still trips, `OverContextBudget` is raised (T74). Neither result is ever
+        returned to a stage, so no stage can route on the partial verdict of a
+        session that never finished.
 
         Call sites pass a `Stage` member (T30); `SessionRunner` converts it at
         the stats edge, so the value travelling through here stays whatever the
         caller handed over. `slice_id` and `iteration` travel in `kw` and are
-        read back out of it for the exception payload, with the same defaults
-        `SessionRunner.run` uses.
+        read back out of it for the note and the exception payload, with the
+        same defaults `SessionRunner.run` uses.
         """
-        for attempt in range(self.max_crash_retries + 1):
-            r = self.runner.run(model, workdir, prompt, task_id=task_id,
-                                stage=stage, **kw)
-            if r.over_context_budget:
+        session_prompt = prompt
+        handed_over = 0
+        while True:
+            r = self._run_attempts(model, workdir, session_prompt,
+                                   task_id=task_id, stage=stage, **kw)
+            if not r.over_context_budget:
+                return r
+            if handed_over >= self.max_context_continuations:
                 raise OverContextBudget(
                     task_id, stage,
                     slice_id=kw.get("slice_id"),
@@ -126,12 +198,78 @@ class Pipeline:
                     peak_tokens=r.peak_tokens,
                     context_limit=r.context_limit,
                     out_file=r.out_file)
-            if not r.crashed:
+            handed_over += 1
+            note = write_note(
+                handover_dir(self._task_dir(task_id), r.out_file),
+                ContinuationNote(
+                    stage=stage,
+                    attempt=handed_over,
+                    peak_tokens=r.peak_tokens,
+                    context_limit=r.context_limit,
+                    slice_id=kw.get("slice_id"),
+                    iteration=kw.get("iteration", 1),
+                    output_path=r.out_file),
+                r.output)
+            self.log(f"  ⚠ {_stage_value(stage)} crossed the context cap "
+                     f"(peak={r.peak_tokens}, limit={r.context_limit}); "
+                     f"handing over to a clean session "
+                     f"({handed_over}/{self.max_context_continuations}) — "
+                     f"{note.note_path}")
+            session_prompt = continuation_prompt(prompt, note)
+
+    def _run_attempts(self, model, workdir, prompt, *, task_id,
+                      stage: Stage | str, **kw) -> SessionResult:
+        """One prompt, crash-retried. Returns the healthy result or the trip.
+
+        The over-cap check comes first (T74): it outranks the crash path — a
+        session we stopped on purpose is not a child that died — so a tripped
+        session costs exactly one runner call and is handed back for the
+        handover rather than retried on the same context.
+        """
+        for attempt in range(self.max_crash_retries + 1):
+            self._stand_down_preflight(task_id, stage)
+            self._health_preflight(task_id, stage)
+            r = self.runner.run(model, workdir, prompt, task_id=task_id,
+                                stage=stage, **kw)
+            if r.over_context_budget or not r.crashed:
                 return r
             if attempt < self.max_crash_retries:
                 self.log(f"  ⚠ {stage} crashed (rc/timeout); retrying "
                          f"({attempt+1}/{self.max_crash_retries}) — artifacts preserved")
         raise AllAttemptsCrashed(task_id, stage, self.max_crash_retries + 1)
+
+    def _task_dir(self, task_id) -> Path | None:
+        """The task's `active/` dir, or None for a session with no task."""
+        return self.lifecycle.task_dir(task_id) if task_id else None
+
+    def _stand_down_preflight(self, task_id: str, stage: Stage | str) -> None:
+        """FR-6.1: never dispatch a session past an active interrupt.
+
+        Runs before every `runner.run` call — including before a crash
+        retry and before each context-cap continuation — so a task whose
+        waterfall started before the request spawns no further session.
+        Runs ahead of the health pre-flight: a harness that is standing
+        down must not wait on the server either. With no check wired this
+        is a no-op.
+        """
+        if self.stand_down_check is not None and self.stand_down_check():
+            raise StoodDown(task_id, stage)
+
+    def _health_preflight(self, task_id: str, stage: Stage | str) -> None:
+        """FR-5.1: never dispatch a session to a known-unhealthy server.
+
+        Runs before every `runner.run` call — including before a crash
+        retry, where the server may have died between attempts — so an
+        outage is waited out instead of burning crash-retry attempts.
+        With no endpoint configured the gate is DISABLED and this is a
+        no-op: no probe, no sleep, no log line (NFR-2). Exhausted backoff
+        raises `ServerUnhealthy`, a distinct outcome that never reaches
+        the crash path.
+        """
+        gate = self.health_wait(self.cfg.health_policy(), log=self.log)
+        if gate.outcome is HealthOutcome.UNHEALTHY:
+            raise ServerUnhealthy(task_id, stage, gate.attempts,
+                                  gate.total_wait_s)
 
     # ------------------------------------------------------------------
     # top level
@@ -144,17 +282,25 @@ class Pipeline:
         completed stages. A fresh task (no task.json) is intaken as before.
         """
         task_dir = self.lifecycle.task_dir(task.id)
-        if self.lifecycle.task_json_path(task.id).exists():
+        resumed = self.lifecycle.task_json_path(task.id).exists()
+        if resumed:
             state = self.lifecycle.load_state(task.id)
             skipped = [s.value for s in state.checkpointed_stages]
             self.log(f"═══ task {task.id} ═══")
             self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
                      else f"  resuming (no checkpoints yet)")
             if not state.workdir:
-                # Old-format task.json: migrate once from the same persisted
-                # original.md intake used, then never re-derive.
+                # Old-format task.json: migrate once, then never re-derive.
                 self.log(f"  workdir not recorded for {task.id}, "
-                         f"re-derived from original.md")
+                         f"resolved from config")
+                self.lifecycle.record_workdir(task_dir)
+                state = self.lifecycle.load_state(task.id)
+            elif self.cfg.repo_dir is not None and state.workdir != str(self.cfg.repo_dir):
+                state.workdir = str(self.cfg.repo_dir)
+                self.lifecycle.save_state(state)
+            elif not (task_dir / "original.md").exists():
+                # EC13: original.md missing after a partial crash; re-resolve
+                # the workdir so it falls back to the task dir.
                 self.lifecycle.record_workdir(task_dir)
                 state = self.lifecycle.load_state(task.id)
         else:
@@ -176,8 +322,8 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo in the queue: workdir={workdir} is "
-                f"under queue={self.cfg.queue_dir}; record the real repo path "
-                f"in the task body")
+                f"under queue={self.cfg.queue_dir}; configure repoDir in "
+                f"config.json or pass --repo on the CLI")
             return "parked"
         if not workdir.is_dir():
             # Same refusal, different reason: a workdir that does not exist is
@@ -186,16 +332,19 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo outside a real directory: "
-                f"workdir={workdir} does not exist; record the real repo path "
-                f"in the task body")
+                f"workdir={workdir} does not exist; configure repoDir in "
+                f"config.json or pass --repo on the CLI")
             return "parked"
         try:
             ensure_branch(workdir, task.id, self.cfg.trunk_branch)
         except Exception as e:
             self.lifecycle.park(task.id, f"git setup failed: {e}")
             return "parked"
+        if resumed and not self._clean_worktree_on_resume(task.id, workdir):
+            return "parked"
 
         ctx = StageContext(task.id, task_dir, workdir)
+        outcome = "parked"
         try:
             for stage in STAGE_SEQUENCE:
                 if stage in state.checkpointed_stages:
@@ -204,11 +353,14 @@ class Pipeline:
                 self.lifecycle.set_stage(task.id, stage)
                 self.log(f"  ▶ {stage.value}")
                 if not getattr(self, _STAGE_FUNCTIONS[stage])(ctx):
-                    return self._stage_failed(task.id, stage, task_dir)
+                    outcome = self._stage_failed(task.id, stage, task_dir)
+                    return outcome
                 self.lifecycle.checkpoint(task.id, stage)
-            return self.stage_holistic(ctx)
+            outcome = self.stage_holistic(ctx)
+            return outcome
         except OverContextBudget as e:
-            # The one catch site (T74). Crossing the cap is neither a content
+            # The one catch site (T74), reached only after every handover to a
+            # clean session also tripped. Crossing the cap is neither a content
             # verdict nor a process death, so it parks whatever stage it
             # happened on — and it is caught here rather than in a stage for
             # the same reason as T57: no stage may route on the partial output
@@ -231,14 +383,118 @@ class Pipeline:
                     checkpointed_stages=list(state.checkpointed_stages),
                     checkpointed_slices=list(state.checkpointed_slices),
                 ))
-            return "parked"
+            outcome = "parked"
+            return outcome
         except AllAttemptsCrashed as e:
             # The one catch site (T57). A stage that lost every attempt to a
             # dead process is a process failure, not a content verdict, so it
             # parks whatever stage it happened on — including the holistic one,
             # where a merge must not be attempted on unreviewed work.
             self.lifecycle.park(task.id, str(e))
-            return "parked"
+            outcome = "parked"
+            return outcome
+        except ServerUnhealthy as e:
+            # The one catch site (FR-5.1). The server was unreachable, so no
+            # session ever ran and no crash retry was spent; parking keeps the
+            # checkpointed prefix intact for a later `--continue` once the
+            # server is back. Distinct from the crash path above by design.
+            self.lifecycle.park(task.id, str(e))
+            outcome = "parked"
+            return outcome
+        except StoodDown:
+            # The one catch site (FR-6.2). An interrupt is neither a content
+            # verdict nor a process failure: no parking, no crash-retry, no
+            # revert streak. The task keeps its stage/slice checkpoints in
+            # active/ and its claim, for `resume` to continue later
+            # (FR-6.4/FR-6.5). The check already logged the stand-down and
+            # acknowledged the file; the calling loop sees the file at its
+            # own next boundary and unwinds.
+            outcome = "stood_down"
+            return outcome
+        finally:
+            self._persist_journey_readout(task.id, task_dir)
+
+    def _clean_worktree_on_resume(self, task_id: str, workdir: Path) -> bool:
+        """FR-5.3: discard the uncommitted residue of a killed attempt before
+        the resumed waterfall starts, so partial edits cannot leak into the
+        next slice. Runs only on a resume (a fresh intake has no residue) and
+        only after `ensure_branch` put the worktree on the task branch — the
+        helper itself refuses trunk/detached HEAD as a second line of defence.
+
+        A clean tree is a no-op. A refused or failed cleanup parks the task:
+        proceeding with residue we could not discard is exactly the leak this
+        requirement exists to prevent (fail-closed, NFR-1).
+        """
+        from ..core.gitops import discard_task_residue
+        try:
+            discarded = discard_task_residue(workdir, task_id,
+                                             self.cfg.trunk_branch)
+        except Exception as e:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: FAILED: {e}")
+            self.lifecycle.park(task_id, f"worktree cleanup on resume failed: {e}")
+            return False
+        if discarded:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: discarded "
+                     f"{len(discarded)} uncommitted path(s), e.g. {discarded[:5]}")
+        else:
+            self.log(f"  WORKTREE-CLEANUP {task_id}: clean (no residue)")
+        return True
+
+    def _persist_journey_readout(self, task_id: str, task_dir: Path) -> None:
+        """Persist the journey readouts (ASCII + Markdown) and log the summary."""
+        if not hasattr(self.runner, "store") or self.runner.store is None:
+            return
+        rows: list[dict] = []
+        try:
+            from ..core.stats import render_task_journey
+            rows = self.runner.store.for_task(task_id)
+            if not rows:
+                return
+            journey_text = render_task_journey(rows, task_id=task_id)
+            self.runner.store.write_task_journey(task_id)
+            art_dir = task_dir / "artifacts"
+            if art_dir.exists():
+                # `errors="replace"`: a row carrying text that cannot be
+                # encoded (a lone surrogate from a broken child) must not
+                # take the whole readout down — the spec's encoding rule is
+                # replacement, never an escaped UnicodeEncodeError.
+                (art_dir / "journey.txt").write_text(
+                    journey_text, encoding="utf-8", errors="replace")
+            self.log(f"\n{journey_text}")
+        except Exception as e:
+            self.log(f"  ⚠ could not persist workflow journey readout: {e}")
+        # The browsable Markdown journey gets its own guard: a failure on the
+        # legacy ASCII surface above must not cost the operator the transcript
+        # index, and a journey failure never changes the pipeline outcome.
+        if not rows:
+            return
+        try:
+            self._persist_journey_markdown(task_id, rows)
+        except Exception as e:
+            self.log(f"  ⚠ could not persist journey.md: {e}")
+
+    def _persist_journey_markdown(self, task_id: str, rows: list[dict]) -> None:
+        """Write `artifacts/journey.md` beside the transcripts it links to.
+
+        The caller's `task_dir` is the path from *before* the pass ended, and a
+        pass that parked, failed or completed has already moved the task into
+        `parked/`, `failed/` or `done/`. The Markdown journey is the browsable
+        surface — every link in it is relative to the `artifacts/` directory it
+        sits in — so it is written to the task's current location, which is
+        where its transcripts are. A task with no queue directory (a direct
+        runner use, or a queue that was cleaned mid-pass) simply gets no
+        journey.md; the ASCII readout and the stats-dir copy are untouched.
+        """
+        task_dir = resolve_task_dir(self.cfg.queue_dir, task_id)
+        if task_dir is None:
+            return
+        art_dir = task_dir / "artifacts"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        transcripts = match_rows_to_transcripts(rows, list_transcripts(task_dir))
+        (art_dir / "journey.md").write_text(
+            render_task_journey_markdown(rows, task_id=task_id,
+                                         transcript_files=transcripts),
+            encoding="utf-8", errors="replace")
 
     def _stage_failed(self, task_id: str, stage: CheckpointStage, task_dir) -> str:
         """Per-stage terminal return contract (F2.1): feasibility failure is
@@ -317,7 +573,7 @@ class Pipeline:
         if kickbacks > self.cfg.max_spec_kickbacks:
             self.lifecycle.park(ctx.task_id, f"spec kickback loop exceeded ({self.cfg.max_spec_kickbacks})")
             return None
-        shutil.copy(r.out_file, ctx.task_dir / "artifacts" / f"kickback_{assessor}_{kickbacks}.md")
+        file_session_output(r, ctx.task_dir / "artifacts" / f"kickback_{assessor}_{kickbacks}.md")
         self.log(f"  kickback to spec author (#{kickbacks})")
         return kickbacks
 
@@ -335,7 +591,7 @@ class Pipeline:
             self.lifecycle.fail(ctx.task_id, "Task rejected at feasibility: " + _summary(r.output))
             return False
         if r.verdict is Verdict.KICKBACK:
-            shutil.copy(r.out_file, ctx.task_dir / "artifacts" / "feasibility_kickback.md")
+            file_session_output(r, ctx.task_dir / "artifacts" / "feasibility_kickback.md")
             self.log("  feasibility kickback -> back to spec stage")
             if not self.stage_spec(ctx):
                 return False
@@ -425,7 +681,7 @@ class Pipeline:
                 return True
             note = ctx.task_dir / "artifacts" / "progress" / f"slice-{sid}.md"
             if r.verdict is Verdict.PROGRESS and not note.exists():
-                shutil.copy(r.out_file, note)
+                file_session_output(r, note)
         self.lifecycle.park(ctx.task_id, f"slice {sid} not delivered in {self.cfg.max_slice_implement} implementation iterations")
         return False
 
@@ -452,7 +708,8 @@ class Pipeline:
                 # `_implement`'s "keep the first note" guard stick (T56).
                 feedback = (ctx.task_dir / "artifacts" / "progress"
                             / f"slice-{sid}-review.md")
-                shutil.copy(r.out_file, feedback)
+                feedback.parent.mkdir(parents=True, exist_ok=True)
+                file_session_output(r, feedback)
                 # A fix session is a code edit, so it runs on the implementer
                 # regardless of which review asked for it (T55). `model` above
                 # follows the review type; the fix model follows the work type.
@@ -548,6 +805,24 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------------------
+
+def file_session_output(r: SessionResult, dest: Path) -> None:
+    """File one session's raw output as an artifact at `dest`.
+
+    The pipeline used to `shutil.copy` the workdir `.out` capture directly.
+    That capture is now cleaned up by the session layer once the transcript
+    holds its contents (001-full-interactions-logged), so the copy falls back
+    to the in-memory output — the capture was written from that same string,
+    so both paths produce identical bytes. The destination artifact paths are
+    unchanged (kickback reports, progress notes, review feedback).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src = Path(r.out_file) if r.out_file is not None else None
+    if src is not None and src.is_file():
+        shutil.copy(src, dest)
+    else:
+        dest.write_text(r.output)
+
 
 def _stage_value(stage: Stage | str) -> str:
     """A `Stage` member's wire name; a stray string passes through unchanged

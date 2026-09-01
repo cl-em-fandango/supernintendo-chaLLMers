@@ -1,0 +1,94 @@
+{
+  "llama-swap": {
+    "models": [
+      {
+        "id": "Ornith-1.5-35B-Q6_K",
+        "name": "Ornith-1.5-35B-Q6_K",
+        "api": "openai-completions",
+        "provider": "llama-swap",
+        "baseUrl": "http://192.168.1.196:8000/v1",
+        "reasoning": true,
+        "reasoningLevel": "medium",
+        "input": [
+          "text"
+        ],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "contextWindow": 100000,
+        "reserveTokens": 65530,
+        "maxTokens": 8096,
+        "compat": {
+          "supportsStore": false,
+          "supportsDeveloperRole": false,
+          "supportsReasoningEffort": false,
+          "supportsUsageInStreaming": true,
+          "supportsStrictMode": false,
+          "maxTokensField": "max_tokens"
+        }
+      },
+      {
+        "id": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer",
+        "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer",
+        "api": "openai-completions",
+        "provider": "llama-swap",
+        "baseUrl": "http://192.168.1.196:8000/v1",
+        "reasoning": true,
+        "reasoningLevel": "low",
+        "input": [
+          "text"
+        ],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "contextWindow": 100000,
+        "reserveTokens": 65530,
+        "maxTokens": 8096,
+        "compat": {
+          "supportsStore": false,
+          "supportsDeveloperRole": false,
+          "supportsReasoningEffort": false,
+          "supportsUsageInStreaming": true,
+          "supportsStrictMode": false,
+          "maxTokensField": "max_tokens"
+        }
+      },
+      {
+        "id": "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter",
+        "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter",
+        "api": "openai-completions",
+        "provider": "llama-swap",
+        "baseUrl": "http://192.168.1.196:8000/v1",
+        "reasoning": true,
+        "reasoningLevel": "medium",
+        "input": [
+          "text"
+        ],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "contextWindow": 128800,
+        "reserveTokens": 65530,
+        "maxTokens": 8096,
+        "compat": {
+          "supportsStore": false,
+          "supportsDeveloperRole": false,
+          "supportsReasoningEffort": false,
+          "supportsUsageInStreaming": true,
+          "supportsStrictMode": false,
+          "maxTokensField": "max_tokens"
+        }
+      }
+    ],
+    "checkedAt": 1787617869354
+  }
+}

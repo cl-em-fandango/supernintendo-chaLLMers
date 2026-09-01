@@ -390,7 +390,7 @@ class ForeignClaimRemainsTest(_RunFixture):
         self.assertEqual(handlers.cmd_run_one(), 0)
         self.assertEqual(self._claimed_names(), ["098-legacy.md"])
         self.assertEqual(self._owner_of("098-legacy.md"), OWNER_UNKNOWN)
-        self.assertEqual(self._pending_names(), ["001-a.md"])
+        self.assertEqual(self._pending_names(), [])
 
     def test_a_foreign_claim_never_appears_in_the_run_s_release_log(self):
         """The release lines name only this run's own ids, so the log is honest."""

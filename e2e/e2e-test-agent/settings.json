@@ -1,0 +1,39 @@
+{
+  "lastChangelogVersion": "0.84.3",
+  "theme": "dark",
+  "packages": [
+    "npm:@danielmeneses/pi-llama-swap"
+  ],
+  "defaultModel": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer",
+  "defaultProvider": "llama-swap",
+  "defaultThinkingLevel": "low",
+  "defaultProjectTrust": {},
+  "thinkingBudgets": {
+    "minimal": 1024,
+    "low": 4096,
+    "medium": 10240,
+    "high": 32768
+  },
+  "reserveTokens": 65530,
+  "providers": {
+    "llama-cpp": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "models": [
+        {
+          "id": "Qwen3.8-Flash-Next-UD-Q4_K_XL"
+        },
+        {
+          "id": "Ornith-1.5-35B-Q6_K"
+        },
+        {
+          "id": "Qwen3.8-Flash-Next-UD-Q4_K_XL_Implementer"
+        },
+        {
+          "id": "Qwen3.8-Flash-Next-UD-Q4_K_XL_TechnicalWriter"
+        }
+      ]
+    }
+  }
+}

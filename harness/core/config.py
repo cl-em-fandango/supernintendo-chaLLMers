@@ -6,12 +6,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from external.bash_ulimit import (
+    DEFAULT_ULIMIT_NPROC,
+    DEFAULT_ULIMIT_VMEM_KB,
+)
+from external.hardened_process import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_TOOL_TIMEOUT_S,
+    GuardrailLimits,
+)
+from .health import (
+    DEFAULT_HEALTH_BACKOFF_BASE_S,
+    DEFAULT_HEALTH_BACKOFF_CAP_S,
+    DEFAULT_HEALTH_MAX_ATTEMPTS,
+    DEFAULT_HEALTH_TIMEOUT_S,
+    HealthPolicy,
+)
+
 # Window assumed for a model whose window is neither mapped nor spelled out in
 # its name. Everything on the local server is 128k unless stated otherwise.
 DEFAULT_CONTEXT_WINDOW = 131072
 
 # Working prompt cap fixed by decision D2: the moment usage crosses this the
-# session is parked and handed off (the trip itself is T42).
+# session is stopped and handed to a clean session with a handover note (the
+# trip itself is T42, the handover is `workflow/continuation.py`). Parking only
+# happens when the handovers are used up.
 DEFAULT_MAX_PROMPT_TOKENS = 60_000
 
 # Headroom reserved for the model's own output tokens.
@@ -19,6 +38,10 @@ CONTEXT_RESERVE = 8192
 
 # Never budget below this, however small the window.
 MIN_MODEL_BUDGET = 4096
+
+# Wall-clock cap for one pi session (config key `sessionTimeout`). The
+# deliberate reduction from pi_cli's old 90-min hard cap (spec FR-4.1/§5).
+DEFAULT_SESSION_TIMEOUT_S = 3600
 
 
 @dataclass
@@ -36,6 +59,7 @@ class Config:
     directory_provider: dict
     models: dict
     model_context_map: dict
+    repo_dir: Path | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -79,6 +103,20 @@ class Config:
         # fallback: auto-detect MOE/A3B-class names from the random pool
         return [m for m in self.random_pool
                 if any(k in m for k in ("A3B", "MOE", "MoE", "moe", "Gemma", "oss"))]
+
+    @property
+    def configured_models(self) -> list[str]:
+        """All unique model identifiers configured across all roles and pools."""
+        result: list[str] = []
+        for val in self.models.values():
+            if isinstance(val, str) and val.strip():
+                if val.strip() not in result:
+                    result.append(val.strip())
+            elif isinstance(val, (list, tuple, set)):
+                for item in val:
+                    if isinstance(item, str) and item.strip() and item.strip() not in result:
+                        result.append(item.strip())
+        return result
 
     @property
     def max_prompt_tokens(self) -> int:
@@ -132,13 +170,97 @@ class Config:
     def get(self, key: str, default=None):
         return self.raw.get(key, default)
 
+    # ------------------------------------------------------------------
+    # Subprocess guardrails (FR-4). Missing keys fall back to the defaults
+    # shown here without erroring; the defaults live in the modules that
+    # enforce them (external/hardened_process.py, external/bash_ulimit.py).
+    # ------------------------------------------------------------------
+
+    @property
+    def session_timeout(self) -> int:
+        """Hard wall-clock cap for one pi session (`sessionTimeout`)."""
+        return int(self.raw.get("sessionTimeout", DEFAULT_SESSION_TIMEOUT_S))
+
+    @property
+    def tool_timeout(self) -> int:
+        """Hard timeout for harness-run shell helpers (`toolTimeout`)."""
+        return int(self.raw.get("toolTimeout", DEFAULT_TOOL_TIMEOUT_S))
+
+    @property
+    def max_output_bytes(self) -> int:
+        """Per-stream capture cap for subprocess output (`maxOutputBytes`)."""
+        return int(self.raw.get("maxOutputBytes", DEFAULT_MAX_OUTPUT_BYTES))
+
+    @property
+    def tool_ulimit_nproc(self) -> int:
+        """Max processes per wrapped shell (`toolUlimitNproc`)."""
+        return int(self.raw.get("toolUlimitNproc", DEFAULT_ULIMIT_NPROC))
+
+    @property
+    def tool_ulimit_vmem_kb(self) -> int:
+        """Max virtual memory per wrapped shell in KiB (`toolUlimitVmemKB`)."""
+        return int(self.raw.get("toolUlimitVmemKB", DEFAULT_ULIMIT_VMEM_KB))
+
+    def guardrail_limits(self) -> GuardrailLimits:
+        """The FR-4 knobs as one explicit parameters object for `external/`."""
+        return GuardrailLimits(
+            timeout_s=self.tool_timeout,
+            max_output_bytes=self.max_output_bytes,
+            ulimit_nproc=self.tool_ulimit_nproc,
+            ulimit_vmem_kb=self.tool_ulimit_vmem_kb,
+        )
+
+    # ------------------------------------------------------------------
+    # LLM health pre-flight (FR-5.1). The gate is disabled-safe: with no
+    # `llmHealthUrl` configured it is a no-op and existing behavior is
+    # preserved (NFR-2). `llmHealthEnabled` can switch it off explicitly
+    # even when a URL is present.
+    # ------------------------------------------------------------------
+
+    @property
+    def llm_health_url(self) -> str:
+        """Model-server health endpoint (`llmHealthUrl`); empty disables."""
+        return str(self.raw.get("llmHealthUrl", "")).strip()
+
+    @property
+    def llm_health_enabled(self) -> bool:
+        """True only with an endpoint configured and not explicitly disabled
+        (`llmHealthEnabled`, default true when a URL is present)."""
+        if not self.llm_health_url:
+            return False
+        return bool(self.raw.get("llmHealthEnabled", True))
+
+    def health_policy(self) -> HealthPolicy:
+        """The FR-5.1 knobs as one explicit parameters object."""
+        return HealthPolicy(
+            url=self.llm_health_url,
+            enabled=self.llm_health_enabled,
+            timeout_s=float(self.raw.get("llmHealthTimeoutS",
+                                         DEFAULT_HEALTH_TIMEOUT_S)),
+            max_attempts=int(self.raw.get("llmHealthMaxAttempts",
+                                          DEFAULT_HEALTH_MAX_ATTEMPTS)),
+            backoff_base_s=float(self.raw.get("llmHealthBackoffBaseS",
+                                              DEFAULT_HEALTH_BACKOFF_BASE_S)),
+            backoff_cap_s=float(self.raw.get("llmHealthBackoffCapS",
+                                             DEFAULT_HEALTH_BACKOFF_CAP_S)),
+        )
+
 
 def load(path: str | Path) -> Config:
     p = Path(path)
     raw: dict[str, Any] = json.loads(p.read_text())
     work_dir = Path(raw["workDir"]).expanduser()
+    repo_dir_raw = (
+        raw.get("repoDir")
+        or raw.get("repoPath")
+        or raw.get("repo_dir")
+        or raw.get("repo")
+        or raw.get("targetRepo")
+    )
+    repo_dir = Path(repo_dir_raw).expanduser().resolve() if repo_dir_raw else None
     return Config(
         work_dir=work_dir,
+        repo_dir=repo_dir,
         token_budget=int(raw.get("maxPromptTokens",
                                 raw.get("tokenBudget",
                                         DEFAULT_MAX_PROMPT_TOKENS))),

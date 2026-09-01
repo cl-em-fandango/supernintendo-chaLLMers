@@ -34,13 +34,28 @@ class AutonomousGenerator:
             pool = [m for m in self.cfg.random_pool if m != exclude]
         return random.choice(pool) if pool else self.cfg.random_pool[0]
 
-    def run(self, workdir: Path) -> int:
+    def run(self, workdir: Path, stand_down_check=None) -> int:
+        """Generate tasks until `pending/` holds the target, and return the count.
+
+        `stand_down_check`, when given, is called at every boundary
+        immediately before a `pi` session spawns — the attempt boundary and
+        the point between the suggest and the review session of one attempt
+        (an attempt is two sessions, so the FR-6.1 boundary is inside it
+        too). A True answer means
+        an interrupt is active and already acknowledged: the loop stops taking
+        work, leaves the queue as it is, and returns what it added so far
+        (spec FR-6.1/FR-6.2 — the running session finished normally, nothing
+        is parked, the exit is clean).
+        """
         target = self.cfg.autonomous_queue_target
         added = 0
         attempts = 0
         max_attempts = target * 6  # safety valve
 
         while self._pending_count() < target and attempts < max_attempts:
+            if stand_down_check is not None and stand_down_check():
+                self.log("autonomous mode: stood down at session boundary")
+                return added
             attempts += 1
             self.log(f"── autonomous attempt {attempts} "
                      f"(pending={self._pending_count()}/{target}) ──")
@@ -61,6 +76,14 @@ class AutonomousGenerator:
             prop_file = self.cfg.work_dir / "logs" / f"autonomous-proposal-{attempts}.md"
             prop_file.parent.mkdir(parents=True, exist_ok=True)
             prop_file.write_text(proposal)
+
+            if stand_down_check is not None and stand_down_check():
+                # The proposal session finished; the review session would be
+                # a fresh spawn, so this is a boundary (FR-6.1). The proposal
+                # is already on disk under logs/; nothing is queued, parked
+                # or retried (FR-6.2/FR-6.4).
+                self.log("autonomous mode: stood down at session boundary")
+                return added
 
             mb = self._random_model(exclude=ma)
             r = self.runner.run(

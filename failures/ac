@@ -1,1 +1,0 @@
-FAILED tests/test_continue_fresh.py::ContinueFreshTest::test_continue_resumes_in_flight_task
