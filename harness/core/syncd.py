@@ -23,6 +23,7 @@ lock is removed, exit is 0.
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,6 @@ from .process_lock import (
     ProcessLock,
     RUN_LOCK_NAME,
     SYNCD_LOCK_NAME,
-    pid_is_alive,
 )
 
 # The queue location the daemon watches for work (FR-4.2b). A directory
@@ -206,8 +206,28 @@ class SyncdLoop:
         return _default_check_pending(self.params.work_dir)
 
     def _last_child_alive(self) -> bool:
-        return self._spawned_pid is not None \
-            and pid_is_alive(self._spawned_pid)
+        """True while the tracked spawned child runs; reaps it once it exits.
+
+        The child is ours, so `os.waitpid(pid, WNOHANG)` both probes and
+        reaps: an exited child must not linger as a zombie, or a plain
+        `os.kill(pid, 0)` liveness probe would report it alive forever and
+        the daemon would never spawn again (FR-4).
+
+        A `ChildProcessError` means the pid is no longer a child of this
+        process — already reaped, or never ours — which also reads as dead.
+        """
+        pid = self._spawned_pid
+        if pid is None:
+            return False
+        try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            self._spawned_pid = None
+            return False
+        if reaped_pid == 0:
+            return True  # still running
+        self._spawned_pid = None
+        return False
 
 
 def _pass_aborted(result: object) -> bool:
