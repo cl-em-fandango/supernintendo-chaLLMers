@@ -37,11 +37,11 @@ from harness.core.sync_outbound import (  # noqa: E402
     OutboundParams,
     run_outbound,
 )
-from harness.core.sync_sidecar import (  # noqa: E402
+from harness.core import task_record  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     SyncLinkage,
     file_sidecar_path,
-    read_linkage,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
 
@@ -124,7 +124,7 @@ class OutboundTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(body if body is not None else f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -135,7 +135,7 @@ class OutboundTestCase(unittest.TestCase):
             {"id": name, "status": "active"}))
         (task_dir / "original.md").write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(task_dir / "gh.json",
+            write_legacy_linkage(task_dir / "gh.json",
                           SyncLinkage(issue=issue, repo=REPO))
         return task_dir
 
@@ -154,7 +154,8 @@ class CreateTest(OutboundTestCase):
         self.assertEqual("fix the parser", issue.title)
         self.assertEqual("# parser fix\n\nsteps\n", issue.body)
         self.assertEqual({"snes-pending"}, self.carried(api, 1))
-        self.assertEqual(1, read_linkage(file_sidecar_path(task)).issue)
+        self.assertEqual(1,
+                         task_record.read_linkage(self.queue, task.stem).issue)
         # Idempotent: a second pass mutates nothing.
         api.mutations.clear()
         self.assertEqual(
@@ -167,12 +168,16 @@ class CreateTest(OutboundTestCase):
         api = FakeApi()
         self.assertEqual(1, run_outbound(api, self.params()).created_issues)
         self.assertEqual("# live_task body", api.get_issue(1).body)
-        self.assertEqual(1, read_linkage(task_dir / "gh.json").issue)
+        self.assertEqual(1,
+                         task_record.read_linkage(self.queue, task_dir.name)
+                         .issue)
+        self.assertFalse((task_dir / "gh.json").exists(),
+                         "linkage was written to a task-dir sidecar")
         self.assertEqual({"snes-active"}, self.carried(api, 1))
 
     def test_sidecar_pointing_at_another_repo_is_skipped(self):
         self.file_task("pending", "foreign", issue=50)
-        write_linkage(self.queue / "pending" / "foreign.md.gh.json",
+        write_legacy_linkage(self.queue / "pending" / "foreign.md.gh.json",
                       SyncLinkage(issue=50, repo="other/repo"))
         api = FakeApi()
         result = run_outbound(api, self.params())
@@ -219,7 +224,8 @@ class StateLabelTest(OutboundTestCase):
         task = self.file_task("pending", "legacy_task")
         api = FakeApi([_issue(9, "Legacy Task")])
         self.assertEqual(1, run_outbound(api, self.params()).label_updates)
-        self.assertEqual(9, read_linkage(file_sidecar_path(task)).issue)
+        self.assertEqual(9,
+                         task_record.read_linkage(self.queue, task.stem).issue)
         api.mutations.clear()
         run_outbound(api, self.params())
         self.assertEqual([], api.mutations)
@@ -239,7 +245,10 @@ class ClosedMatchTest(OutboundTestCase):
                          json.loads((parked / "task.json").read_text())["status"])
         self.assertIn("GitHub issue closed",
                       (self.queue / "review" / "old_task.md").read_text())
-        self.assertEqual(2, read_linkage(parked / "gh.json").issue)
+        self.assertEqual(2, task_record.read_linkage(self.queue, "old_task")
+                         .issue)
+        self.assertFalse((parked / "gh.json").exists(),
+                         "parking wrote a task-dir sidecar")
         # Idempotent: already parked + closed -> silent no-op, no create.
         api.mutations.clear()
         self.assertEqual(0, run_outbound(api, self.params()).parked)
@@ -263,7 +272,8 @@ class MatchingTest(OutboundTestCase):
         run_outbound(api, self.params())
         self.assertEqual({"snes-pending"}, self.carried(api, 2))
         self.assertEqual(set(), self.carried(api, 5))
-        self.assertEqual(2, read_linkage(file_sidecar_path(task)).issue)
+        self.assertEqual(2,
+                         task_record.read_linkage(self.queue, task.stem).issue)
         self.assertTrue(any("match" in m and "#2" in m
                             for m in self.messages))
 

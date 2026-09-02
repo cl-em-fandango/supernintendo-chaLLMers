@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.cli import handlers  # noqa: E402
 from harness.core import interrupt  # noqa: E402
-from harness.core.claim_metadata import read_metadata, write_metadata  # noqa: E402
+from harness.core import task_record  # noqa: E402
 from harness.core.enums import Stage, Verdict  # noqa: E402
 from harness.core.providers import DirectoryTaskProvider, Task  # noqa: E402
 from harness.core.session import SessionResult  # noqa: E402
@@ -319,8 +319,8 @@ class TestRunLoopBoundary(_BoundaryFixture):
             # task is in flight: claimed, with an active/ checkpoint.
             interrupt.write_interrupt(self.dir, interrupt.InterruptMode.STAND_DOWN,
                                       interrupt.InterruptState.REQUESTED)
-            claim_file = self.claimed / f"{task.id}.md"
-            write_metadata(claim_file, "run-task-loop-mock-owner")
+            task_record.set_claim(self.dir, task.id,
+                                  "run-task-loop-mock-owner")
             checkpoint = self.active / task.id
             checkpoint.mkdir()
             (checkpoint / "checkpoint.json").write_text(
@@ -336,7 +336,8 @@ class TestRunLoopBoundary(_BoundaryFixture):
         self.assertEqual(status.state, interrupt.InterruptState.PAUSED)
         # The in-flight task keeps its claim and its checkpoint (FR-6.4).
         self.assertEqual(self._claimed_names(), ["001-a.md"])
-        self.assertEqual(read_metadata(self.claimed / "001-a.md").owner,
+        held = task_record.read_record(self.dir, "001-a").claim
+        self.assertEqual(held.owner if held else None,
                          "run-task-loop-mock-owner")
         self.assertEqual(
             json.loads((self.active / "001-a" / "checkpoint.json").read_text()),

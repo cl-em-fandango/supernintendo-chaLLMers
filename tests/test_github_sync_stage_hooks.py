@@ -40,7 +40,7 @@ from harness.core.session import SessionResult  # noqa: E402
 from harness.core.sync import SyncEngine, SyncReport  # noqa: E402
 from harness.core.sync_comments import HandoffCommentPoster  # noqa: E402
 from harness.core.sync_stage_change_hook import run_stage_change_hook  # noqa: E402
-from harness.core.sync_sidecar import read_linkage, task_dir_sidecar_path  # noqa: E402
+from harness.core import task_record  # noqa: E402
 from harness.workflow.autonomous import AutonomousGenerator  # noqa: E402
 from harness.workflow.resume import resume_task  # noqa: E402
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
@@ -225,7 +225,7 @@ class LifecycleHookTest(unittest.TestCase):
     def test_settled_hook_creates_the_issue_for_an_unlinked_task(self):
         """A task with no matching issue: the in-flight (intake) hook does
         not create one; the first hook that sees the task settled runs a
-        full pass, which creates the issue and records the sidecar."""
+        full pass, which creates the issue and records the linkage."""
         api = FakeApi()
         pipeline = self.build_pipeline(api)
         pipeline.lifecycle.intake(
@@ -234,7 +234,9 @@ class LifecycleHookTest(unittest.TestCase):
         pipeline.lifecycle.complete("brand_new_task", "all done")
         self.assertIn(("create", "brand new task", "body"), api.mutations)
         done_dir = self.queue / "done" / "brand_new_task"
-        linkage = read_linkage(task_dir_sidecar_path(done_dir))
+        self.assertFalse((done_dir / "gh.json").exists(),
+                         "the created issue was recorded in a sidecar")
+        linkage = task_record.read_linkage(self.queue, "brand_new_task")
         self.assertIsNotNone(linkage)
 
     def _raising_lifecycle(self) -> tuple[TaskLifecycle, list]:

@@ -45,10 +45,10 @@ from harness.core.sync_inbound import (  # noqa: E402
     run_inbound,
     scan_queue,
 )
-from harness.core.sync_sidecar import (  # noqa: E402
+from harness.core import task_record  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     file_sidecar_path,
-    read_linkage,
-    write_linkage,
+    write_legacy_linkage,
     SyncLinkage,
 )
 
@@ -105,7 +105,7 @@ class Ac2ImportTest(InboundTestCase):
         task = self.pending("Test_sync_feature.md")
         self.assertTrue(task.is_file())
         self.assertEqual("# hello", task.read_text())
-        linkage = read_linkage(file_sidecar_path(task))
+        linkage = task_record.read_linkage(self.queue, task.stem)
         self.assertIsNotNone(linkage)
         self.assertEqual(7, linkage.issue)
         self.assertEqual(REPO, linkage.repo)
@@ -160,7 +160,7 @@ class CollisionTest(InboundTestCase):
     def _linked_file(self, directory, name, issue_number):
         path = directory / name
         path.write_text("other task")
-        write_linkage(file_sidecar_path(path),
+        write_legacy_linkage(file_sidecar_path(path),
                       SyncLinkage(issue=issue_number, repo=REPO))
         return path
 
@@ -172,7 +172,9 @@ class CollisionTest(InboundTestCase):
         self.assertEqual(1, self.run_pass(_issue_stub(7, "Same name")).imported)
         imported = self.pending("Same_name-7.md")
         self.assertTrue(imported.is_file())
-        self.assertEqual(7, read_linkage(file_sidecar_path(imported)).issue)
+        self.assertEqual(7,
+                         task_record.read_linkage(self.queue,
+                                                  imported.stem).issue)
         self.assertEqual("other task",
                          (self.queue / "pending" / "Same_name.md").read_text())
 
@@ -187,7 +189,7 @@ class CollisionTest(InboundTestCase):
     def test_sidecar_match_in_active_dir_prevents_reimport(self):
         task_dir = self.queue / "active" / "some_task"
         task_dir.mkdir()
-        write_linkage(task_dir / "gh.json",
+        write_legacy_linkage(task_dir / "gh.json",
                       SyncLinkage(issue=7, repo=REPO))
         self.assertEqual(0, self.run_pass(_issue_stub(7, "Whatever title")).imported)
         self.assertEqual([], list((self.queue / "pending").iterdir()))
@@ -208,10 +210,11 @@ class DerivationUnitTest(InboundTestCase):
     def test_find_matching_task_prefers_sidecar(self):
         task = self.pending("anything.md")
         task.write_text("body")
-        write_linkage(file_sidecar_path(task),
+        write_legacy_linkage(file_sidecar_path(task),
                       SyncLinkage(issue=7, repo=REPO))
         entries = scan_queue(self.queue)
-        match = find_matching_task(_issue(7, "Totally different"), entries)
+        match = find_matching_task(_issue(7, "Totally different"), entries,
+                                    self.queue)
         self.assertIsNotNone(match)
         self.assertEqual("anything", match.name)
 
@@ -240,8 +243,8 @@ class SyncPassTest(InboundTestCase):
         api = FakeApi([_issue(7, "Pizza fan site", labels=("snes-demo",))])
         report = sync_pass(load(cfg_path), api, log=self.messages.append)
         self.assertEqual(1, report.imported)
-        self.assertTrue(read_linkage(file_sidecar_path(
-            self.pending("Pizza_fan_site.md"))).demo)
+        self.assertTrue(task_record.read_linkage(
+            self.queue, "Pizza_fan_site").demo)
 
     def test_sync_pass_without_demo_section_ignores_snes_demo(self):
         api = FakeApi([_issue(7, "Pizza fan site", labels=("snes-demo",))])

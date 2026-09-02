@@ -35,10 +35,10 @@ from harness.composition import build_placeholder_hook
 from harness.core.config import Config
 from harness.core.enums import CheckpointStage
 from harness.core.providers import Task
-from harness.core.sync_sidecar import (
+from tests.legacy_sidecars import (
     SyncLinkage,
     task_dir_sidecar_path,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.demo_placeholder import (
     DemoPlaceholderHook,
@@ -248,7 +248,7 @@ class HookTest(unittest.TestCase):
                     repo: str = REPO) -> Task:
         task_dir = self.queue_dir / "active" / task_id
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=issue, repo=repo, demo=True))
         return Task(id=task_id, body="b", meta={"demo": True})
 
@@ -376,7 +376,7 @@ class RealDeployerTest(unittest.TestCase):
         self.queue_dir = self.root / "queue"
         task_dir = self.queue_dir / "active" / "pizza_fan_site"
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         self.api = FakeApi()
 

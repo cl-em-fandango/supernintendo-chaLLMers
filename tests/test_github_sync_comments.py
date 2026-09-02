@@ -28,18 +28,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from external.github_api import Comment  # noqa: E402
 from harness.core.config import load  # noqa: E402
+from harness.core import task_record  # noqa: E402
 from harness.core.sync_comments import (  # noqa: E402
     HandoffCommentPoster,
     HandoffEvent,
     comment_body,
     event_id,
-    task_sidecar,
 )
-from harness.core.sync_sidecar import (  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     SyncLinkage,
     file_sidecar_path,
-    read_linkage,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.continuation import ContinuationNote, write_note  # noqa: E402
 from harness.workflow.task_lifecycle import Handoff, TaskLifecycle  # noqa: E402
@@ -93,7 +92,8 @@ class SyncTestCase(unittest.TestCase):
         (task_dir / "task.json").write_text(json.dumps(
             {"id": name, "status": "active"}))
         (task_dir / "original.md").write_text(f"# {name} body")
-        write_linkage(task_dir / "gh.json", SyncLinkage(issue=issue, repo=REPO))
+        task_record.write_linkage(self.queue, name,
+                              SyncLinkage(issue=issue, repo=REPO))
         return task_dir
 
     def poster(self, api, **kw):
@@ -163,7 +163,7 @@ class PosterTest(SyncTestCase):
         self.assertEqual(7, api.posts[0][0])
         self.assertIn("**[implement]**", api.posts[0][1])
         # The dedup map is written through to the sidecar.
-        linkage = read_linkage(task_dir / "gh.json")
+        linkage = task_record.read_linkage(self.queue, "mover")
         self.assertEqual(1, len(linkage.comment_ids))
         # A retried pass with identical prose posts nothing new.
         poster.post(self.event())
@@ -200,27 +200,54 @@ class PosterTest(SyncTestCase):
     def test_linkage_to_another_repo_is_skipped(self):
         task_dir = self.queue / "active" / "foreign"
         task_dir.mkdir()
-        write_linkage(task_dir / "gh.json",
-                      SyncLinkage(issue=9, repo="other/repo"))
+        task_record.write_linkage(self.queue, "foreign",
+                              SyncLinkage(issue=9, repo="other/repo"))
         api = FakeApi()
         self.assertIsNone(self.poster(api).post(self.event(task="foreign")))
         self.assertEqual([], api.posts)
 
-    def test_file_task_uses_its_file_sidecar(self):
+    def test_file_task_uses_the_record(self):
         task_file = self.queue / "pending" / "queued.md"
         task_file.write_text("# queued")
-        write_linkage(file_sidecar_path(task_file),
-                      SyncLinkage(issue=4, repo=REPO))
+        task_record.write_linkage(self.queue, "queued",
+                              SyncLinkage(issue=4, repo=REPO))
         api = FakeApi()
         self.poster(api).post(self.event(task="queued"))
         self.assertEqual(4, api.posts[0][0])
-        self.assertEqual(1, len(read_linkage(file_sidecar_path(task_file)).comment_ids))
+        self.assertEqual(
+            1, len(task_record.read_linkage(self.queue, "queued").comment_ids))
 
-    def test_terminal_task_dir_wins_over_the_review_summary_file(self):
+    def test_a_legacy_file_sidecar_is_adopted_and_retired(self):
+        """FR-E2/FR-B4: a pre-record `X.md.gh.json` still dedupes a handoff,
+        and the post lands in the record with the legacy file gone (FR-E3).
+        """
+        task_file = self.queue / "pending" / "queued.md"
+        task_file.write_text("# queued")
+        legacy = file_sidecar_path(task_file)
+        write_legacy_linkage(legacy, SyncLinkage(issue=4, repo=REPO))
+        api = FakeApi()
+        poster = self.poster(api)
+        poster.post(self.event(task="queued"))
+        self.assertEqual(4, api.posts[0][0])
+        self.assertFalse(legacy.exists())
+        self.assertEqual(
+            1, len(task_record.read_linkage(self.queue, "queued").comment_ids))
+        poster.post(self.event(task="queued"))
+        self.assertEqual(1, len(api.posts))
+
+    def test_a_task_in_two_locations_has_one_linkage(self):
+        """An active dir and the review summary file of the same name are one
+        task with one record — the precedence the file-derived sidecars
+        forced is gone (FR-A2).
+        """
         self.active_dir_task("finished", issue=11)
         (self.queue / "review" / "finished.md").write_text("# summary")
-        self.assertEqual(self.queue / "active" / "finished" / "gh.json",
-                         task_sidecar(self.queue, "finished"))
+        api = FakeApi()
+        self.poster(api).post(self.event(task="finished"))
+        self.assertEqual([11], [number for number, _ in api.posts])
+        self.assertEqual(
+            1,
+            len(task_record.read_linkage(self.queue, "finished").comment_ids))
 
     def test_verify_mode_reads_comments_back(self):
         self.active_dir_task("mover")
@@ -234,7 +261,7 @@ class PosterTest(SyncTestCase):
         task_dir = self.active_dir_task("mover")
         poster = self.poster(FakeApi(raising=True))
         poster("mover", "implement", "prose", None, None)  # must not raise
-        self.assertEqual({}, read_linkage(task_dir / "gh.json").comment_ids)
+        self.assertEqual({}, task_record.read_linkage(self.queue, "mover").comment_ids)
         self.assertTrue(any("handoff comment failed" in m
                             for m in self.messages))
 
@@ -260,7 +287,7 @@ class ContinuationSiteTest(SyncTestCase):
         write_note(task_dir / "artifacts" / "progress", note,
                    "partial output text", handoff_sync=poster)
         self.assertEqual(1, len(api.posts))
-        self.assertEqual(1, len(read_linkage(task_dir / "gh.json").comment_ids))
+        self.assertEqual(1, len(task_record.read_linkage(self.queue, "mover").comment_ids))
 
     def test_write_note_without_poster_is_unchanged(self):
         task_dir = self.active_dir_task("mover")
@@ -303,8 +330,8 @@ class TerminalSummarySiteTest(SyncTestCase):
         # A retried pass over the same summary posts nothing new.
         lifecycle.complete("mover", "Feature complete and merged")
         self.assertEqual(1, len(api.posts))
-        self.assertEqual(1, len(read_linkage(
-            self.queue / "done" / "mover" / "gh.json").comment_ids))
+        self.assertEqual(
+            1, len(task_record.read_linkage(self.queue, "mover").comment_ids))
 
     def test_fail_posts_the_kickout_summary(self):
         self.active_dir_task("mover")

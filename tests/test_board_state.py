@@ -27,7 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.cli import handlers  # noqa: E402
-from harness.core.claim_metadata import write_metadata  # noqa: E402
+from harness.core import task_record  # noqa: E402
 from harness.core.providers import DirectoryTaskProvider  # noqa: E402
 from harness.core.stats import SessionRecord, StatsStore  # noqa: E402
 
@@ -136,29 +136,31 @@ class ActiveStateTest(_WiredFixture):
 
 
 class ClaimOwnerTest(_WiredFixture):
-    """`claimed/` entries show the sidecar owner; unknown reads `?` (FR-3)."""
+    """`claimed/` entries show the record's owner; unknown reads `?` (FR-3)."""
 
     def _claim(self, name: str) -> Path:
         claim_file = self.claimed / f"{name}.md"
         claim_file.write_text(f"# {name}\n")
         return claim_file
 
-    def test_a_claim_with_a_sidecar_shows_its_owner(self):
-        claim_file = self._claim("held")
-        write_metadata(claim_file, owner="run-7-deadbeef")
+    def test_a_claim_with_an_owner_record_shows_it(self):
+        self._claim("held")
+        task_record.set_claim(self.dir, "held", "run-7-deadbeef")
         body = self._section_body(self._board(), "claimed")
         self.assertIn("held [user]", body)
         self.assertIn("owner=run-7-deadbeef", body)
 
-    def test_a_claim_without_a_sidecar_shows_a_question_mark(self):
+    def test_a_claim_with_no_record_shows_a_question_mark(self):
         self._claim("orphan")
         body = self._section_body(self._board(), "claimed")
         self.assertIn("orphan [user]", body)
         self.assertIn("owner=?", body)
 
-    def test_a_corrupt_sidecar_shows_a_question_mark(self):
-        claim_file = self._claim("broken")
-        claim_file.with_name(claim_file.name + ".claim.json").write_text("{junk")
+    def test_a_corrupt_record_shows_a_question_mark(self):
+        self._claim("broken")
+        task_record.record_path(self.dir, "broken").parent.mkdir(
+            parents=True, exist_ok=True)
+        task_record.record_path(self.dir, "broken").write_text("{junk")
         body = self._section_body(self._board(), "claimed")
         self.assertIn("broken [user]", body)
         self.assertIn("owner=?", body)
@@ -260,7 +262,7 @@ class ReadOnlyTest(_WiredFixture):
         self._make_dir_task("parked", "stuck")
         claim_file = self.claimed / "held.md"
         claim_file.write_text("# held\n")
-        write_metadata(claim_file, owner="run-1-x")
+        task_record.set_claim(self.dir, "held", "run-1-x")
         self._record("worker", verdict="pass", ts="2026-01-01T00:00:00")
 
         def tree() -> list[tuple[str, int]]:

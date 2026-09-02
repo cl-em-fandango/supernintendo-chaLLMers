@@ -30,10 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.core.config import Config
 from harness.core.enums import CheckpointStage
 from harness.core.providers import DirectoryTaskProvider, Task
-from harness.core.sync_sidecar import (
+from harness.core import task_record
+from tests.legacy_sidecars import (
     SyncLinkage,
     file_sidecar_path,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.task_lifecycle import TaskLifecycle
 
@@ -84,7 +85,7 @@ class _QueueMixin:
         path = self.pending_dir / f"{name}.md"
         path.write_text(body)
         if demo is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=7, repo=REPO, demo=demo))
         return path
 
@@ -119,17 +120,25 @@ class ClaimMetaTest(_QueueMixin, unittest.TestCase):
         self.assertIs(tasks[0].meta.get("demo", False), False)
 
     def test_flag_survives_the_claim_move(self):
-        """The rename leaves the sidecar in pending/; the claimed task still
-        reads flagged, in both the claim listing and the ownership listing."""
+        """The record is keyed by task id, so the rename cannot strand it.
+
+        Both concerns resolve the record, so the claim write adopts the
+        legacy linkage and retires the sidecar (FR-E2/FR-E3). The claimed
+        task reads flagged in the fetch, the claim listing and the ownership
+        listing, and the record holds the linkage and the ownership together.
+        """
         sidecar = file_sidecar_path(self._pending_task())
         provider = self._provider()
         claimed = provider.fetch_pending(claim=True, owner="run-a")
         self.assertTrue((self.claimed_dir / "demo_app.md").exists())
-        self.assertTrue(sidecar.exists())
-        self.assertEqual(sidecar.parent, self.pending_dir)
+        self.assertFalse(sidecar.exists(),
+                         "a legacy linkage was left beside the claimed file")
         self.assertIs(claimed[0].meta["demo"], True)
         self.assertIs(provider.list_claims()[0].meta["demo"], True)
         self.assertIs(provider.list_owned_claims()[0].task.meta["demo"], True)
+        record = task_record.read_record(self.queue_dir, "demo_app")
+        self.assertIs(record.github.demo, True)
+        self.assertEqual(record.claim.owner, "run-a")
 
     def test_sidecar_beside_the_claimed_file_is_read(self):
         """A sidecar written beside the claim (post-move) is honoured too."""
@@ -137,7 +146,7 @@ class ClaimMetaTest(_QueueMixin, unittest.TestCase):
         provider = self._provider()
         claimed = provider.fetch_pending(claim=True, owner="run-a")
         self.assertIs(claimed[0].meta.get("demo", False), False)
-        write_linkage(file_sidecar_path(self.claimed_dir / "demo_app.md"),
+        write_legacy_linkage(file_sidecar_path(self.claimed_dir / "demo_app.md"),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         self.assertIs(provider.list_claims()[0].meta["demo"], True)
 

@@ -27,7 +27,7 @@ from external.demo_deploy import (
     publish_artifacts,
 )
 
-from ..core.sync_sidecar import resolve_linkage
+from ..core import task_record
 from .demo_app_name import resolve_app_name
 from .demo_pages_url import pages_url
 
@@ -175,12 +175,12 @@ class DemoPlaceholderHook:
     # --- internals ----------------------------------------------------
 
     def _linkage(self, task_id: str):
-        """The task's GitHub linkage, wherever its sidecar currently is.
+        """The task's GitHub linkage, resolved by task id (FR-1.4).
 
-        The hook fires while the task is active and its sidecar may
-        still sit beside the staged claim file — `resolve_linkage`
-        checks the task-dir and task-file shapes (FR-1.4)."""
-        return resolve_linkage(self.params.queue_dir, task_id)
+        The hook fires while the task is active, and the record is keyed
+        by the task rather than by the staged claim file, so the linkage
+        is found wherever the task currently lives."""
+        return task_record.read_linkage(self.params.queue_dir, task_id)
 
     def _deploy(self, app_dir: Path) -> None:
         """Publish the placeholder directory through the deployer (FR-5)."""

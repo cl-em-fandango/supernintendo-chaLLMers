@@ -38,10 +38,10 @@ from harness.composition import build_demo_app_generator
 from harness.core import prompts
 from harness.core.config import Config
 from harness.core.enums import Verdict
-from harness.core.sync_sidecar import (
+from tests.legacy_sidecars import (
     SyncLinkage,
     task_dir_sidecar_path,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.demo_content import ContentSource, SiteContent
 from harness.workflow.demo_placeholder import write_placeholder_app
@@ -325,7 +325,7 @@ class CompositionHookTest(unittest.TestCase):
         self.task_dir = self.queue_dir / "active" / "t1"
         self.task_dir.mkdir(parents=True)
         (self.task_dir / "original.md").write_text("a pizza site\n")
-        write_linkage(task_dir_sidecar_path(self.task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(self.task_dir),
                       SyncLinkage(issue=9, repo="acme/widgets", demo=True))
         self.workdir = self.root / "workdir"
         self.workdir.mkdir()
