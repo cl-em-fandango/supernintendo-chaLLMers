@@ -123,7 +123,7 @@ class ConfigGithubKeysTest(unittest.TestCase):
 
 class SyncLabelsTest(unittest.TestCase):
     def test_trigger_label_strings_match_spec(self):
-        self.assertEqual({"snes", "snes-parked", "snes-deleted"},
+        self.assertEqual({"snes", "snes-demo", "snes-parked", "snes-deleted"},
                          {member.value for member in TriggerLabel})
 
     def test_state_label_strings_match_spec(self):
@@ -135,9 +135,10 @@ class SyncLabelsTest(unittest.TestCase):
     def test_parked_label_is_both_trigger_and_state(self):
         self.assertEqual(TriggerLabel.PARK.value, StateLabel.PARKED.value)
 
-    def test_trigger_precedence_is_delete_park_ingest(self):
+    def test_trigger_precedence_is_delete_park_demo_ingest(self):
         self.assertEqual((TriggerLabel.DELETE, TriggerLabel.PARK,
-                          TriggerLabel.INGEST), TRIGGER_PRECEDENCE)
+                          TriggerLabel.DEMO, TriggerLabel.INGEST),
+                         TRIGGER_PRECEDENCE)
 
     def test_prefix_constant(self):
         self.assertEqual("snes-", HARNESS_LABEL_PREFIX)

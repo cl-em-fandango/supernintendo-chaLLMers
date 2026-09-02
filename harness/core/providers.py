@@ -37,6 +37,39 @@ from .claim_metadata import (
     write_metadata,
 )
 from .enqueue_guard import check_enqueue
+from .sync_sidecar import SyncLinkage, file_sidecar_path, read_linkage
+
+# The `Task.meta` key carrying the demo-request flag (demo spec FR-1.4).
+DEMO_META_KEY = "demo"
+
+
+def _linkage_for(task_file: Path,
+                 sidecar_dirs: tuple[Path, ...] = ()) -> SyncLinkage | None:
+    """The GitHub linkage recorded for `task_file`, or None when unlinked.
+
+    The linkage sidecar belongs beside the task markdown, but a claim renames
+    only the `.md` file: a task synced in `pending/` keeps its sidecar there
+    after the markdown lands in `claimed/`. So the file's own directory is
+    checked first, then every other directory the provider lists claims in.
+    A corrupt or foreign (e.g. claim-ownership) sidecar reads as None.
+    """
+    for directory in (task_file.parent, *sidecar_dirs):
+        linkage = read_linkage(file_sidecar_path(directory / task_file.name))
+        if linkage is not None:
+            return linkage
+    return None
+
+
+def _task_meta(task_file: Path,
+               sidecar_dirs: tuple[Path, ...] = ()) -> dict:
+    """A Task's `meta` off the task file's linkage (demo spec FR-1.4).
+
+    The demo flag is lifted out of the `.gh.json` sidecar here so the
+    pipeline never has to read an inbound sidecar. An unflagged task gets an
+    empty meta, exactly the shape it had before the demo feature.
+    """
+    linkage = _linkage_for(task_file, sidecar_dirs)
+    return {DEMO_META_KEY: True} if linkage is not None and linkage.demo else {}
 
 
 @dataclass
@@ -44,6 +77,8 @@ class Task:
     id: str
     body: str
     source: str = ""            # e.g. "directory", "github:owner/repo#123"
+    # Freeform provider-supplied facts. The demo flag lives here as
+    # `meta["demo"]` (True only on a demo request) — demo spec FR-1.4.
     meta: dict = field(default_factory=dict)
 
 
@@ -154,6 +189,9 @@ class DirectoryTaskProvider(TaskProvider):
         # staging file is removed once intake has copied it into the task dir.
         self.claimed_dir = Path(claimed_dir) if claimed_dir else self.pending_dir.parent / "claimed"
         self.claimed_dir.mkdir(parents=True, exist_ok=True)
+        # Directories a task file's linkage sidecar may sit beside: a claim
+        # renames the markdown but leaves the sidecar where it was written.
+        self._sidecar_dirs = (self.pending_dir, self.claimed_dir)
 
     def fetch_pending(self, claim: bool = False,
                       limit: int | None = None,
@@ -198,7 +236,9 @@ class DirectoryTaskProvider(TaskProvider):
                             self.log(f"  ⚠ {dest.name} is claimed with no owner "
                                      f"and could not be rolled back")
                         raise
-            tasks.append(Task(id=tid, body=body, source=f"directory:{f.name}"))
+            tasks.append(Task(id=tid, body=body, source=f"directory:{f.name}",
+                              meta=_task_meta(dest if claim else f,
+                                              self._sidecar_dirs)))
         return tasks
 
     def count_pending(self) -> int:
@@ -220,7 +260,9 @@ class DirectoryTaskProvider(TaskProvider):
 
     def list_claims(self) -> list[Task]:
         """The files sitting in claimed/, in sorted order, as tasks."""
-        return [Task(id=_slug(f.stem), body=f.read_text(), source=f"claimed:{f.name}")
+        return [Task(id=_slug(f.stem), body=f.read_text(),
+                     source=f"claimed:{f.name}",
+                     meta=_task_meta(f, self._sidecar_dirs))
                 for f in sorted(self.claimed_dir.glob("*.md"))]
 
     def requeue_claim(self, name_or_task: "str | Task",
@@ -279,7 +321,8 @@ class DirectoryTaskProvider(TaskProvider):
         for f in sorted(self.claimed_dir.glob("*.md")):
             meta = read_metadata(f)
             task = Task(id=_slug(f.stem), body=f.read_text(),
-                        source=f"directory:{f.name}")
+                        source=f"directory:{f.name}",
+                        meta=_task_meta(f, self._sidecar_dirs))
             claims.append(Claim(task=task, filename=f.name, owner=meta.owner,
                                 claimed_at=meta.claimed_at,
                                 meta_path=metadata_path(f)))

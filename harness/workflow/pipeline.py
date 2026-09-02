@@ -11,7 +11,7 @@ from ..core.health import HealthOutcome, wait_for_healthy_server
 from ..core.enums import CheckpointStage, ReviewKind, Stage, Verdict
 from external.git_cli import GateNotApplicable, is_under_queue
 from ..core.gitops import ensure_branch
-from ..core.providers import Task
+from ..core.providers import DEMO_META_KEY, Task
 from ..core.session import SessionResult, SessionRunner
 from ..core.stats import render_task_journey_markdown
 from ..core.sync_stage_change_hook import run_stage_change_hook
@@ -140,7 +140,8 @@ class StoodDown(Exception):
 class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
                  health_wait=wait_for_healthy_server, stand_down_check=None,
-                 handoff_sync=None, sync_engine=None):
+                 handoff_sync=None, sync_engine=None, placeholder_hook=None,
+                 demo_app_generator=None, final_deploy_hook=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
@@ -174,6 +175,30 @@ class Pipeline:
         # answering True when an interrupt is active (and already
         # acknowledged). None means the wiring has no interrupt to honor.
         self.stand_down_check = stand_down_check
+        # Demo spec FR-2/FR-6.2: the pre-spec placeholder deploy hook,
+        # injected by the composition root only when `demo.enabled` and
+        # GitHub sync are both configured; None makes it a no-op. Called
+        # as `placeholder_hook(task, workdir)` before `stage_spec`, and it
+        # must never block the spec work (FR-2.3).
+        self.placeholder_hook = placeholder_hook
+        # Demo spec FR-3: the app generation driver, injected by the
+        # composition root only when `demo.enabled`; None leaves the
+        # implement stage on its normal prompt with no generation run.
+        # Called as `demo_app_generator(ctx)` once per demo task, before
+        # that task's first implement session. The supervisor reuses one
+        # Pipeline across many tasks, so the "already generated" marker
+        # is keyed on the task id, not a run-wide boolean.
+        self.demo_app_generator = demo_app_generator
+        self._demo_app_generated_for: str | None = None
+        # Demo spec FR-6.2 (final half): the post-merge deployment hook,
+        # injected by the composition root only when `demo.enabled` and
+        # GitHub sync are configured; None makes it a no-op. Called as
+        # `final_deploy_hook(ctx)` inside `stage_holistic` after
+        # `merge_to_trunk` succeeded and before the completion move, so
+        # a failed Pages deployment routes the task to `failed/` (FR-8.1)
+        # instead of completing it. The hook returns "" on success and a
+        # failure reason otherwise; it comments on the issue itself.
+        self.final_deploy_hook = final_deploy_hook
 
     def _run(self, model, workdir, prompt, *, task_id, stage: Stage | str, **kw):
         """Run a session, retrying a crash and handing over on a cap trip.
@@ -361,8 +386,10 @@ class Pipeline:
             return "parked"
         if resumed and not self._clean_worktree_on_resume(task.id, workdir):
             return "parked"
+        self._deploy_demo_placeholder(task, state, workdir)
 
-        ctx = StageContext(task.id, task_dir, workdir)
+        ctx = StageContext(task.id, task_dir, workdir,
+                           demo=bool(task.meta.get(DEMO_META_KEY)))
         outcome = "parked"
         try:
             for stage in STAGE_SEQUENCE:
@@ -432,6 +459,30 @@ class Pipeline:
             return outcome
         finally:
             self._persist_journey_readout(task.id, task_dir)
+
+    def _deploy_demo_placeholder(self, task: Task, state, workdir: Path) -> None:
+        """Demo spec FR-2.1/FR-6.2: the placeholder fires before `stage_spec`
+        on a claimed demo task, once, and never blocks the pipeline.
+
+        Gated three ways: no hook wired (feature off or GitHub
+        unconfigured), a task without the demo flag (FR-6.3: non-demo
+        tasks are entirely unaffected), or a resume whose SPEC stage is
+        already checkpointed (documented limitation in FR-1.4: a task that
+        has passed the pre-spec hook never retroactively deploys a
+        placeholder). The hook swallows and comments its own failures;
+        this guard is the second line of FR-2.3: even a broken hook must
+        not cost the task its spec work.
+        """
+        if self.placeholder_hook is None:
+            return
+        if not task.meta.get(DEMO_META_KEY):
+            return
+        if CheckpointStage.SPEC in state.checkpointed_stages:
+            return
+        try:
+            self.placeholder_hook(task, workdir)
+        except Exception as e:  # noqa: BLE001 - FR-2.3: spec work continues
+            self.log(f"  ⚠ placeholder hook failed: {e} — continuing into spec")
 
     def _clean_worktree_on_resume(self, task_id: str, workdir: Path) -> bool:
         """FR-5.3: discard the uncommitted residue of a killed attempt before
@@ -690,10 +741,17 @@ class Pipeline:
             self.log(f"  ⚠ could not checkpoint slice {sid}: {e}")
 
     def _implement(self, ctx: StageContext, sid: str) -> bool:
+        if ctx.demo:
+            self._generate_demo_app(ctx)
+        # Demo spec FR-3/FR-6.3: a demo task's implement sessions get the
+        # demo prompt variant (the normal prompt plus the app appendix);
+        # non-demo tasks keep the untouched prompt.
+        prompt_fn = (prompts.implement_slice_demo if ctx.demo
+                     else prompts.implement_slice)
         for it in range(1, self.cfg.max_slice_implement + 1):
             r = self._run(
                 self.cfg.implementer, ctx.workdir,
-                prompts.implement_slice(ctx.task_dir, sid, it, self.cfg.max_slice_implement),
+                prompt_fn(ctx.task_dir, sid, it, self.cfg.max_slice_implement),
                 task_id=ctx.task_id, stage=Stage.SLICE_IMPLEMENT, slice_id=sid, iteration=it)
             self.log(f"    implement iter {it} verdict: {r.verdict}")
             if r.verdict is Verdict.DONE:
@@ -703,6 +761,27 @@ class Pipeline:
                 file_session_output(r, note)
         self.lifecycle.park(ctx.task_id, f"slice {sid} not delivered in {self.cfg.max_slice_implement} implementation iterations")
         return False
+
+    def _generate_demo_app(self, ctx: StageContext) -> None:
+        """Demo spec FR-3: run the app generation driver once per demo
+        task, before that task's first implement session.
+
+        The generator (scaffold + content + build, `demo_generate`) is
+        wired by the composition root only when `demo.enabled`; without
+        it the demo task still gets the demo prompt variant and nothing
+        else changes. A raising generator is logged, never fatal — the
+        implementer session works on the repo as it stands (failure
+        routing and issue comments are the failure-handling slice)."""
+        if self.demo_app_generator is None:
+            return
+        if self._demo_app_generated_for == ctx.task_id:
+            return
+        self._demo_app_generated_for = ctx.task_id
+        try:
+            self.demo_app_generator(ctx)
+        except Exception as e:  # noqa: BLE001 - implementer continues anyway
+            self.log(f"  ⚠ demo app generation failed: {e} — implementer "
+                     f"continues")
 
     def _review_loop(self, ctx: StageContext, sid: str, kind: ReviewKind,
                      stage: Stage) -> bool:
@@ -749,6 +828,16 @@ class Pipeline:
             # Re-merging cannot work (the branch content is on trunk) and a
             # second holistic session would cost a model run for nothing.
             self.log("  already merged, completing")
+            # FR-6.2: a crash between the merge checkpoint and the deploy
+            # must still land the Pages deployment on resume — the deploy
+            # runs before `complete()` here exactly as on the fresh path,
+            # and a failure routes to `failed/` the same way (FR-8.1).
+            deploy_failure = self._deploy_demo_app(ctx)
+            if deploy_failure:
+                self.lifecycle.fail(ctx.task_id,
+                                    f"demo deployment failed: "
+                                    f"{deploy_failure}")
+                return "failed"
             self.lifecycle.complete(
                 ctx.task_id,
                 f"Feature complete and merged to {self.cfg.trunk_branch} "
@@ -778,12 +867,38 @@ class Pipeline:
                 self.lifecycle.park(ctx.task_id, f"merge failed: {e}")
                 return "parked"
             self._checkpoint_merge(ctx.task_id)
+            deploy_failure = self._deploy_demo_app(ctx)
+            if deploy_failure:
+                # FR-8.1/FR-6.4: the source is already on trunk and is
+                # not rolled back; the task itself goes to `failed/`
+                # because the Pages deployment did not happen.
+                self.lifecycle.fail(ctx.task_id,
+                                    f"demo deployment failed: "
+                                    f"{deploy_failure}")
+                return "failed"
             self.lifecycle.complete(ctx.task_id, "Feature complete and merged to "
                          f"{self.cfg.trunk_branch}. " + _summary(r.output))
             self._cleanup_branch(ctx.workdir, ctx.task_id)
             return "done"
         self.lifecycle.park(ctx.task_id, "holistic review failed: " + _summary(r.output))
         return "parked"
+
+    def _deploy_demo_app(self, ctx: StageContext) -> str:
+        """Demo spec FR-6.2: run the final-deploy hook for a demo task.
+
+        Returns "" on success or skip (hook unwired, non-demo task —
+        FR-6.3: non-demo tasks never touch the deployer), and the hook's
+        failure reason otherwise. A hook that ignores its never-raise
+        contract is caught here: the failure routes the task, it cannot
+        crash the harness.
+        """
+        if self.final_deploy_hook is None or not ctx.demo:
+            return ""
+        try:
+            return self.final_deploy_hook(ctx) or ""
+        except Exception as e:  # noqa: BLE001 - routed, not crashed
+            self.log(f"  ⚠ final deploy hook raised: {e}")
+            return str(e)
 
     # ------------------------------------------------------------------
     # merge checkpoint (F8)

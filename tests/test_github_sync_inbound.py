@@ -231,6 +231,24 @@ class SyncPassTest(InboundTestCase):
         self.assertIn("imported=1", report.summary_line())
         self.assertTrue(self.pending("Test_sync_feature.md").is_file())
 
+    def test_sync_pass_reads_demo_enabled_from_config(self):
+        # Slice 2 wiring: `demo.enabled` reaches the inbound parameters.
+        cfg_path = Path(self._tmp.name) / "config-demo.json"
+        cfg_path.write_text(json.dumps({
+            "workDir": self._tmp.name, "githubPat": "ghp_token",
+            "githubRepo": REPO, "demo": {"enabled": True}}))
+        api = FakeApi([_issue(7, "Pizza fan site", labels=("snes-demo",))])
+        report = sync_pass(load(cfg_path), api, log=self.messages.append)
+        self.assertEqual(1, report.imported)
+        self.assertTrue(read_linkage(file_sidecar_path(
+            self.pending("Pizza_fan_site.md"))).demo)
+
+    def test_sync_pass_without_demo_section_ignores_snes_demo(self):
+        api = FakeApi([_issue(7, "Pizza fan site", labels=("snes-demo",))])
+        report = sync_pass(self._cfg(), api, log=self.messages.append)
+        self.assertEqual(0, report.imported)
+        self.assertEqual([], list((self.queue / "pending").iterdir()))
+
     def test_cmd_sync_enabled_prints_summary(self):
         cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(json.dumps({

@@ -29,18 +29,22 @@ class TriggerLabel(str, Enum):
     """What an issue's labels instruct the inbound sync to do (spec FR-1).
 
     `INGEST` (the bare `snes`) doubles as a subscription marker: outbound
-    sync never removes it (spec FR-2.4).
+    sync never removes it (spec FR-2.4). `DEMO` (`snes-demo`, demo spec
+    FR-1) is a second subscription marker with the same rule: it ingests
+    with the demo flag, and outbound sync never removes it either.
     """
     INGEST = "snes"
+    DEMO = "snes-demo"
     PARK = "snes-parked"
     DELETE = "snes-deleted"
 
 
 # Exactly one action per issue when several triggers are present
-# (spec FR-1.5): delete > park > ingest.
+# (demo spec FR-1.5): delete > park > demo > ingest.
 TRIGGER_PRECEDENCE: tuple[TriggerLabel, ...] = (
     TriggerLabel.DELETE,
     TriggerLabel.PARK,
+    TriggerLabel.DEMO,
     TriggerLabel.INGEST,
 )
 
