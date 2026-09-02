@@ -22,7 +22,8 @@ from ..core.board import (TERMINAL_LOCATIONS, BoardSummary, BoardTask,
                           LocationBoard, RenderContext, aggregate_stats,
                           classify_origin, collapse_task_stats, render_board,
                           write_board)
-from ..core.claim_metadata import OWNER_UNKNOWN, read_metadata
+from ..core import task_record
+from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.interrupt import (
     InterruptMode,
     InterruptState,
@@ -463,8 +464,22 @@ def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
     The override is this command's alone: `provider.requeue_claim(force=True)`
     is documented for it, and no run path passes it. It is a handler parameter
     for now — the CLI flag is parser work this leaf does not own.
+
+    The command is also the queue's metadata hygiene pass (FR-E5): it first
+    migrates every legacy sidecar into the task records — including orphans
+    whose markdown is gone, which no task read ever sights — then reports
+    and cleans claim records whose task exists nowhere (§5.8), so an orphan
+    claim record cannot accumulate unseen. Running the command twice
+    converges: the second pass finds nothing to migrate and nothing to
+    clean (FR-E4). `dry_run` keeps the queue byte-identical: both the sweep
+    and the orphan pass report their plan and write nothing.
     """
     _, _, _, provider, _, log = build()
+    migrated = provider.sweep_legacy_metadata(dry_run=dry_run)
+    if migrated:
+        verb = "would migrate" if dry_run else "migrated"
+        log(f"{verb} legacy metadata for {len(migrated)} task(s): "
+            f"{', '.join(migrated)}")
     total = len(provider.list_claims())
     stale = _stale_claims(provider, older_than)
     moved = refused = 0
@@ -481,12 +496,50 @@ def cmd_requeue_claims(older_than: float = 0.0, dry_run: bool = False,
         if result is not None:
             moved += 1
             log(f"requeued {item.label} owner={item.owner}")
+    orphans_reported = _clean_orphan_claims(provider, older_than, dry_run, log)
     if dry_run:
         log(f"dry run: {len(stale) - refused} of {total} claim(s) at or over "
-            f"{older_than:g}h would move to pending/")
+            f"{older_than:g}h would move to pending/, "
+            f"{orphans_reported} orphan claim record(s) would be cleaned")
         return 0
     log(f"requeued {moved} of {len(stale)}")
     return 0
+
+
+def _clean_orphan_claims(provider, older_than: float, dry_run: bool,
+                         log) -> int:
+    """Report and clean claim records whose task markdown is gone (§5.8).
+
+    A claim record with no task anywhere is not a claim on work — no
+    fetch, board or claim listing can see it (FR-A4) — but it is metadata
+    an operator must be able to see and remove: the `002-…` defect class,
+    an orphan that outlived its markdown. Age is measured from the
+    record's own `claimed_at`, the only clock an orphan has; a corrupt
+    timestamp reads 0.0 and so always ages in.
+
+    Cleaning drops the `claim` section (and the record itself when nothing
+    else is left); a `github` section survives — linkage outlives the
+    markdown by design (§5.4). A failed clean is logged, never fatal
+    (FR-D3). Returns the number reported (cleaned, or planned under
+    `dry_run`) so the caller can count them in its summary.
+    """
+    now = time.time()
+    count = 0
+    for orphan in provider.list_orphan_claims():
+        age_hours = (now - orphan.claimed_at) / 3600.0
+        if age_hours < older_than:
+            continue
+        label = f"{orphan.task_id} ({int(age_hours)}h)"
+        count += 1
+        if dry_run:
+            log(f"would clean orphan claim record {label} "
+                f"owner={orphan.owner}")
+            continue
+        log(f"orphan claim record {label} owner={orphan.owner}: "
+            f"no task markdown in any queue location")
+        if provider.clean_orphan_claim(orphan):
+            log(f"cleaned orphan claim record {label}")
+    return count
 
 
 def cmd_autonomous(repo: str | Path | None = None) -> int:
@@ -506,9 +559,17 @@ def cmd_autonomous(repo: str | Path | None = None) -> int:
 
 
 def _queue_names(queue_dir: Path, sub: str) -> list[str]:
-    """Entry names in one queue subdirectory, sorted; [] when it is missing."""
+    """Task entry names in one queue subdirectory, sorted; [] when missing.
+
+    A legacy metadata sidecar still sitting in a queue location is not a
+    task (FR-A4) and is skipped here, so status and the board never
+    render one as work. The record store is a dot-directory outside every
+    queue location and cannot appear at all.
+    """
     d = queue_dir / sub
-    return sorted(p.name for p in d.iterdir()) if d.exists() else []
+    return sorted(p.name for p in d.iterdir()
+                  if not task_record.is_legacy_metadata_name(p.name)) \
+        if d.exists() else []
 
 
 def _claim_labels(provider) -> list[str]:
@@ -595,17 +656,19 @@ def _stats_rows_by_task(rows: list[dict]) -> dict[str, list[dict]]:
 
 
 def _claim_owner(queue_dir: Path, claim) -> str:
-    """The owner recorded in a claim's ownership sidecar.
+    """The owner recorded in the task's metadata record.
 
     The provider names the claim file in `source` (`claimed:<file>`); a
-    provider that does not, or a sidecar that is absent or corrupt, reads
-    back as `OWNER_UNKNOWN` (the renderer shows `?`, spec FR-3).
+    provider that does not, or a task whose record holds no readable
+    `claim` section, reads back as `OWNER_UNKNOWN` (the renderer shows `?`,
+    spec FR-3). Resolution is by task id through the record API (FR-B1).
     """
     prefix = f"{CLAIMED_LOCATION}:"
     if not claim.source.startswith(prefix):
         return OWNER_UNKNOWN
-    claim_file = queue_dir / CLAIMED_LOCATION / claim.source[len(prefix):]
-    return read_metadata(claim_file).owner
+    task_id = Path(claim.source[len(prefix):]).stem
+    held = task_record.read_record(queue_dir, task_id).claim
+    return held.owner if held is not None else OWNER_UNKNOWN
 
 
 def _terminal_reason(queue_dir: Path, task_id: str) -> str:

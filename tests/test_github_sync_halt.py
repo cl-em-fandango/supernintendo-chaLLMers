@@ -47,10 +47,10 @@ from harness.core.interrupt import (  # noqa: E402
 from harness.core.stand_down import StandDownWatcher  # noqa: E402
 from harness.core.sync import sync_pass  # noqa: E402
 from harness.core.sync_inbound import InboundParams, run_inbound  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
+from harness.core import task_record  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     file_sidecar_path,
-    read_linkage,
-    write_linkage,
+    write_legacy_linkage,
     SyncLinkage,
 )
 from harness.workflow.task_lifecycle import TaskLifecycle  # noqa: E402
@@ -120,7 +120,7 @@ class HaltTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -132,7 +132,7 @@ class HaltTestCase(unittest.TestCase):
             {"id": name, "status": "active"}))
         (task_dir / "original.md").write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(task_dir / "gh.json",
+            write_legacy_linkage(task_dir / "gh.json",
                           SyncLinkage(issue=issue, repo=REPO))
         return task_dir
 
@@ -152,7 +152,7 @@ class HaltTestCase(unittest.TestCase):
 
 
 class ParkTest(HaltTestCase):
-    def test_ac3_pending_task_parked_with_summary_and_sidecar(self):
+    def test_ac3_pending_task_parked_with_summary_and_linkage(self):
         task = self.file_task("pending", "task_a", issue=7)
         api = FakeApi([_issue(7, "Task a", ["snes", "snes-parked"])])
         result = run_inbound(api, self.params())
@@ -165,10 +165,13 @@ class ParkTest(HaltTestCase):
         self.assertEqual("parked", state["status"])
         self.assertIn("parked via GitHub issue #7",
                       self.review_summary("task_a"))
-        # Sidecar relocated from `pending/task_a.md.gh.json` into the dir.
+        # The linkage needs no move: the record is keyed by task id, and the
+        # legacy sidecar the seed left behind is retired by the migration.
         self.assertFalse(file_sidecar_path(task).exists())
-        self.assertEqual(7, read_linkage(parked / "gh.json").issue)
-        # Idempotent: a second pass sees the parked sidecar match, no-op.
+        self.assertFalse((parked / "gh.json").exists())
+        self.assertEqual(7, task_record.read_linkage(self.queue, "task_a")
+                         .issue)
+        # Idempotent: a second pass sees the parked record match, no-op.
         before = sorted(str(p) for p in self.queue.rglob("*"))
         self.assertEqual(0, run_inbound(api, self.params()).parked)
         self.assertEqual(before, sorted(str(p) for p in self.queue.rglob("*")))

@@ -45,21 +45,15 @@ from ..workflow.task_lifecycle import (
     QUEUE_LOCATIONS_ALL,
     TaskLifecycle,
 )
+from . import task_record
 from .sync_inbound import (
-    FILE_LOCATIONS,
     TaskLocation,
     find_task,
     normalize_title,
     scan_queue,
 )
 from .sync_labels import StateLabel, is_state_label
-from .sync_sidecar import (
-    SyncLinkage,
-    move_sidecar_into_task_dir,
-    read_linkage,
-    task_dir_sidecar_path,
-    write_linkage,
-)
+from .sync_linkage import SyncLinkage
 
 # The one state label an issue must carry per queue location (FR-2.4).
 STATE_LABEL_FOR_LOCATION: dict[str, StateLabel] = {
@@ -147,8 +141,8 @@ def _match_issue(entry: TaskLocation, linkage: SyncLinkage | None,
                  api, log: Callable[[str], None]) -> Issue | None:
     """The issue representing this task, or None (FR-1.6, FR-2.1, FR-2.2).
 
-    A sidecar wins — including an issue that fell out of both listings,
-    fetched by number. Otherwise the lowest-numbered open title match
+    A recorded linkage wins — including an issue that fell out of both
+    listings, fetched by number. Otherwise the lowest-numbered open title match
     (warning on several), then a closed match, which the caller parks
     on rather than creating a replacement.
     """
@@ -169,11 +163,11 @@ def _match_issue(entry: TaskLocation, linkage: SyncLinkage | None,
 
 def _create_issue(api, entry: TaskLocation,
                   params: OutboundParams) -> Issue:
-    """FR-2.3: new issue from the task, linkage recorded in the sidecar."""
+    """FR-2.3: new issue from the task, linkage recorded on the task."""
     issue = api.create_issue(title=entry.name.replace("_", " "),
                              body=_task_body(entry))
-    write_linkage(entry.sidecar,
-                  SyncLinkage(issue=issue.number, repo=params.repo))
+    task_record.write_linkage(params.queue_dir, entry.name,
+                              SyncLinkage(issue=issue.number, repo=params.repo))
     params.log(f"  {entry.name}: created gh #{issue.number} "
                f"('{issue.title}')")
     return issue
@@ -191,15 +185,14 @@ def _park_closed_issue(issue: Issue, entry: TaskLocation,
         return False
     was = entry.location
     params.lifecycle.park(entry.name, "GitHub issue closed", from_=was)
-    parked_dir = params.queue_dir / "parked" / entry.name
-    if was in FILE_LOCATIONS:
-        move_sidecar_into_task_dir(entry.sidecar, parked_dir)
-    entry.path = parked_dir
+    # The record is keyed by task id, so the park needs no metadata move
+    # (FR-C.3/FR-C.6) — the linkage is still found by `entry.name`.
+    entry.path = params.queue_dir / "parked" / entry.name
     entry.location = "parked"
-    entry.sidecar = task_dir_sidecar_path(parked_dir)
-    if read_linkage(entry.sidecar) is None:
-        write_linkage(entry.sidecar,
-                      SyncLinkage(issue=issue.number, repo=params.repo))
+    if task_record.read_linkage(params.queue_dir, entry.name) is None:
+        task_record.write_linkage(
+            params.queue_dir, entry.name,
+            SyncLinkage(issue=issue.number, repo=params.repo))
     params.log(f"  {entry.name}: parked — matching issue #{issue.number} "
                f"is closed (was {was}/)")
     return True
@@ -235,7 +228,7 @@ def _sync_entry(api, entry: TaskLocation, params: OutboundParams,
                 open_issues: list[Issue], closed_issues: list[Issue],
                 result: OutboundResult) -> None:
     """Bring one task's issue into agreement with the queue (FR-2)."""
-    linkage = read_linkage(entry.sidecar)
+    linkage = task_record.read_linkage(params.queue_dir, entry.name)
     if linkage is not None and linkage.repo and linkage.repo != params.repo:
         params.log(f"  {entry.name}: skip (debug) — linked to "
                    f"{linkage.repo}, not the synced repo {params.repo}")
@@ -250,10 +243,11 @@ def _sync_entry(api, entry: TaskLocation, params: OutboundParams,
             result.parked += 1
         return  # FR-2.2: a closed match skips further outbound work
     elif linkage is None:
-        # A fresh title match: record it so the sidecar wins from now on
-        # (FR-1.6) and later renames cannot orphan the link.
-        write_linkage(entry.sidecar,
-                      SyncLinkage(issue=issue.number, repo=params.repo))
+        # A fresh title match: record it so the record wins from now on
+        # (FR-1.6) and later moves cannot orphan the link.
+        task_record.write_linkage(params.queue_dir, entry.name,
+                                  SyncLinkage(issue=issue.number,
+                                              repo=params.repo))
     if _apply_state_label(api, issue, entry, params):
         result.label_updates += 1
 
@@ -263,7 +257,7 @@ def sync_one_task(api, task_id: str, params: OutboundParams) -> OutboundResult:
 
     Brings the single task's issue up to date — its state label for the
     queue location it is in right now — without listing or touching any
-    other task. A task with no sidecar linkage has no issue to update:
+    other task. A task with no recorded linkage has no issue to update:
     creating it is the full pass's job, so this is a logged no-op, and so
     is a closed match (parking an in-flight task mid-session is the full
     pass's call, not a hook's). Abort-class errors propagate so the
@@ -275,7 +269,7 @@ def sync_one_task(api, task_id: str, params: OutboundParams) -> OutboundResult:
         params.log(f"  {task_id}: skip (debug) — targeted sync, task not on "
                    f"the queue")
         return result
-    linkage = read_linkage(entry.sidecar)
+    linkage = task_record.read_linkage(params.queue_dir, task_id)
     if linkage is None:
         params.log(f"  {task_id}: skip (debug) — targeted sync, no issue "
                    f"linkage")

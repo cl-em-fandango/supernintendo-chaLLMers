@@ -45,10 +45,10 @@ from external.demo_deploy import (
 from harness.core.config import Config
 from harness.core.enums import Verdict
 from harness.core.providers import Task
-from harness.core.sync_sidecar import (
+from tests.legacy_sidecars import (
     SyncLinkage,
     task_dir_sidecar_path,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.demo_content import ContentSource, SiteContent
 from harness.workflow.demo_final_deploy import (
@@ -132,7 +132,7 @@ class GenerationStepFailureTest(unittest.TestCase):
         self.task_dir.mkdir(parents=True)
         (self.task_dir / "original.md").write_text("make a pizza site\n",
                                                    encoding="utf-8")
-        write_linkage(task_dir_sidecar_path(self.task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(self.task_dir),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         self.api = FakeApi()
         self.messages: list[str] = []
@@ -241,7 +241,7 @@ class RealOriginFailureBase(unittest.TestCase):
         self.queue_dir = self.root / "queue"
         task_dir = self.queue_dir / "active" / "pizza_fan_site"
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         self.api = FakeApi()
         self.messages: list[str] = []
@@ -492,7 +492,7 @@ class FinalDeployRoutesToFailedTest(unittest.TestCase):
                 _git(ctx.workdir, "add", "-A")
                 _git(ctx.workdir, "commit", "-m", "demo app implemented")
                 # intake has moved the task to active/ by now; link it.
-                write_linkage(
+                write_legacy_linkage(
                     task_dir_sidecar_path(outer.cfg.queue_dir / "active"
                                           / ctx.task_id),
                     SyncLinkage(issue=7, repo=REPO, demo=True))
@@ -567,7 +567,7 @@ class PlaceholderFailureTest(unittest.TestCase):
     def link(self, task_id: str = "pizza_fan_site", issue: int = 7) -> None:
         task_dir = self.queue_dir / "active" / task_id
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=issue, repo=REPO, demo=True))
 
     def test_deployer_failure_comments_and_never_raises(self):
@@ -682,7 +682,7 @@ class DeployLoggingTest(unittest.TestCase):
         queue_dir = self.root / "queue"
         task_dir = queue_dir / "active" / "t1"
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=1, repo=REPO, demo=True))
         apps = self.root / "workdir" / "demo-apps"
         (apps / "app").mkdir(parents=True)

@@ -59,8 +59,8 @@ from harness.core.sync_comments import HandoffCommentPoster  # noqa: E402
 from harness.core.sync_handoff_hook import HandoffSyncHook  # noqa: E402
 from harness.core.sync_inbound import normalize_title  # noqa: E402
 from harness.core.sync_outbound import run_outbound, OutboundParams  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
-    SyncLinkage, file_sidecar_path, write_linkage,
+from tests.legacy_sidecars import (  # noqa: E402
+    SyncLinkage, file_sidecar_path, write_legacy_linkage,
 )
 from harness.core.sync_stage_change_hook import run_stage_change_hook  # noqa: E402
 from harness.core.syncd import (  # noqa: E402
@@ -314,7 +314,7 @@ class FailureTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(body if body is not None else f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -325,7 +325,7 @@ class FailureTestCase(unittest.TestCase):
             json.dumps({"id": name, "status": location}))
         (task_dir / "original.md").write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(task_dir / "gh.json",
+            write_legacy_linkage(task_dir / "gh.json",
                           SyncLinkage(issue=issue, repo=REPO))
         return task_dir
 

@@ -32,9 +32,10 @@ from harness.composition import build, build_sync_engine  # noqa: E402
 from harness.core.config import load  # noqa: E402
 from harness.core.sync import SyncEngine  # noqa: E402
 from harness.core.sync_comments import HandoffCommentPoster  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
-    SyncLinkage, file_sidecar_path, read_linkage, task_dir_sidecar_path,
-    write_linkage,
+from harness.core import task_record  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
+    SyncLinkage, file_sidecar_path, task_dir_sidecar_path,
+    write_legacy_linkage,
 )
 
 REPO = "acme/widgets"
@@ -141,7 +142,7 @@ class SyncEngineTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -150,7 +151,7 @@ class SyncEngineTestCase(unittest.TestCase):
         path.mkdir(parents=True)
         (path / "original.md").write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(task_dir_sidecar_path(path),
+            write_legacy_linkage(task_dir_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -229,7 +230,9 @@ class SyncEngineTestCase(unittest.TestCase):
         self.assertEqual(1, report.comments_posted)
         self.assertTrue(any(m[0] == "comment" and "handoff prose" in m[2]
                             for m in api.mutations))
-        linkage = read_linkage(task_dir_sidecar_path(task))
+        self.assertFalse((task / "gh.json").exists(),
+                         "the poster wrote a task-dir sidecar")
+        linkage = task_record.read_linkage(self.queue, "in_flight_task")
         self.assertEqual(1, len(linkage.comment_ids))
         # A second pass has nothing pending and the dedup map holds the id:
         # no duplicate comment (FR-2.5).

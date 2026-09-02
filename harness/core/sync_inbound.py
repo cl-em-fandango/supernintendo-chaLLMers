@@ -54,15 +54,9 @@ from .interrupt import (
     read_interrupt,
     write_interrupt,
 )
+from . import task_record
 from .sync_labels import TRIGGER_PRECEDENCE, TriggerLabel
-from .sync_sidecar import (
-    SyncLinkage,
-    file_sidecar_path,
-    move_sidecar_into_task_dir,
-    read_linkage,
-    task_dir_sidecar_path,
-    write_linkage,
-)
+from .sync_linkage import SyncLinkage
 
 # FR-1.1: pathological titles are truncated from the end before any
 # collision suffix is appended, so the path stays inside sane limits.
@@ -77,12 +71,15 @@ DIR_LOCATIONS = ("active", "parked", "failed", "done")
 
 @dataclass
 class TaskLocation:
-    """One task as found on a queue scan: its name, where it lives, and
-    where its GitHub linkage sidecar would be."""
+    """One task as found on a queue scan: its name, its task-file path (or
+    task directory) and the queue location it currently sits in.
+
+    `name` is the task id the metadata record is keyed by, so linkage is
+    resolved by task id (`task_record.read_record`) rather than by a path
+    derived from this entry — a transition can never orphan it."""
     name: str          # file stem, or task-dir name
     path: Path         # the task .md file or the task directory
     location: str      # queue location ("pending", "active", ...)
-    sidecar: Path
 
 
 @dataclass
@@ -123,16 +120,14 @@ def scan_queue(queue_dir: Path) -> list[TaskLocation]:
         if directory.is_dir():
             for task_file in sorted(directory.glob("*.md")):
                 entries.append(TaskLocation(
-                    name=task_file.stem, path=task_file, location=location,
-                    sidecar=file_sidecar_path(task_file)))
+                    name=task_file.stem, path=task_file, location=location))
     for location in DIR_LOCATIONS:
         directory = queue_dir / location
         if directory.is_dir():
             for task_dir in sorted(p for p in directory.iterdir()
                                    if p.is_dir()):
                 entries.append(TaskLocation(
-                    name=task_dir.name, path=task_dir, location=location,
-                    sidecar=task_dir_sidecar_path(task_dir)))
+                    name=task_dir.name, path=task_dir, location=location))
     return entries
 
 
@@ -149,22 +144,31 @@ def find_task(queue_dir: Path, task_id: str) -> TaskLocation | None:
     return matches[-1] if matches else None
 
 
-def find_matching_task(issue, entries: list[TaskLocation]) -> TaskLocation | None:
+def find_matching_task(issue, entries: list[TaskLocation],
+                       queue_dir: Path) -> TaskLocation | None:
     """The task representing `issue`, or None (FR-1.2, FR-1.6).
 
-    Sidecar lookups take precedence: an entry whose sidecar names this
-    issue is the match, and an entry whose sidecar names a *different*
+    A recorded linkage takes precedence: an entry whose record names this
+    issue is the match, and an entry whose record names a *different*
     issue is off-limits to title matching (it belongs elsewhere). Only
-    entries with no readable sidecar fall back to the normalized-title
+    entries with no readable linkage fall back to the normalized-title
     comparison.
+
+    One task can be listed twice — the terminal task dir and the review
+    summary file left behind under the same name — and both now read the
+    same id-keyed record, so the last match wins, which is the task dir
+    (`scan_queue` lists dirs after files, the `find_task` precedence).
     """
     unlinked: list[TaskLocation] = []
+    matches: list[TaskLocation] = []
     for entry in entries:
-        linkage = read_linkage(entry.sidecar)
+        linkage = task_record.read_linkage(queue_dir, entry.name)
         if linkage is None:
             unlinked.append(entry)
         elif linkage.issue == issue.number:
-            return entry
+            matches.append(entry)
+    if matches:
+        return matches[-1]
     wanted = normalize_title(issue.title)
     return next((entry for entry in unlinked
                  if normalize_title(entry.name) == wanted), None)
@@ -204,16 +208,15 @@ def _flag_existing_task(issue, match: TaskLocation,
     """Demo spec edge 1: `snes-demo` on an already-synced issue flags the
     existing task's sidecar without duplicating the task.
 
-    A task whose sidecar is not ours (missing, corrupt, or a
-    claim-ownership file — `read_linkage` returns None) is left untouched;
-    a fresh linkage is written only where the task was unlinked, matching
-    the outbound fresh-title-match rule (FR-1.6).
+    A task with no readable linkage (no record, or one that does not parse)
+    is left untouched; a fresh linkage is written only where the task was
+    unlinked, matching the outbound fresh-title-match rule (FR-1.6).
     """
-    linkage = read_linkage(match.sidecar)
+    linkage = task_record.read_linkage(params.queue_dir, match.name)
     if linkage is None:
-        write_linkage(match.sidecar,
-                      SyncLinkage(issue=issue.number, repo=params.repo,
-                                  demo=True))
+        task_record.write_linkage(
+            params.queue_dir, match.name,
+            SyncLinkage(issue=issue.number, repo=params.repo, demo=True))
         params.log(f"  gh #{issue.number}: linked {match.name} in "
                    f"{match.location}/ with demo flag")
         return
@@ -221,9 +224,10 @@ def _flag_existing_task(issue, match: TaskLocation,
         params.log(f"  gh #{issue.number}: skip (debug) — {match.name} in "
                    f"{match.location}/ already flagged demo")
         return
-    write_linkage(match.sidecar, SyncLinkage(
-        issue=linkage.issue, repo=linkage.repo,
-        comment_ids=linkage.comment_ids, demo=True))
+    task_record.write_linkage(
+        params.queue_dir, match.name,
+        SyncLinkage(issue=linkage.issue, repo=linkage.repo,
+                    comment_ids=linkage.comment_ids, demo=True))
     params.log(f"  gh #{issue.number}: demo flag added to {match.name} "
                f"in {match.location}/")
 
@@ -236,7 +240,7 @@ def _ingest_issue(issue, entries: list[TaskLocation],
     and, when the issue already matches a task, flags that task instead
     of importing a duplicate (demo spec FR-1.3, edge 1).
     """
-    match = find_matching_task(issue, entries)
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is not None:
         if demo:
             _flag_existing_task(issue, match, params)
@@ -252,11 +256,11 @@ def _ingest_issue(issue, entries: list[TaskLocation],
         return False
     params.queue_dir.joinpath("pending").mkdir(parents=True, exist_ok=True)
     write_atomic(target, issue_task_body(issue))
-    sidecar = file_sidecar_path(target)
-    write_linkage(sidecar, SyncLinkage(issue=issue.number, repo=params.repo,
-                                       demo=demo))
+    task_record.write_linkage(
+        params.queue_dir, target.stem,
+        SyncLinkage(issue=issue.number, repo=params.repo, demo=demo))
     entries.append(TaskLocation(name=target.stem, path=target,
-                                location="pending", sidecar=sidecar))
+                                location="pending"))
     params.log(f"  gh #{issue.number}: imported -> pending/{filename}")
     return True
 
@@ -322,21 +326,10 @@ def _stand_down_status(params: InboundParams) -> InterruptStatus | None:
     return None
 
 
-def _relocate_file_sidecar(match: TaskLocation, params: InboundParams) -> None:
-    """Move a task-file linkage sidecar into the parked task dir (FR-1.6).
-
-    `pending/X.md.gh.json` beside the moved file would otherwise strand the
-    linkage. Claim-ownership sidecars are not ours and stay untouched.
-    """
-    parked_dir = params.queue_dir / "parked" / match.name
-    move_sidecar_into_task_dir(match.sidecar, parked_dir)
-    match.sidecar = task_dir_sidecar_path(parked_dir)
-
-
 def _park_issue_task(issue, entries: list[TaskLocation],
                      params: InboundParams) -> bool:
     """FR-1.3: park the task matching a `snes-parked` issue. True when moved."""
-    match = find_matching_task(issue, entries)
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is None or match.location == "parked":
         params.log(f"  gh #{issue.number}: skip (debug) — nothing to park "
                    f"({'no matching task' if match is None else 'already parked'})")
@@ -349,8 +342,8 @@ def _park_issue_task(issue, entries: list[TaskLocation],
     was = match.location
     params.lifecycle.park(match.name, f"parked via GitHub issue #{issue.number}",
                           from_=was)
-    if was in FILE_LOCATIONS:
-        _relocate_file_sidecar(match, params)
+    # The record is keyed by task id, so parking needs no metadata move
+    # (FR-C.3): the linkage is still found by `match.name` in `parked/`.
     match.path = params.queue_dir / "parked" / match.name
     match.location = "parked"
     params.log(f"  gh #{issue.number}: parked {match.name} (was {was}/)")
@@ -381,7 +374,7 @@ def _close_and_unlabel(api, issue, params: InboundParams) -> None:
 def _delete_issue_task(api, issue, entries: list[TaskLocation],
                        params: InboundParams) -> bool:
     """FR-1.4: delete the task matching a `snes-deleted` issue. True if gone."""
-    match = find_matching_task(issue, entries)
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is None:
         params.log(f"  gh #{issue.number}: skip (debug) — no matching task "
                    f"to delete")
@@ -392,7 +385,11 @@ def _delete_issue_task(api, issue, entries: list[TaskLocation],
         shutil.rmtree(match.path, ignore_errors=True)
     else:
         match.path.unlink(missing_ok=True)
-        match.sidecar.unlink(missing_ok=True)
+    # The task is gone, so its linkage goes with it — otherwise the record
+    # would keep claiming a deleted task belongs to this (now closed) issue.
+    if not task_record.clear_linkage(params.queue_dir, match.name):
+        params.log(f"  gh #{issue.number}: anomaly — could not clear the "
+                   f"linkage record of {match.name}")
     _close_and_unlabel(api, issue, params)
     entries.remove(match)
     params.log(f"  gh #{issue.number}: deleted {match.name} from "

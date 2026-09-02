@@ -30,7 +30,7 @@ from external.npm_cli import NpmResult, npm_available, run_npm
 from external.pi_cli import run_pi_session
 
 from ..core import prompts
-from ..core.sync_sidecar import resolve_linkage
+from ..core import task_record
 from .demo_app_name import resolve_generation_app_name
 from .demo_content import (
     ContentGenerationParams,
@@ -291,8 +291,8 @@ class DemoAppGenerationHook:
                      f"manifest: {exc}")
 
     def _linkage(self, task_id: str):
-        """The task's linkage, wherever its sidecar currently is."""
-        return resolve_linkage(self.params.queue_dir, task_id)
+        """The task's linkage, resolved by task id (FR-1.4)."""
+        return task_record.read_linkage(self.params.queue_dir, task_id)
 
     @staticmethod
     def _ticket_text(ctx) -> str:

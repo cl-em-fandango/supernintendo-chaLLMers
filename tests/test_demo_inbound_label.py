@@ -37,10 +37,10 @@ from harness.core.sync_labels import (  # noqa: E402
     is_state_label,
 )
 from harness.core.sync_outbound import OutboundParams, run_outbound  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
+from harness.core import task_record  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     file_sidecar_path,
-    read_linkage,
-    write_linkage,
+    write_legacy_linkage,
     SyncLinkage,
 )
 
@@ -114,9 +114,11 @@ class DemoInboundTestCase(unittest.TestCase):
     def pending(self, name):
         return self.queue / "pending" / name
 
-    def sidecar_payload(self, name):
-        return json.loads(
-            file_sidecar_path(self.pending(name)).read_text())
+    def linkage_payload(self, name):
+        """The task's recorded `github` section, as written on disk."""
+        payload = json.loads(
+            task_record.record_path(self.queue, Path(name).stem).read_text())
+        return payload["github"]
 
 
 class DemoIngestTest(DemoInboundTestCase):
@@ -126,12 +128,12 @@ class DemoIngestTest(DemoInboundTestCase):
         task = self.pending("Pizza_fan_site.md")
         self.assertTrue(task.is_file())
         self.assertEqual("# hello", task.read_text())
-        linkage = read_linkage(file_sidecar_path(task))
+        linkage = task_record.read_linkage(self.queue, task.stem)
         self.assertIsNotNone(linkage)
         self.assertEqual(7, linkage.issue)
         self.assertEqual(REPO, linkage.repo)
         self.assertTrue(linkage.demo)
-        payload = self.sidecar_payload("Pizza_fan_site.md")
+        payload = self.linkage_payload("Pizza_fan_site.md")
         self.assertIs(True, payload["demo"])
         self.assertEqual(7, payload["issue"])
         self.assertEqual(REPO, payload["repo"])
@@ -143,7 +145,7 @@ class DemoIngestTest(DemoInboundTestCase):
         self.assertEqual(0, self.run_pass(api).imported)
         self.assertEqual(before, sorted(p.name for p in self.queue.rglob("*")))
         self.assertIs(True,
-                      self.sidecar_payload("Pizza_fan_site.md")["demo"])
+                      self.linkage_payload("Pizza_fan_site.md")["demo"])
 
     def test_snes_plus_demo_ingests_one_flagged_task(self):
         api = FakeApi([_issue(8, "Pizza fan site",
@@ -151,15 +153,15 @@ class DemoIngestTest(DemoInboundTestCase):
         self.assertEqual(1, self.run_pass(api).imported)
         self.assertEqual([], list((self.queue / "pending").glob("*-8.md")))
         self.assertIs(True,
-                      self.sidecar_payload("Pizza_fan_site.md")["demo"])
+                      self.linkage_payload("Pizza_fan_site.md")["demo"])
 
     def test_plain_snes_issue_is_not_flagged(self):
         api = FakeApi([_issue(9, "Ordinary task", labels=("snes",))])
         self.assertEqual(1, self.run_pass(api).imported)
-        payload = self.sidecar_payload("Ordinary_task.md")
-        self.assertNotIn("demo", payload)
-        self.assertFalse(read_linkage(
-            file_sidecar_path(self.pending("Ordinary_task.md"))).demo)
+        payload = self.linkage_payload("Ordinary_task.md")
+        self.assertIs(False, payload["demo"])
+        self.assertFalse(
+            task_record.read_linkage(self.queue, "Ordinary_task").demo)
 
     def test_demo_listing_only_when_enabled(self):
         api = FakeApi([_issue(7, "Pizza fan site", labels=(DEMO,))])
@@ -193,7 +195,7 @@ class DemoPrecedenceTest(DemoInboundTestCase):
         # the task lands flagged (FR-1.5 precedence).
         api = FakeApi([_issue(7, "Pizza fan site", labels=("snes", DEMO))])
         self.assertEqual(1, self.run_pass(api).imported)
-        self.assertIs(True, self.sidecar_payload("Pizza_fan_site.md")["demo"])
+        self.assertIs(True, self.linkage_payload("Pizza_fan_site.md")["demo"])
 
 
 class DemoDisabledTest(DemoInboundTestCase):
@@ -212,7 +214,7 @@ class DemoDisabledTest(DemoInboundTestCase):
     def test_disabled_still_ingests_bare_snes_unflagged(self):
         api = FakeApi([_issue(8, "Pizza fan site", labels=("snes", DEMO))])
         self.assertEqual(1, self.run_pass(api, demo_enabled=False).imported)
-        self.assertNotIn("demo", self.sidecar_payload("Pizza_fan_site.md"))
+        self.assertIs(False, self.linkage_payload("Pizza_fan_site.md")["demo"])
 
 
 class DemoFlagExistingTaskTest(DemoInboundTestCase):
@@ -222,8 +224,8 @@ class DemoFlagExistingTaskTest(DemoInboundTestCase):
         api = FakeApi([issue])
         self.assertEqual(1, self.run_pass(api).imported)
         task = self.pending("Pizza_fan_site.md")
-        self.assertNotIn("demo", self.sidecar_payload("Pizza_fan_site.md"))
-        # Pass 2: the label was added on GitHub; the existing sidecar is
+        self.assertIs(False, self.linkage_payload("Pizza_fan_site.md")["demo"])
+        # Pass 2: the label was added on GitHub; the existing linkage is
         # flagged and no second task appears (edge 1).
         api.issues[7] = _issue(7, "Pizza fan site", labels=("snes", DEMO))
         result = self.run_pass(api)
@@ -231,16 +233,21 @@ class DemoFlagExistingTaskTest(DemoInboundTestCase):
         self.assertEqual([task.name],
                          [p.name for p in (self.queue / "pending").iterdir()
                           if p.suffix == ".md"])
-        self.assertIs(True, self.sidecar_payload("Pizza_fan_site.md")["demo"])
+        self.assertIs(True, self.linkage_payload("Pizza_fan_site.md")["demo"])
 
     def test_flag_survives_task_dir_sidecar(self):
         task_dir = self.queue / "active" / "Pizza_fan_site"
         task_dir.mkdir()
-        write_linkage(task_dir / "gh.json",
+        write_legacy_linkage(task_dir / "gh.json",
                       SyncLinkage(issue=7, repo=REPO))
         api = FakeApi([_issue(7, "Whatever title", labels=(DEMO,))])
         self.assertEqual(0, self.run_pass(api).imported)
-        payload = json.loads((task_dir / "gh.json").read_text())
+        # The legacy task-dir sidecar is adopted by the record, which is
+        # where the flag is written and read from now on.
+        self.assertFalse((task_dir / "gh.json").exists())
+        payload = json.loads(
+            task_record.record_path(self.queue, "Pizza_fan_site")
+            .read_text())["github"]
         self.assertIs(True, payload["demo"])
         self.assertEqual(7, payload["issue"])
 
@@ -248,7 +255,7 @@ class DemoFlagExistingTaskTest(DemoInboundTestCase):
         (self.queue / "pending" / "Pizza_fan_site.md").write_text("manual")
         api = FakeApi([_issue(7, "Pizza fan site", labels=(DEMO,))])
         self.assertEqual(0, self.run_pass(api).imported)
-        payload = self.sidecar_payload("Pizza_fan_site.md")
+        payload = self.linkage_payload("Pizza_fan_site.md")
         self.assertIs(True, payload["demo"])
         self.assertEqual(7, payload["issue"])
 
@@ -256,18 +263,18 @@ class DemoFlagExistingTaskTest(DemoInboundTestCase):
         # Edge 2: no un-flagging within the current cycle.
         task = self.pending("Pizza_fan_site.md")
         task.write_text("# hello")
-        write_linkage(file_sidecar_path(task),
+        write_legacy_linkage(file_sidecar_path(task),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         api = FakeApi([_issue(7, "Pizza fan site", labels=("snes",))])
         self.run_pass(api)
-        self.assertIs(True, self.sidecar_payload("Pizza_fan_site.md")["demo"])
+        self.assertIs(True, self.linkage_payload("Pizza_fan_site.md")["demo"])
 
 
 class DemoDeleteAntiLoopTest(DemoInboundTestCase):
     def test_delete_removes_demo_where_it_removes_snes(self):
         task = self.pending("Pizza_fan_site.md")
         task.write_text("# hello")
-        write_linkage(file_sidecar_path(task),
+        write_legacy_linkage(file_sidecar_path(task),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         api = FakeApi([_issue(7, "Pizza fan site",
                               labels=("snes", DEMO, "snes-deleted",
@@ -282,7 +289,7 @@ class DemoDeleteAntiLoopTest(DemoInboundTestCase):
     def test_delete_disabled_leaves_demo_label_alone(self):
         task = self.pending("Pizza_fan_site.md")
         task.write_text("# hello")
-        write_linkage(file_sidecar_path(task),
+        write_legacy_linkage(file_sidecar_path(task),
                       SyncLinkage(issue=7, repo=REPO))
         api = FakeApi([_issue(7, "Pizza fan site",
                               labels=("snes", DEMO, "snes-deleted"))])
@@ -299,7 +306,7 @@ class DemoOutboundMarkerTest(DemoInboundTestCase):
     def test_outbound_never_removes_demo(self):
         task = self.pending("Pizza_fan_site.md")
         task.write_text("# hello")
-        write_linkage(file_sidecar_path(task),
+        write_legacy_linkage(file_sidecar_path(task),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         api = FakeApi([_issue(7, "Pizza fan site",
                               labels=("snes", DEMO, "snes-active",

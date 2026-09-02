@@ -224,10 +224,9 @@ def _pass_aborted(result: object) -> bool:
 def _default_check_pending(work_dir: Path) -> bool:
     """True when `pending/` holds at least one task file.
 
-    Task files are markdown only. A synced task leaves its sidecar
-    (`X.md.gh.json`, FR-1.6) behind when a claim moves the markdown, and
-    counting the orphan would report work no fetch would ever claim — a
-    spawn every interval against an empty queue. Hidden files are skipped
+    Task files are markdown only. Task metadata lives in the dot-prefixed
+    `.meta/` record store (FR-A4), so no transition can leave a record in
+    `pending/` for this check to mistake for work. Hidden files are skipped
     for the same reason: they are editor droppings, not tasks.
     """
     pending = Path(work_dir) / "queue" / PENDING_LOCATION

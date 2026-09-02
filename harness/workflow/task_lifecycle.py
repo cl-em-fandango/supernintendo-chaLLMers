@@ -55,9 +55,9 @@ class TaskState:
     last_updated: str = ""
     # Recorded at intake and never re-derived (F7).
     workdir: str = ""
-    # Demo-request flag (demo spec FR-1.4): copied out of the inbound sidecar
-    # into `Task.meta` at claim time and persisted here at intake, so a resume
-    # reads it without touching `.gh.json`. Kept last so positional
+    # Demo-request flag (demo spec FR-1.4): copied out of the task's metadata
+    # record into `Task.meta` at claim time and persisted here at intake, so a
+    # resume reads it without reading queue metadata. Kept last so positional
     # construction of the earlier fields keeps working.
     demo: bool = False
 

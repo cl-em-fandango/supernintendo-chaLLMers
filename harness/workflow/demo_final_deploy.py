@@ -31,7 +31,7 @@ from external.demo_deploy import (
     publish_artifacts,
 )
 
-from ..core.sync_sidecar import resolve_linkage
+from ..core import task_record
 from .demo_build import build_active_app
 from .demo_manifest import MANIFEST_NAME, read_manifest
 from .demo_pages_url import pages_url
@@ -115,13 +115,13 @@ class DemoFinalDeployHook:
     # --- internals ----------------------------------------------------
 
     def _linkage(self, task_id: str):
-        """The task's GitHub linkage, wherever its sidecar currently is.
+        """The task's GitHub linkage, resolved by task id (FR-1.4).
 
         The hook fires while the task is still active (before the
-        completion move), so the sidecar may live beside the staged
-        claim file rather than in the task dir — `resolve_linkage`
-        checks both shapes (FR-1.4)."""
-        return resolve_linkage(self.params.queue_dir, task_id)
+        completion move), and the record is keyed by the task rather than
+        by any one file, so the linkage is found wherever the task
+        currently lives."""
+        return task_record.read_linkage(self.params.queue_dir, task_id)
 
     def _active_app(self, ctx) -> str:
         """The manifest-named active app, verified present in the workdir.

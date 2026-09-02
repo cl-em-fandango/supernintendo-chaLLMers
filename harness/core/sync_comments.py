@@ -30,13 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..workflow.task_lifecycle import QUEUE_LOCATIONS_ALL
-from .sync_sidecar import (
-    file_sidecar_path,
-    read_linkage,
-    task_dir_sidecar_path,
-    write_linkage,
-)
+from . import task_record
+from .sync_inbound import find_task
 
 # Length of the event-id digest; plenty to make prose collisions impossible
 # in one issue's comment map while keeping sidecars readable.
@@ -86,27 +81,8 @@ def comment_body(event: HandoffEvent) -> str:
     return f"**[{event.stage}]** {_context_line(event)}\n\n{event.prose}"
 
 
-def task_sidecar(queue_dir: Path, task_id: str) -> Path | None:
-    """Where this task's linkage sidecar lives (or would live), or None
-    when the task is not in any synced location.
-
-    Task dirs are scanned before task files so a terminal dir (with its
-    `gh.json`) wins over the review summary file the same task leaves
-    behind.
-    """
-    for location in QUEUE_LOCATIONS_ALL:
-        directory = queue_dir / location / task_id
-        if directory.is_dir():
-            return task_dir_sidecar_path(directory)
-    for location in QUEUE_LOCATIONS_ALL:
-        task_file = queue_dir / location / f"{task_id}.md"
-        if task_file.is_file():
-            return file_sidecar_path(task_file)
-    return None
-
-
 class HandoffCommentPoster:
-    """Posts `HandoffEvent`s to the linked issue, deduped via the sidecar.
+    """Posts `HandoffEvent`s to the linked issue, deduped via the record.
 
     Built once by the composition root and injected into the write sites
     as a callable (`poster(event)`); `__call__` never raises. A task with
@@ -173,14 +149,13 @@ class HandoffCommentPoster:
         """Post `event` once; return the comment id, or None when skipped.
 
         Skips: no task on disk, no linkage for this repo, or an id already
-        in the sidecar's `comment_ids` map (retry/repeated pass).
+        in the record's `comment_ids` map (retry/repeated pass).
         """
-        sidecar = task_sidecar(self.queue_dir, event.task_id)
-        if sidecar is None:
+        if find_task(self.queue_dir, event.task_id) is None:
             self.log(f"  {event.task_id}: skip (debug) — handoff comment, "
                      f"task not in any synced location")
             return None
-        linkage = read_linkage(sidecar)
+        linkage = task_record.read_linkage(self.queue_dir, event.task_id)
         if linkage is None:
             self.log(f"  {event.task_id}: skip (debug) — handoff comment, "
                      f"no issue linkage")
@@ -196,7 +171,7 @@ class HandoffCommentPoster:
             return None
         comment = self.api.create_comment(linkage.issue, comment_body(event))
         linkage.comment_ids[event_key] = comment.id
-        write_linkage(sidecar, linkage)
+        task_record.write_linkage(self.queue_dir, event.task_id, linkage)
         if self.verify:
             self._verify(linkage.issue, comment.id)
         self.log(f"  {event.task_id}: handoff comment posted to "

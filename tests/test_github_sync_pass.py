@@ -38,8 +38,8 @@ from external.github_api import (  # noqa: E402
 from harness.cli import handlers  # noqa: E402
 from harness.core.config import load  # noqa: E402
 from harness.core.sync import SyncReport, sync_pass  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
-    SyncLinkage, file_sidecar_path, write_linkage,
+from tests.legacy_sidecars import (  # noqa: E402
+    SyncLinkage, file_sidecar_path, write_legacy_linkage,
 )
 
 REPO = "acme/widgets"
@@ -148,7 +148,7 @@ class SyncPassTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 

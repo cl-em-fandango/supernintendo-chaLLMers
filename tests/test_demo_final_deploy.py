@@ -49,10 +49,10 @@ from harness.core import gitops
 from harness.core.config import Config
 from harness.core.enums import Verdict
 from harness.core.providers import Task
-from harness.core.sync_sidecar import (
+from tests.legacy_sidecars import (
     SyncLinkage,
     task_dir_sidecar_path,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.workflow.demo_build import (
     AppBuildError,
@@ -280,7 +280,7 @@ class HookTest(unittest.TestCase):
              repo: str = REPO) -> None:
         task_dir = self.queue_dir / "active" / task_id
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=issue, repo=repo, demo=True))
 
     def ctx(self, task_id: str = "pizza_fan_site") -> StageContext:
@@ -660,7 +660,7 @@ class RealDeployerTest(_NpmTestBase):
         self.queue_dir = self.root / "queue"
         task_dir = self.queue_dir / "active" / "pizza_fan_site"
         task_dir.mkdir(parents=True)
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
         self.api = FakeApi()
 
@@ -801,7 +801,7 @@ class GenerationHookManifestTest(unittest.TestCase):
         task_dir.mkdir(parents=True)
         (task_dir / "original.md").write_text("make a pizza site\n",
                                               encoding="utf-8")
-        write_linkage(task_dir_sidecar_path(task_dir),
+        write_legacy_linkage(task_dir_sidecar_path(task_dir),
                       SyncLinkage(issue=7, repo=REPO, demo=True))
 
     def hook(self, generator) -> DemoAppGenerationHook:
