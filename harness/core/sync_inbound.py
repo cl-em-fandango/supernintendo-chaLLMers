@@ -8,8 +8,13 @@ Two phases of the inbound contract live here:
 * halt (Slice 4) — `snes-parked` parks the matching task from any queue
   location (FR-1.3) and `snes-deleted` deletes it (FR-1.4), stopping
   in-flight work through the existing interrupt/stand-down mechanism
-  (flag at the session boundary, never a kill). Exactly one action per
-  issue, ordered delete > park > ingest (FR-1.5).
+  (flag at the session boundary, never a kill).
+
+Exactly one action per issue, ordered delete > park > demo > ingest
+(demo spec FR-1.5). The `DEMO` action is an ingest that also records
+`demo: true` in the sidecar (demo spec FR-1.1–FR-1.3); when the demo
+feature is disabled (`InboundParams.demo_enabled`) the `snes-demo` label
+is ignored entirely (demo spec FR-9).
 
 State and behavior (CODING_STANDARDS §2): `TaskLocation` and
 `InboundParams` describe shape; `run_inbound()` acts. The GitHub side is
@@ -92,6 +97,9 @@ class InboundParams:
     # The lifecycle authority for parking; None only in wiring that cannot
     # move tasks, and a halt then logs and skips.
     lifecycle: TaskLifecycle | None = None
+    # The `demo.enabled` switch (demo spec FR-9): when False, `snes-demo`
+    # labels are ignored — no listing, no action, no label changes.
+    demo_enabled: bool = False
 
 
 @dataclass
@@ -191,13 +199,50 @@ def issue_task_body(issue) -> str:
     return f"{issue.title}\n\n{issue.html_url}\n"
 
 
+def _flag_existing_task(issue, match: TaskLocation,
+                        params: InboundParams) -> None:
+    """Demo spec edge 1: `snes-demo` on an already-synced issue flags the
+    existing task's sidecar without duplicating the task.
+
+    A task whose sidecar is not ours (missing, corrupt, or a
+    claim-ownership file — `read_linkage` returns None) is left untouched;
+    a fresh linkage is written only where the task was unlinked, matching
+    the outbound fresh-title-match rule (FR-1.6).
+    """
+    linkage = read_linkage(match.sidecar)
+    if linkage is None:
+        write_linkage(match.sidecar,
+                      SyncLinkage(issue=issue.number, repo=params.repo,
+                                  demo=True))
+        params.log(f"  gh #{issue.number}: linked {match.name} in "
+                   f"{match.location}/ with demo flag")
+        return
+    if linkage.demo:
+        params.log(f"  gh #{issue.number}: skip (debug) — {match.name} in "
+                   f"{match.location}/ already flagged demo")
+        return
+    write_linkage(match.sidecar, SyncLinkage(
+        issue=linkage.issue, repo=linkage.repo,
+        comment_ids=linkage.comment_ids, demo=True))
+    params.log(f"  gh #{issue.number}: demo flag added to {match.name} "
+               f"in {match.location}/")
+
+
 def _ingest_issue(issue, entries: list[TaskLocation],
-                  params: InboundParams) -> bool:
-    """One issue -> one pending task file. True when a file was created."""
+                  params: InboundParams, demo: bool = False) -> bool:
+    """One issue -> one pending task file. True when a file was created.
+
+    `demo=True` (the `snes-demo` trigger) records the flag in the sidecar
+    and, when the issue already matches a task, flags that task instead
+    of importing a duplicate (demo spec FR-1.3, edge 1).
+    """
     match = find_matching_task(issue, entries)
     if match is not None:
-        params.log(f"  gh #{issue.number}: skip (debug) — matches {match.name} "
-                   f"in {match.location}/; not importing")
+        if demo:
+            _flag_existing_task(issue, match, params)
+        else:
+            params.log(f"  gh #{issue.number}: skip (debug) — matches "
+                       f"{match.name} in {match.location}/; not importing")
         return False
     filename = derive_task_filename(issue, entries)
     target = params.queue_dir / "pending" / filename
@@ -208,36 +253,46 @@ def _ingest_issue(issue, entries: list[TaskLocation],
     params.queue_dir.joinpath("pending").mkdir(parents=True, exist_ok=True)
     write_atomic(target, issue_task_body(issue))
     sidecar = file_sidecar_path(target)
-    write_linkage(sidecar, SyncLinkage(issue=issue.number, repo=params.repo))
+    write_linkage(sidecar, SyncLinkage(issue=issue.number, repo=params.repo,
+                                       demo=demo))
     entries.append(TaskLocation(name=target.stem, path=target,
                                 location="pending", sidecar=sidecar))
     params.log(f"  gh #{issue.number}: imported -> pending/{filename}")
     return True
 
 
-def _trigger_for(issue) -> TriggerLabel | None:
-    """The one action an issue's labels instruct, in FR-1.5 precedence."""
+def _trigger_for(issue, demo_enabled: bool = False) -> TriggerLabel | None:
+    """The one action an issue's labels instruct, in FR-1.5 precedence
+    (delete > park > demo > ingest). With the demo feature disabled,
+    `snes-demo` is not a trigger at all (demo spec FR-9).
+    """
     names = {label.name for label in issue.labels}
     for trigger in TRIGGER_PRECEDENCE:
+        if trigger is TriggerLabel.DEMO and not demo_enabled:
+            continue
         if trigger.value in names:
             return trigger
     return None
 
 
-def _collect_trigger_issues(api) -> dict[int, object]:
+def _collect_trigger_issues(api,
+                            demo_enabled: bool = False) -> dict[int, object]:
     """Every issue carrying a trigger label, keyed by number.
 
-    Ingest reads open issues only (FR-1.2); the halt triggers apply to
-    open *and* closed issues (FR-1.3). The open listing is taken first and
-    wins a merge, so an issue's recorded state is `open` whenever it is open
-    now (the delete anti-loop depends on it).
+    Ingest reads open issues only (FR-1.2), as does the demo trigger
+    (demo spec FR-1.2); the halt triggers apply to open *and* closed
+    issues (FR-1.3). The open listing is taken first and wins a merge, so
+    an issue's recorded state is `open` whenever it is open now (the
+    delete anti-loop depends on it). The `snes-demo` listing happens only
+    while the feature is enabled (demo spec FR-9).
     """
+    queries = [(TriggerLabel.DELETE, (IssueState.OPEN, IssueState.CLOSED)),
+               (TriggerLabel.PARK, (IssueState.OPEN, IssueState.CLOSED))]
+    if demo_enabled:
+        queries.append((TriggerLabel.DEMO, (IssueState.OPEN,)))
+    queries.append((TriggerLabel.INGEST, (IssueState.OPEN,)))
     found: dict[int, object] = {}
-    for label, states in ((TriggerLabel.INGEST, (IssueState.OPEN,)),
-                          (TriggerLabel.PARK, (IssueState.OPEN,
-                                               IssueState.CLOSED)),
-                          (TriggerLabel.DELETE, (IssueState.OPEN,
-                                                 IssueState.CLOSED))):
+    for label, states in queries:
         for state in states:
             for issue in api.list_issues(labels=[label.value], state=state):
                 found.setdefault(issue.number, issue)
@@ -306,13 +361,19 @@ def _close_and_unlabel(api, issue, params: InboundParams) -> None:
     """FR-1.4 anti-loop: close the issue and drop `snes`/`snes-deleted`.
 
     Only labels the issue actually carries are removed (no 404 churn);
-    human labels are never touched. A failure here is logged by the
-    per-issue guard in `run_inbound`, not silently retried.
+    human labels are never touched. `snes-demo` is removed exactly where
+    `snes` is removed (demo spec FR-1.6) — and only while the feature is
+    enabled, since a disabled pass never acts on the label at all. A
+    failure here is logged by the per-issue guard in `run_inbound`, not
+    silently retried.
     """
     if issue.state is IssueState.OPEN:
         api.close_issue(issue.number)
     carried = {label.name for label in issue.labels}
-    for name in (TriggerLabel.INGEST.value, TriggerLabel.DELETE.value):
+    removable = [TriggerLabel.INGEST.value, TriggerLabel.DELETE.value]
+    if params.demo_enabled:
+        removable.append(TriggerLabel.DEMO.value)
+    for name in removable:
         if name in carried:
             api.remove_label(issue.number, name)
 
@@ -342,26 +403,30 @@ def _delete_issue_task(api, issue, entries: list[TaskLocation],
 def run_inbound(api, params: InboundParams) -> InboundResult:
     """FR-1 phase 1: apply every issue's trigger action to the queue.
 
-    One action per issue in FR-1.5 precedence (delete > park > ingest). A
-    failure on one issue is logged and skipped — it never aborts the pass
-    (NFR-1). Idempotent (FR-1.7): a second pass sees imports as sidecar
-    matches, parks as already-parked, and deletes as gone — no queue changes.
+    One action per issue in FR-1.5 precedence (delete > park > demo >
+    ingest). A failure on one issue is logged and skipped — it never
+    aborts the pass (NFR-1). Idempotent (FR-1.7): a second pass sees
+    imports as sidecar matches, demo flags as already-flagged, parks as
+    already-parked, and deletes as gone — no queue changes.
     """
     result = InboundResult()
     entries = scan_queue(params.queue_dir)
     actions = {
         TriggerLabel.INGEST: lambda issue: _ingest_issue(issue, entries, params),
+        TriggerLabel.DEMO: lambda issue: _ingest_issue(issue, entries, params, demo=True),
         TriggerLabel.PARK: lambda issue: _park_issue_task(issue, entries, params),
         TriggerLabel.DELETE: lambda issue: _delete_issue_task(api, issue, entries, params),
     }
     tallies = {
         TriggerLabel.INGEST: "imported",
+        TriggerLabel.DEMO: "imported",
         TriggerLabel.PARK: "parked",
         TriggerLabel.DELETE: "deleted",
     }
-    issues = _collect_trigger_issues(api)
+    issues = _collect_trigger_issues(api, demo_enabled=params.demo_enabled)
     for number in sorted(issues):
-        trigger = _trigger_for(issues[number])
+        trigger = _trigger_for(issues[number],
+                               demo_enabled=params.demo_enabled)
         if trigger is None:
             continue
         try:

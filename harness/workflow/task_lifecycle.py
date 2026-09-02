@@ -53,9 +53,13 @@ class TaskState:
     checkpointed_stages: list = field(default_factory=list)
     checkpointed_slices: list = field(default_factory=list)
     last_updated: str = ""
-    # Recorded at intake and never re-derived (F7). Kept last so positional
-    # construction of the earlier fields keeps working.
+    # Recorded at intake and never re-derived (F7).
     workdir: str = ""
+    # Demo-request flag (demo spec FR-1.4): copied out of the inbound sidecar
+    # into `Task.meta` at claim time and persisted here at intake, so a resume
+    # reads it without touching `.gh.json`. Kept last so positional
+    # construction of the earlier fields keeps working.
+    demo: bool = False
 
     def to_json(self) -> str:
         return json.dumps({
@@ -69,6 +73,7 @@ class TaskState:
             "checkpointed_slices": list(self.checkpointed_slices),
             "last_updated": self.last_updated,
             "workdir": self.workdir,
+            "demo": self.demo,
         }, indent=2)
 
 
@@ -152,6 +157,16 @@ def write_atomic(path: Path, text: str) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _task_demo_flag(task) -> bool:
+    """The demo-request flag on a claimed `Task` (demo spec FR-1.4).
+
+    Reads `Task.meta["demo"]`, the key the directory provider fills from the
+    issue's linkage sidecar at claim time. A task with no meta at all (a
+    hand-built Task, a provider that carries none) is simply not a demo task.
+    """
+    return bool(getattr(task, "meta", None) and task.meta.get("demo", False))
 
 
 def _parse_stages(raw: list, log=print) -> list:
@@ -254,6 +269,9 @@ class TaskLifecycle:
                 raw.get("checkpointed_slices") or [], self.log),
             last_updated=raw.get("last_updated", ""),
             workdir=raw.get("workdir", ""),
+            # A pre-demo `task.json` carries no field: it loads as not-a-demo
+            # task rather than failing (demo spec FR-1.4).
+            demo=bool(raw.get("demo", False)),
         )
 
     def save_state(self, state: TaskState, where: str = "active") -> None:
@@ -313,6 +331,7 @@ class TaskLifecycle:
             history=[],
             checkpointed_stages=[],
             last_updated=now,
+            demo=_task_demo_flag(task),
         )
         self.save_state(state)
         # original.md exists from here on, so the workdir can be resolved and

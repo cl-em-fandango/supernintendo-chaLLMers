@@ -16,6 +16,15 @@
   "toolUlimitNproc": 50,
   "toolUlimitVmemKB": 8388608,
   "autonomousQueueTarget": 5,
+  "demo": {
+    "enabled": false,
+    "deployBranch": "pi/app-demo",
+    "appsDir": "demo-apps",
+    "docsDir": "docs",
+    "contentModel": "GLM4.5-AIR_Q4_K_M",
+    "fallbackTopic": "History of Morris Dancing",
+    "deployDir": "/srv/pi-harness/demo-deploy"
+  },
   "trunkBranch": "pi/trunk",
   "modelContext": {
     "gemma-4-26B-A4B-it-UD-Q8_K_XL": 131072,
