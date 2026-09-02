@@ -36,6 +36,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -512,10 +513,21 @@ class HookSiteFailureTest(FailureTestCase):
                     rules=[FailureRule(mode)])
                 slept: list[float] = []
                 spawns: list[int] = []
+
+                def spawn() -> int:
+                    # A real child: the loop reaps dead children, so a
+                    # fake pid would read as dead and re-spawn each pass.
+                    child = subprocess.Popen(
+                        [sys.executable, "-c",
+                         "import time; time.sleep(1)"])
+                    self.addCleanup(child.wait)
+                    spawns.append(child.pid)
+                    return child.pid
+
                 loop = SyncdLoop(SyncdParams(
                     work_dir=self.work_dir, sync_interval_s=10.0,
                     sync=lambda: engine.on_stage_change(),
-                    spawn=lambda: spawns.append(1) or os.getpid(),
+                    spawn=spawn,
                     log=self.messages.append,
                     sleep=lambda seconds, stop: slept.append(seconds),
                     check_pending=lambda: True,
@@ -526,6 +538,9 @@ class HookSiteFailureTest(FailureTestCase):
                 self.assert_no_pat(joined, "the daemon log")
                 self.assertIn("backing off", joined)
                 self.assertIn(10.0 * 5, slept)
+        # Note: the former fake child pid (os.getpid()) was replaced by a
+        # real child — the daemon now reaps dead children, so a non-child
+        # pid reads as dead and would re-spawn on every pass.
 
 
 # ---------------------------------------------------------------------------
