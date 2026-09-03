@@ -54,7 +54,7 @@ DEFAULT_GITHUB_SYNC_INTERVAL_S = 60
 
 @dataclass
 class Config:
-    work_dir: Path
+    harness_execution_and_queue_dir: Path
     token_budget: int
     max_spec_kickbacks: int
     max_slice_implement: int
@@ -67,24 +67,83 @@ class Config:
     directory_provider: dict
     models: dict
     model_context_map: dict
-    repo_dir: Path | None = None
+    target_codebase_dir: Path | None = None
     raw: dict = field(repr=False, default_factory=dict)
+
+    def __init__(
+        self,
+        harness_execution_and_queue_dir: Path | None = None,
+        token_budget: int = DEFAULT_MAX_PROMPT_TOKENS,
+        max_spec_kickbacks: int = 3,
+        max_slice_implement: int = 5,
+        max_slice_tech_review: int = 5,
+        max_slice_func_review: int = 5,
+        max_slice_check_loops: int = 3,
+        autonomous_queue_target: int = 5,
+        trunk_branch: str = "pi/trunk",
+        task_provider: str = "directory",
+        directory_provider: dict | None = None,
+        models: dict | None = None,
+        model_context_map: dict | None = None,
+        target_codebase_dir: Path | None = None,
+        raw: dict | None = None,
+        *,
+        work_dir: Path | None = None,
+        repo_dir: Path | None = None,
+    ):
+        exec_dir = harness_execution_and_queue_dir if harness_execution_and_queue_dir is not None else work_dir
+        if exec_dir is None:
+            raise ValueError("Config requires harness_execution_and_queue_dir (or work_dir)")
+        self.harness_execution_and_queue_dir = Path(exec_dir)
+        self.token_budget = token_budget
+        self.max_spec_kickbacks = max_spec_kickbacks
+        self.max_slice_implement = max_slice_implement
+        self.max_slice_tech_review = max_slice_tech_review
+        self.max_slice_func_review = max_slice_func_review
+        self.max_slice_check_loops = max_slice_check_loops
+        self.autonomous_queue_target = autonomous_queue_target
+        self.trunk_branch = trunk_branch
+        self.task_provider = task_provider
+        self.directory_provider = directory_provider if directory_provider is not None else {}
+        self.models = models if models is not None else {}
+        self.model_context_map = model_context_map if model_context_map is not None else {}
+        tb_dir = target_codebase_dir if target_codebase_dir is not None else repo_dir
+        self.target_codebase_dir = Path(tb_dir) if tb_dir is not None else None
+        self.raw = raw if raw is not None else {}
+
+    @property
+    def work_dir(self) -> Path:
+        """Compatibility alias for harness_execution_and_queue_dir."""
+        return self.harness_execution_and_queue_dir
+
+    @work_dir.setter
+    def work_dir(self, val: Path) -> None:
+        self.harness_execution_and_queue_dir = Path(val) if val is not None else val
+
+    @property
+    def repo_dir(self) -> Path | None:
+        """Compatibility alias for target_codebase_dir."""
+        return self.target_codebase_dir
+
+    @repo_dir.setter
+    def repo_dir(self, val: Path | None) -> None:
+        self.target_codebase_dir = Path(val) if val is not None else None
 
     @property
     def queue_dir(self) -> Path:
-        return self.work_dir / "queue"
+        return self.harness_execution_and_queue_dir / "queue"
 
     @property
     def logs_dir(self) -> Path:
-        return self.work_dir / "logs"
+        return self.harness_execution_and_queue_dir / "logs"
 
     @property
     def sessions_dir(self) -> Path:
-        return self.work_dir / "sessions"
+        return self.harness_execution_and_queue_dir / "sessions"
 
     @property
     def stats_path(self) -> Path:
-        return self.work_dir / "stats" / "sessions.jsonl"
+        return self.harness_execution_and_queue_dir / "stats" / "sessions.jsonl"
 
     @property
     def model(self) -> str:
@@ -309,18 +368,30 @@ class Config:
 def load(path: str | Path) -> Config:
     p = Path(path)
     raw: dict[str, Any] = json.loads(p.read_text())
-    work_dir = Path(raw["workDir"]).expanduser()
-    repo_dir_raw = (
-        raw.get("repoDir")
+    exec_dir_raw = (
+        raw.get("harnessExecutionAndQueueDir")
+        or raw.get("harness_execution_and_queue_dir")
+        or raw.get("workDir")
+        or raw.get("work_dir")
+    )
+    if not exec_dir_raw:
+        raise ValueError(
+            f"config {path} requires 'harnessExecutionAndQueueDir' (or legacy 'workDir')"
+        )
+    harness_execution_and_queue_dir = Path(exec_dir_raw).expanduser()
+    target_codebase_raw = (
+        raw.get("targetCodebaseDir")
+        or raw.get("target_codebase_dir")
+        or raw.get("repoDir")
         or raw.get("repoPath")
         or raw.get("repo_dir")
         or raw.get("repo")
         or raw.get("targetRepo")
     )
-    repo_dir = Path(repo_dir_raw).expanduser().resolve() if repo_dir_raw else None
+    target_codebase_dir = Path(target_codebase_raw).expanduser().resolve() if target_codebase_raw else None
     return Config(
-        work_dir=work_dir,
-        repo_dir=repo_dir,
+        harness_execution_and_queue_dir=harness_execution_and_queue_dir,
+        target_codebase_dir=target_codebase_dir,
         token_budget=int(raw.get("maxPromptTokens",
                                 raw.get("tokenBudget",
                                         DEFAULT_MAX_PROMPT_TOKENS))),

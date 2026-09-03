@@ -286,6 +286,16 @@ class DemoAppGenerationHook:
             write_manifest(Path(ctx.workdir) / self.params.apps_dir,
                            ActiveAppManifest(app=app_name, issue=issue,
                                              task=ctx.task_id))
+            workdir = Path(ctx.workdir)
+            if (workdir / ".git").exists():
+                from external.git_cli import _git
+                from .demo_manifest import MANIFEST_NAME
+                manifest_rel = str(Path(self.params.apps_dir) / MANIFEST_NAME)
+                _git(workdir, "add", manifest_rel, check=False)
+                _git(workdir, "-c", "user.email=pi@harness.local",
+                     "-c", "user.name=pi-harness", "commit", "-m",
+                     f"demo: set active app to {app_name} (issue #{issue})",
+                     check=False)
         except Exception as exc:  # noqa: BLE001 - generation continues
             self.log(f"  ⚠ demo generate: could not write the active-app "
                      f"manifest: {exc}")

@@ -36,7 +36,7 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
     part of the wiring so callers (the CLI handlers) write to the very same
     `work/logs/harness.log` the modules do — passed explicitly, no global.
     `repo`, when passed, sets the target repository for git operations and
-    overrides any `repoDir` configured in `config.json`.
+    overrides any `targetCodebaseDir` configured in `config.json`.
     """
     if cfg_path is None:
         import os
@@ -48,7 +48,7 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
             cfg_path = Path(__file__).resolve().parent.parent / "config.json"
     cfg = load(cfg_path)
     if repo is not None:
-        cfg.repo_dir = Path(repo).expanduser().resolve()
+        cfg.target_codebase_dir = Path(repo).expanduser().resolve()
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
     for sub in QUEUE_LOCATIONS_ALL:
         (cfg.queue_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -56,7 +56,10 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
     store = StatsStore(cfg.stats_path)
     runner = SessionRunner(cfg, store, log=log)
     provider = create_provider(cfg)
-    stand_down = StandDownWatcher(getattr(cfg, "work_dir", None), log=log)
+    stand_down = StandDownWatcher(
+        getattr(cfg, "harness_execution_and_queue_dir", getattr(cfg, "work_dir", None)),
+        log=log,
+    )
     handoff_sync = None
     sync_engine = None
     if cfg.github_sync_enabled:
@@ -153,7 +156,7 @@ def build_placeholder_hook(cfg, api=None, log=None) -> DemoPlaceholderHook | Non
     params = PlaceholderDeployParams(
         queue_dir=cfg.queue_dir,
         apps_dir=cfg.demo.apps_dir,
-        harness_repo=cfg.repo_dir,
+        harness_repo=cfg.target_codebase_dir or cfg.repo_dir,
         deploy_dir=cfg.demo.deploy_dir,
         deploy_branch=cfg.demo.deploy_branch,
         trunk_branch=cfg.trunk_branch,
@@ -209,7 +212,7 @@ def build_final_deploy_hook(cfg, api=None,
     params = FinalDeployParams(
         queue_dir=cfg.queue_dir,
         apps_dir=cfg.demo.apps_dir,
-        harness_repo=cfg.repo_dir,
+        harness_repo=cfg.target_codebase_dir or cfg.repo_dir,
         deploy_dir=cfg.demo.deploy_dir,
         deploy_branch=cfg.demo.deploy_branch,
         trunk_branch=cfg.trunk_branch,

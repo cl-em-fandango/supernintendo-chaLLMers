@@ -52,6 +52,16 @@ def _task_meta(queue_dir: Path, task_id: str) -> dict:
     return _meta_from_record(task_record.read_record(queue_dir, task_id))
 
 
+def task_meta(queue_dir: Path, task_id: str) -> dict:
+    """Public entry to the record-backed `Task.meta` for one task id.
+
+    Used by CLI and resume entry points that build a `Task` directly so a
+    task's demo flag from its metadata record survives into the pipeline
+    exactly as it does for provider-claimed tasks (FR-1.4).
+    """
+    return _task_meta(queue_dir, task_id)
+
+
 @dataclass
 class Task:
     id: str

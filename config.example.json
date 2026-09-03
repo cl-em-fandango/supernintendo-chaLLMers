@@ -1,6 +1,6 @@
 {
-  "workDir": "/srv/pi-harness",
-  "repoDir": "/srv/pi-harness/harness_build",
+  "harnessExecutionAndQueueDir": "/srv/pi-harness",
+  "targetCodebaseDir": "/srv/pi-harness/harness_build",
   "githubPat":  "",
   "githubRepo": "supernintendo-chaLLMers",
   "tokenBudget": 80000,

@@ -327,20 +327,26 @@ class Pipeline:
         """
         task_dir = self.lifecycle.task_dir(task.id)
         resumed = self.lifecycle.task_json_path(task.id).exists()
+        # Front and centre: every run announces which workflow it picked
+        # (demo vs standard) on the banner line, so a demo request silently
+        # falling back to the standard waterfall is visible at a glance.
+        is_demo = bool(task.meta.get(DEMO_META_KEY))
+        workflow_name = "demo (snes-demo)" if is_demo else "standard"
         if resumed:
             state = self.lifecycle.load_state(task.id)
             skipped = [s.value for s in state.checkpointed_stages]
-            self.log(f"═══ task {task.id} ═══")
+            self.log(f"═══ task {task.id} ═══ workflow = {workflow_name}")
             self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
                      else f"  resuming (no checkpoints yet)")
+            target_codebase = getattr(self.cfg, "target_codebase_dir", None) or getattr(self.cfg, "repo_dir", None)
             if not state.workdir:
                 # Old-format task.json: migrate once, then never re-derive.
                 self.log(f"  workdir not recorded for {task.id}, "
                          f"resolved from config")
                 self.lifecycle.record_workdir(task_dir)
                 state = self.lifecycle.load_state(task.id)
-            elif self.cfg.repo_dir is not None and state.workdir != str(self.cfg.repo_dir):
-                state.workdir = str(self.cfg.repo_dir)
+            elif target_codebase is not None and state.workdir != str(target_codebase):
+                state.workdir = str(target_codebase)
                 self.lifecycle.save_state(state)
             elif not (task_dir / "original.md").exists():
                 # EC13: original.md missing after a partial crash; re-resolve
@@ -350,7 +356,7 @@ class Pipeline:
         else:
             task_dir = self.lifecycle.intake(task)
             state = self.lifecycle.load_state(task.id)
-            self.log(f"═══ task {task.id} ═══")
+            self.log(f"═══ task {task.id} ═══ workflow = {workflow_name}")
         # Body is now persisted in the task dir; drop the pending/claim staging file
         # so this task cannot be re-claimed while it is in flight or terminal.
         if self.provider is not None and hasattr(self.provider, "release_claim"):
@@ -366,7 +372,7 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo in the queue: workdir={workdir} is "
-                f"under queue={self.cfg.queue_dir}; configure repoDir in "
+                f"under queue={self.cfg.queue_dir}; configure targetCodebaseDir in "
                 f"config.json or pass --repo on the CLI")
             return "parked"
         if not workdir.is_dir():
@@ -376,7 +382,7 @@ class Pipeline:
             self.lifecycle.park(
                 task.id,
                 f"refusing to init a repo outside a real directory: "
-                f"workdir={workdir} does not exist; configure repoDir in "
+                f"workdir={workdir} does not exist; configure targetCodebaseDir in "
                 f"config.json or pass --repo on the CLI")
             return "parked"
         try:
@@ -388,8 +394,7 @@ class Pipeline:
             return "parked"
         self._deploy_demo_placeholder(task, state, workdir)
 
-        ctx = StageContext(task.id, task_dir, workdir,
-                           demo=bool(task.meta.get(DEMO_META_KEY)))
+        ctx = StageContext(task.id, task_dir, workdir, demo=is_demo)
         outcome = "parked"
         try:
             for stage in STAGE_SEQUENCE:
@@ -773,6 +778,13 @@ class Pipeline:
         implementer session works on the repo as it stands (failure
         routing and issue comments are the failure-handling slice)."""
         if self.demo_app_generator is None:
+            # Visible fallback: a demo task with no generator wired means
+            # `demo.enabled` is off (or GitHub is unconfigured) while the
+            # task still carries the demo flag — say so instead of letting
+            # the standard flow take over silently.
+            self.log(f"  ⚠ {ctx.task_id}: demo-flagged task but demo app "
+                     f"generation is not enabled — running standard "
+                     f"generation with the demo prompt appendix only")
             return
         if self._demo_app_generated_for == ctx.task_id:
             return

@@ -252,9 +252,34 @@ def _refresh_trunk(checkout: Path, request: DemoDeployRequest) -> None:
         raise DemoDeployError(
             DeployStep.REFRESH_TRUNK,
             f"harness repo {harness_repo} is not a git repository")
-    refspec = (f"+refs/heads/{request.trunk_branch}"
-               f":refs/heads/{request.trunk_branch}")
-    _run(checkout, "fetch", str(harness_repo), refspec,
+    trunk = request.trunk_branch
+    # Read the trunk SHA with `rev-parse` rather than `fetch`: a fetch into
+    # `refs/heads/<trunk>` is refused when the source repo has that branch
+    # checked out ("refusing to fetch into branch ... checked out at ..."),
+    # and the harness workdir always has *some* branch checked out. Reading
+    # the object database directly works regardless of the source's HEAD.
+    sha = _run(harness_repo, "rev-parse", "--verify", "--quiet",
+               f"refs/heads/{trunk}", check=False)
+    if sha.returncode != 0:
+        raise DemoDeployError(
+            DeployStep.REFRESH_TRUNK,
+            f"harness repo {harness_repo} has no branch {trunk}")
+    commit = sha.stdout.strip()
+    # Point the checkout's trunk ref at it. When the checkout already holds
+    # the object (origin carried it, or an earlier refresh did) this is a
+    # pure ref update; otherwise the objects must be fetched from the
+    # harness repo into a neutral refspace first, because the same
+    # checked-out-branch refusal blocks the plain refspec fetch.
+    probe = _run(checkout, "cat-file", "-e", f"{commit}^{{commit}}",
+                 check=False)
+    if probe.returncode != 0:
+        _run(checkout, "fetch", str(harness_repo),
+             f"+refs/heads/{trunk}:refs/harness-trunk/{trunk}",
+             step=DeployStep.REFRESH_TRUNK)
+        _run(checkout, "update-ref", f"refs/heads/{trunk}",
+             f"refs/harness-trunk/{trunk}", step=DeployStep.REFRESH_TRUNK)
+        return
+    _run(checkout, "update-ref", f"refs/heads/{trunk}", commit,
          step=DeployStep.REFRESH_TRUNK)
 
 

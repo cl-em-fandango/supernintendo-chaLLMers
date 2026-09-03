@@ -33,7 +33,7 @@ from ..core.interrupt import (
     write_interrupt,
 )
 from ..core.process_lock import LockHeldError, ProcessLock, RUN_LOCK_NAME
-from ..core.providers import Task
+from ..core.providers import Task, task_meta
 from ..core.stand_down import StandDownWatcher
 from ..core.syncd import SyncdLoop, SyncdParams
 from external.harness_cli import spawn_harness_run_task_loop
@@ -192,8 +192,13 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
             return 1
         if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
             runner.validate_models()
-        task = Task(id=_slug(Path(file).stem),
-                    body=Path(file).read_text(), source=f"cli:{file}")
+        task_id = _slug(Path(file).stem)
+        # Carry the task's recorded flags (demo) into the Task exactly as a
+        # provider claim would, so `run-task` on a demo-flagged task runs
+        # the demo workflow instead of silently downgrading to standard.
+        task = Task(id=task_id,
+                    body=Path(file).read_text(), source=f"cli:{file}",
+                    meta=task_meta(cfg.queue_dir, task_id))
         if fresh:
             fresh_restart(task.id, cfg, log=log)
         if continue_:
@@ -264,7 +269,7 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
                 log("queue empty -> entering autonomous mode")
                 gen = AutonomousGenerator(cfg, runner, provider, log=log,
                                           sync_engine=getattr(pipeline, "sync_engine", None))
-                target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+                target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
                 gen.run(target_repo,
                         stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
             return 0
@@ -580,7 +585,7 @@ def cmd_autonomous(repo: str | Path | None = None) -> int:
         runner.validate_models()
     gen = AutonomousGenerator(cfg, runner, provider, log=log,
                               sync_engine=getattr(pipeline, "sync_engine", None))
-    target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+    target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
     # The generator owns the per-attempt boundary: it is what spawns the
     # suggest/review `pi` sessions, so the stand-down check travels with the
     # loop rather than only guarding its single call site.
@@ -1240,7 +1245,7 @@ def _cmd_interrupt_quick(model: str | None, prompt: str | None,
             "(harness.py resume?); no session was started")
         return 1
     rc = run_quick_pi_session(model=resolved_model,
-                              workdir=cfg.repo_dir or Path.cwd(),
+                              workdir=getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path.cwd(),
                               prompt=prompt)
     log(f"quick session exited (rc={rc})")
     log(QUICK_RESUMING_LOG)

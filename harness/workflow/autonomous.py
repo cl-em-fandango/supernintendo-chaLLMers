@@ -79,7 +79,8 @@ class AutonomousGenerator:
                 self.log("  empty proposal; retrying")
                 continue
 
-            prop_file = self.cfg.work_dir / "logs" / f"autonomous-proposal-{attempts}.md"
+            logs_dir = getattr(self.cfg, "logs_dir", None) or (Path(getattr(self.cfg, "harness_execution_and_queue_dir", getattr(self.cfg, "work_dir", "."))) / "logs")
+            prop_file = logs_dir / f"autonomous-proposal-{attempts}.md"
             prop_file.parent.mkdir(parents=True, exist_ok=True)
             prop_file.write_text(proposal)
 

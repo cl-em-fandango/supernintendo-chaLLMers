@@ -25,9 +25,9 @@ def _add_requeue_stale_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_repo_flag(parser: argparse.ArgumentParser) -> None:
-    """The target repository flag: CLI override for repoDir in config.json."""
+    """The target repository flag: CLI override for targetCodebaseDir in config.json."""
     parser.add_argument("--repo", "--repo-dir", dest="repo", default=None,
-                        help="Path to target git repository (overrides repoDir in config.json)")
+                        help="Path to target git repository (overrides targetCodebaseDir in config.json)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,14 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "syncd", help="Run the sync daemon: poll, sync, and spawn one "
                       "harness run when pending/ has work and none is "
-                      "running (single instance via <workDir>/syncd.lock; "
+                      "running (single instance via <harnessExecutionAndQueueDir>/syncd.lock; "
                       "exits non-zero when another syncd holds the lock)")
 
     # board (with hidden kanban alias)
     board_parser = subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
     board_parser.add_argument("--json", dest="json", action="store_true", default=False,
                             help="Output board data as JSON instead of the formatted view")
-    subparsers.add_parser("kanban", help=argparse.SUPPRESS)
+    kanban_parser = subparsers.add_parser("kanban", help=argparse.SUPPRESS)
+    kanban_parser.add_argument("--json", dest="json", action="store_true", default=False,
+                               help="Output board data as JSON instead of the formatted view")
 
     # journey
     journey_parser = subparsers.add_parser("journey", help="Show static workflow journey graph and bottleneck analysis")

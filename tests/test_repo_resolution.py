@@ -64,6 +64,19 @@ class RepoResolutionTest(unittest.TestCase):
         self.repo = _make_repo(self.root / "my_project_repo")
         self.other_repo = _make_repo(self.root / "other_repo")
 
+    def test_config_json_target_codebase_dir(self):
+        cfg_file = self.root / "config.json"
+        cfg_file.write_text(json.dumps({
+            "harnessExecutionAndQueueDir": str(self.work_dir),
+            "targetCodebaseDir": str(self.repo),
+            "trunkBranch": "pi/trunk",
+        }))
+        cfg = load(cfg_file)
+        self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
+        self.assertEqual(cfg.harness_execution_and_queue_dir, self.work_dir)
+        self.assertEqual(cfg.repo_dir, self.repo.resolve())
+        self.assertEqual(cfg.work_dir, self.work_dir)
+
     def test_config_json_repo_dir(self):
         cfg_file = self.root / "config.json"
         cfg_file.write_text(json.dumps({
@@ -73,6 +86,7 @@ class RepoResolutionTest(unittest.TestCase):
         }))
         cfg = load(cfg_file)
         self.assertEqual(cfg.repo_dir, self.repo.resolve())
+        self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
 
     def test_cli_repo_flag_overrides_config(self):
         cfg_file = self.root / "config.json"
@@ -125,7 +139,10 @@ class RepoResolutionTest(unittest.TestCase):
         review_file = self.queue_dir / "review" / "task-002.md"
         self.assertTrue(review_file.exists())
         review_text = review_file.read_text()
-        self.assertIn("configure repoDir in config.json or pass --repo on the CLI", review_text)
+        self.assertTrue(
+            "configure targetCodebaseDir in config.json or pass --repo on the CLI" in review_text
+            or "configure repoDir in config.json or pass --repo on the CLI" in review_text
+        )
 
 
 if __name__ == "__main__":
