@@ -914,7 +914,10 @@ def _register_syncd_signals(loop, log) -> None:
 
     The handler only flips the loop's stop flag and logs; the loop then
     finishes the pass it is in, removes `syncd.lock`, and `cmd_syncd`
-    exits 0. The `log()` call inside the handler is not strictly async-signal-safe
+    exits 0. Handlers are registered for the daemon's life only — this
+    command is the daemon, so nothing restores them.
+
+    The `log()` call inside the handler is not strictly async-signal-safe
     (review note, slice 11): it is accepted because the harness log sink
     is a buffered line write and CPython runs handlers between bytecodes,
     not inside a lock. The behavioural part — `request_stop()` — is
@@ -1034,123 +1037,6 @@ def cmd_journey_md(task_id: str | None = None, save: bool = False) -> int:
         md_path = out_dir / f"{task_label}-journey.md"
         md_path.write_text(md, encoding="utf-8")
         print(f"\n[Saved markdown journey to {md_path}]")
-    return 0
-
-    """Run one manual two-way GitHub sync pass (spec FR-3, manual).
-
-    Disabled-safe (FR-0.1): with `githubPat` or `githubRepo` empty or absent
-    the whole feature is inert — the disabled line is printed, nothing else
-    happens, and the command exits 0.
-
-    With GitHub configured one full two-way pass runs and its summary line
-    is logged (FR-3, manual). A rate-limit/auth abort is a reported pass,
-    not an error: the summary carries `ABORTED` and the exit is 0 — the
-    unfinished work rolls to the next pass (spec edge 9). Any other
-    failure is reported, never a crash (NFR-1): the command exits
-    non-zero with the (PAT-scrubbed) error.
-    """
-    cfg, _store, _runner, _provider, _pipeline, log = build()
-    if not cfg.github_sync_enabled:
-        log(GITHUB_SYNC_DISABLED)
-        return 0
-    api = build_github_api(cfg, log=log)
-    engine = build_sync_engine(cfg, log=log, api=api)
-    try:
-        # A manual pass is the no-task-id dispatch: one full two-way pass
-        # (spec FR-3, manual).
-        report = engine.on_stage_change()
-    except Exception as exc:
-        log(f"github sync pass failed: {exc}")
-        return 1
-    log(report.summary_line())
-    return 0
-
-
-def _register_syncd_signals(loop, log) -> None:
-    """SIGINT/SIGTERM stop the daemon after its current pass (FR-4.6).
-
-    The handler only flips the loop's stop flag and logs; the loop then
-    finishes the pass it is in, removes `syncd.lock`, and `cmd_syncd`
-    exits 0. Handlers are registered for the daemon's life only — this
-    command is the daemon, so nothing restores them.
-
-    The `log()` call inside the handler is not strictly async-signal-safe
-    (review note, slice 11): it is accepted because the harness log sink
-    is a buffered line write and CPython runs handlers between bytecodes,
-    not inside a lock. The behavioural part — `request_stop()` — is
-    flag-only and signal-safe on its own.
-    """
-    def _handler(signum, frame) -> None:  # noqa: ARG001 - signal signature
-        log(f"syncd: signal {signum} received; finishing the current pass")
-        loop.request_stop()
-
-    signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
-
-
-def cmd_syncd() -> int:
-    """Run the sync daemon (spec FR-4, AC-9/AC-10/AC-11).
-
-    The daemon owns `syncd.lock` (a second invocation exits non-zero with
-    the lock message), and per interval runs a full sync pass plus the
-    spawn check. With GitHub unconfigured the sync callable is None — the
-    pass skips the sync entirely (zero HTTP, FR-0.1/NFR-2) and the daemon
-    is a local `pending/` watcher only. Spawning goes through the same
-    entry point as `harness run-task-loop` (FR-4.2b) and only happens when
-    no run holds `run.lock` (FR-4.3).
-    """
-    cfg, _store, _runner, _provider, _pipeline, log = build()
-    sync = None
-    if cfg.github_sync_enabled:
-        api = build_github_api(cfg, log=log)
-        engine = build_sync_engine(cfg, log=log, api=api)
-        # The no-task-id dispatch is one full two-way pass per poll
-        # (FR-4.2a).
-        sync = engine.on_stage_change
-    loop = SyncdLoop(SyncdParams(
-        work_dir=cfg.work_dir,
-        sync_interval_s=cfg.github_sync_interval_s,
-        sync=sync,
-        spawn=spawn_harness_run_task_loop,
-        log=log))
-    _register_syncd_signals(loop, log)
-    return loop.run()
-
-
-def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
-    # Existing ASCII journey command unchanged
-    """Print the static workflow journey graph and diagnostics for a task."""
-    cfg, store, *_ = build()
-    all_rows = store.all()
-    if not all_rows:
-        print("No sessions recorded yet in stats.")
-        return 0
-
-    if not task_id:
-        # Find the most recently recorded task_id
-        for r in reversed(all_rows):
-            tid = r.get("task_id")
-            if tid and tid != "None":
-                task_id = tid
-                break
-
-    if not task_id:
-        print("No specific task found in stats. Showing journey for all recorded sessions:")
-        print(render_task_journey(all_rows, task_id="all"))
-        return 0
-
-    rows = store.for_task(task_id)
-    if not rows:
-        print(f"No sessions found for task '{task_id}'.")
-        return 1
-
-    text = render_task_journey(rows, task_id=task_id)
-    print(text)
-
-    if save:
-        path = store.write_task_journey(task_id)
-        print(f"\n[Saved journey graph to {path}]")
-
     return 0
 
 

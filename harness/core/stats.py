@@ -1,7 +1,5 @@
 """Unified historical store for per-session stats.
 
-# Existing code omitted for brevity"
-
 Every pi invocation is recorded as one JSONL row in <workDir>/stats/sessions.jsonl.
 Rows are append-only; analytics are computed on read.
 
@@ -55,6 +53,12 @@ class SessionRecord:
 
 
 class StatsStore:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            self.path.touch()
+
     def prune(self, max_rows: int) -> None:
         """Trim the stats file to keep only the most recent ``max_rows`` entries.
 
@@ -71,12 +75,6 @@ class StatsStore:
             for rec in keep:
                 f.write(json.dumps(rec) + "\n")
         tmp_path.replace(self.path)
-
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.touch()
 
     def record(self, rec: SessionRecord) -> None:
         with self.path.open("a") as f:
