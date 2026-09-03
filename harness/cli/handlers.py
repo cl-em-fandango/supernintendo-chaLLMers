@@ -37,7 +37,7 @@ from ..core.providers import Task
 from ..core.stand_down import StandDownWatcher
 from ..core.syncd import SyncdLoop, SyncdParams
 from external.harness_cli import spawn_harness_run_task_loop
-from ..core.stats import render_report, render_task_journey
+from ..core.stats import render_report, render_task_journey, render_task_journey_markdown, render_report_json
 from external.pi_cli import run_quick_pi_session
 
 from ..composition import build, build_github_api, build_sync_engine
@@ -51,6 +51,36 @@ CLAIMS_STRANDED_WARNING = ("⚠ {count} claimed tasks: nothing will process them
 # entrypoints and the operator command agree on one number; env-overridable for
 # a box whose sessions legitimately run longer.
 CLAIM_STALE_HOURS = float(os.environ.get("CLAIM_STALE_HOURS", "6.0"))
+
+# CSV export command handler
+def cmd_export_stats_csv(csv_path: str) -> int:
+    """Export raw session stats to a CSV file.
+
+    Reads the stats store (default path from config) and writes a CSV with
+    columns matching the SessionRecord fields. Returns 0 on success, 1 on error.
+    """
+    # Build config to locate stats store
+    cfg, store, *_ = build()
+    rows = store.all()
+    if not rows:
+        print("No stats to export.")
+        return 0
+    # Determine output path
+    out_path = Path(csv_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write CSV
+    import csv
+    fieldnames = ["ts", "task_id", "stage", "model", "verdict", "outcome", "peak_tokens",
+                  "duration_s", "rc", "prompt_chars", "slice", "iteration", "session_file", "notes"]
+    with out_path.open('w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            # Ensure all keys exist
+            row = {k: r.get(k, "") for k in fieldnames}
+            writer.writerow(row)
+    print(f"Exported {len(rows)} session records to {out_path}")
+    return 0
 
 # Entropy in a generated owner id, in bytes. Four is 4 billion values: enough
 # that two invocations of the same command in the same process never collide,
@@ -759,7 +789,7 @@ def _board_context() -> RenderContext:
     return RenderContext(use_color=use_color, width=width)
 
 
-def cmd_board() -> int:
+def cmd_board(json: bool = False) -> int:
     """Print the kanban-style board: executive summary over the location sections.
 
     Read-only (spec FR-8): counts come from directory listings and
@@ -791,20 +821,55 @@ def cmd_board() -> int:
                 stats_rows=rows_by_task.get(task_id, [])))
         boards.append(LocationBoard(location=sub, tasks=tuple(tasks)))
     warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
-    board = render_board(BoardSummary(locations=tuple(boards),
+    board_summary = BoardSummary(locations=tuple(boards),
                                       claims_warning=warning,
-                                      stats=aggregate_stats(store.all())),
-                         _board_context())
-    write_board(board, sys.stdout)
+                                      stats=aggregate_stats(store.all()))
+    if json:
+        # Output JSON representation of the board summary
+        from dataclasses import asdict
+        import json as _json
+        data = asdict(board_summary)
+        # Ensure any enum values are serialized as their value (they are already strings in summary)
+        print(_json.dumps(data, indent=2))
+    else:
+        board = render_board(board_summary, _board_context())
+        write_board(board, sys.stdout)
     # The board's output stream is stdout, so the interrupt line (and a
     # corrupt-file warning) travels there too, not through the logger.
     _interrupt_status_line(cfg, lambda line: print(line))
     return 0
 
 
+def cmd_report_json() -> int:
+    """Print the stats report as JSON for external tooling."""
+    _, store, *_ = build()
+    import json as _json
+    data = render_report_json(store.all())
+    print(_json.dumps(data, indent=2))
+    return 0
+
 def cmd_report() -> int:
+    # Existing command unchanged
     _, store, *_ = build()
     print(render_report(store.all()))
+    return 0
+
+
+def cmd_stats_prune(max_rows: int | None = None) -> int:
+    """Trim the stats JSONL file.
+
+    ``max_rows`` overrides the config default. If omitted, falls back to
+    ``cfg.maxStatsRows`` if present, otherwise 10000.
+    """
+    cfg, store, *_ = build()
+    default = getattr(cfg, "maxStatsRows", 10000)
+    keep = max_rows if max_rows is not None else default
+    try:
+        store.prune(keep)
+    except Exception as exc:
+        print(f"Failed to prune stats: {exc}")
+        return 1
+    print(f"Stats pruned to most recent {keep} rows.")
     return 0
 
 
@@ -814,6 +879,163 @@ GITHUB_SYNC_DISABLED = "github sync disabled"
 
 
 def cmd_sync() -> int:
+    """Run one manual two-way GitHub sync pass (spec FR-3, manual).
+
+    Disabled-safe (FR-0.1): with `githubPat` or `githubRepo` empty or absent
+    the whole feature is inert — the disabled line is printed, nothing else
+    happens, and the command exits 0.
+
+    With GitHub configured one full two-way pass runs and its summary line
+    is logged (FR-3, manual). A rate-limit/auth abort is a reported pass,
+    not an error: the summary carries `ABORTED` and the exit is 0 — the
+    unfinished work rolls to the next pass (spec edge 9). Any other
+    failure is reported, never a crash (NFR-1): the command exits
+    non-zero with the (PAT-scrubbed) error.
+    """
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    if not cfg.github_sync_enabled:
+        log(GITHUB_SYNC_DISABLED)
+        return 0
+    api = build_github_api(cfg, log=log)
+    engine = build_sync_engine(cfg, log=log, api=api)
+    try:
+        # A manual pass is the no-task-id dispatch: one full two-way pass
+        # (spec FR-3, manual).
+        report = engine.on_stage_change()
+    except Exception as exc:
+        log(f"github sync pass failed: {exc}")
+        return 1
+    log(report.summary_line())
+    return 0
+
+
+def _register_syncd_signals(loop, log) -> None:
+    """SIGINT/SIGTERM stop the daemon after its current pass (FR-4.6).
+
+    The handler only flips the loop's stop flag and logs; the loop then
+    finishes the pass it is in, removes `syncd.lock`, and `cmd_syncd`
+    exits 0. The `log()` call inside the handler is not strictly async-signal-safe
+    (review note, slice 11): it is accepted because the harness log sink
+    is a buffered line write and CPython runs handlers between bytecodes,
+    not inside a lock. The behavioural part — `request_stop()` — is
+    flag-only and signal-safe on its own.
+    """
+    def _handler(signum, frame) -> None:  # noqa: ARG001 - signal signature
+        log(f"syncd: signal {signum} received; finishing the current pass")
+        loop.request_stop()
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
+
+def cmd_syncd() -> int:
+    """Run the sync daemon (spec FR-4, AC-9/AC-10/AC-11).
+
+    The daemon owns `syncd.lock` (a second invocation exits non-zero with
+    the lock message), and per interval runs a full sync pass plus the
+    spawn check. With GitHub unconfigured the sync callable is None — the
+    pass skips the sync entirely (zero HTTP, FR-0.1/NFR-2) and the daemon
+    is a local `pending/` watcher only. Spawning goes through the same
+    entry point as `harness run-task-loop` (FR-4.2b) and only happens when
+    no run holds `run.lock` (FR-4.3).
+    """
+    cfg, _store, _runner, _provider, _pipeline, log = build()
+    sync = None
+    if cfg.github_sync_enabled:
+        api = build_github_api(cfg, log=log)
+        engine = build_sync_engine(cfg, log=log, api=api)
+        # The no-task-id dispatch is one full two-way pass per poll
+        # (FR-4.2a).
+        sync = engine.on_stage_change
+    loop = SyncdLoop(SyncdParams(
+        work_dir=cfg.work_dir,
+        sync_interval_s=cfg.github_sync_interval_s,
+        sync=sync,
+        spawn=spawn_harness_run_task_loop,
+        log=log))
+    _register_syncd_signals(loop, log)
+    return loop.run()
+
+
+def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
+    """Print the static workflow journey graph and diagnostics for a task."""
+    cfg, store, *_ = build()
+    all_rows = store.all()
+    if not all_rows:
+        print("No sessions recorded yet in stats.")
+        return 0
+
+    if not task_id:
+        # Find the most recently recorded task_id
+        for r in reversed(all_rows):
+            tid = r.get("task_id")
+            if tid and tid != "None":
+                task_id = tid
+                break
+
+    if not task_id:
+        print("No specific task found in stats. Showing journey for all recorded sessions:")
+        print(render_task_journey(all_rows, task_id="all"))
+        return 0
+
+    rows = store.for_task(task_id)
+    if not rows:
+        print(f"No sessions found for task '{task_id}'.")
+        return 1
+
+    text = render_task_journey(rows, task_id=task_id)
+    print(text)
+
+    if save:
+        path = store.write_task_journey(task_id)
+        print(f"\n[Saved journey graph to {path}]")
+
+    return 0
+
+
+def cmd_journey_md(task_id: str | None = None, save: bool = False) -> int:
+    """Export the workflow journey for a task as Markdown with transcript links.
+
+    Mirrors ``cmd_journey`` but renders a richer Markdown document suitable
+    for sharing or publishing. If ``save`` is True the markdown is written to
+    ``<statsDir>/journeys/<task_id>-journey.md``.
+    """
+    cfg, store, *_ = build()
+    all_rows = store.all()
+    if not all_rows:
+        print("No sessions recorded yet in stats.")
+        return 0
+
+    if not task_id:
+        # pick most recent task
+        for r in reversed(all_rows):
+            tid = r.get("task_id")
+            if tid and tid != "None":
+                task_id = tid
+                break
+    if not task_id:
+        print("No specific task found in stats. Showing markdown journey for all recorded sessions:")
+        rows = all_rows
+        task_label = "all"
+    else:
+        rows = store.for_task(task_id)
+        if not rows:
+            print(f"No sessions found for task '{task_id}'.")
+            return 1
+        task_label = task_id
+
+    # Collect transcript filenames if present
+    transcript_files = [r.get("session_file") for r in rows]
+    md = render_task_journey_markdown(rows, task_id=task_label, transcript_files=transcript_files)
+    print(md)
+    if save:
+        out_dir = store.path.parent / "journeys"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        md_path = out_dir / f"{task_label}-journey.md"
+        md_path.write_text(md, encoding="utf-8")
+        print(f"\n[Saved markdown journey to {md_path}]")
+    return 0
+
     """Run one manual two-way GitHub sync pass (spec FR-3, manual).
 
     Disabled-safe (FR-0.1): with `githubPat` or `githubRepo` empty or absent
@@ -896,6 +1118,7 @@ def cmd_syncd() -> int:
 
 
 def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
+    # Existing ASCII journey command unchanged
     """Print the static workflow journey graph and diagnostics for a task."""
     cfg, store, *_ = build()
     all_rows = store.all()
