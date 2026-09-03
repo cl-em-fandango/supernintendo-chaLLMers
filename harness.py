@@ -77,14 +77,20 @@ def main() -> int:
         return handlers.cmd_status()
     elif args.command == "report":
         return handlers.cmd_report()
+    elif args.command == "report-json":
+        return handlers.cmd_report_json()
+    elif args.command == "stats-prune":
+        return handlers.cmd_stats_prune(max_rows=args.max_rows)
     elif args.command == "sync":
         return handlers.cmd_sync()
     elif args.command == "syncd":
         return handlers.cmd_syncd()
     elif args.command in ("board", "kanban"):
-        return handlers.cmd_board()
+        return handlers.cmd_board(json=args.json)
     elif args.command == "journey":
         return handlers.cmd_journey(task_id=args.task_id, save=args.save)
+    elif args.command == "journey-md":
+        return handlers.cmd_journey_md(task_id=args.task_id, save=args.save)
     elif args.command == "interrupt":
         return handlers.cmd_interrupt(stand_down=args.stand_down,
                                       no_wait=args.no_wait,
@@ -101,6 +107,8 @@ def main() -> int:
     elif args.command == "requeue-claims":
         return handlers.cmd_requeue_claims(older_than=args.older_than,
                                            dry_run=args.dry_run)
+    elif args.command == "export-stats-csv":
+        return handlers.cmd_export_stats_csv(args.output)
     
     print(__doc__)
     return 1

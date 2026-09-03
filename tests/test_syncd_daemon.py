@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,12 +190,57 @@ class SyncdLoopTest(unittest.TestCase):
         self.assertEqual([], spawns)
 
     def test_no_second_spawn_while_child_alive(self):
+        # The tracked child must be a real child of this process: liveness
+        # is now probed with os.waitpid(WNOHANG), so a non-child pid (the
+        # old os.getpid() fake) reads as dead via ChildProcessError.
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.wait)      # reap: runs after terminate (LIFO)
+        self.addCleanup(child.terminate)  # do not block on the full sleep
         spawns = []
-        loop = self._loop(spawn=lambda: spawns.append(1) or os.getpid(),
+        loop = self._loop(spawn=lambda: spawns.append(1) or child.pid,
                           check_pending=lambda: True,
                           stop_after_passes=3)
         loop.run()
         self.assertEqual(1, len(spawns))
+
+    def test_dead_child_is_reaped_and_spawning_resumes(self):
+        """A spawned child that exits must not block spawning forever.
+
+        The child is a real process, so the daemon is its parent: without a
+        reap it stays a zombie, a liveness probe reads it as alive, and
+        every later pass skips spawning.
+        """
+        children: list[subprocess.Popen] = []
+
+        def spawn() -> int:
+            # A real child of the test process that lives long enough to
+            # be seen alive across the first run's passes, then exits.
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(0.5)"])
+            children.append(child)
+            return child.pid
+
+        loop = self._loop(spawn=spawn, check_pending=lambda: True,
+                          stop_after_passes=3)
+        loop.run()
+        # AC-2: the child stayed alive over all three passes — one spawn.
+        self.assertEqual(1, len(children))
+        first = children[0]
+        self.addCleanup(first.wait)
+        while loop._last_child_alive():
+            # The child exits on its own; the loop reaps it in this call.
+            time.sleep(0.01)
+        self.assertFalse(loop._last_child_alive())
+        self.assertIsNone(loop._spawned_pid)
+        # The loop reaped it, not the test: the pid is no longer our child.
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(first.pid, os.WNOHANG)
+        # AC-1: the same instance spawns again on a later pass.
+        loop.run()
+        self.assertEqual(2, len(children))
+        self.addCleanup(children[1].wait)
+        self.assertNotEqual(first.pid, children[1].pid)
 
     def test_unconfigured_github_skips_sync_and_watches_local_work(self):
         """FR-0.1: sync=None — no sync runs, but the pending watch works."""

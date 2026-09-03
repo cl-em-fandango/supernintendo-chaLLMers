@@ -6,16 +6,16 @@ loop-start guard (`_requeue_stale_claims`) and the operator command
 (`cmd_requeue_claims`) called `requeue_claim(claim)` with no owner — the
 unchecked, pre-ownership call. Switching `--requeue-stale` on therefore handed
 back a live peer's claim, and the operator command swept claims nobody could be
-shown to hold, which is exactly what the ownership sidecar exists to prevent.
+shown to hold, which is exactly what the ownership record exists to prevent.
 Epic T46, leaf T53.
 
 Covered here, against the real directory provider in temp dirs:
   * the provider's operator override — `requeue_claim(..., force=True)` moves a
-    claim whatever the sidecar says, while the default still refuses a foreign
+    claim whatever the record says, while the default still refuses a foreign
     owner and an unnamed one;
   * the automatic sweep scoped to an owner: an old claim the named owner holds
-    is reclaimed; an old claim held by another owner, one with no sidecar and
-    one with a corrupt sidecar all stay claimed with their ownership intact,
+    is reclaimed; an old claim held by another owner, one with no record and
+    one with a corrupt record all stay claimed with their ownership intact,
     and every skip is logged;
   * age still gates both paths — a young owned claim is never stale, and force
     reaches no further than `older_than`;
@@ -41,12 +41,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.cli import handlers  # noqa: E402
-from harness.core.claim_metadata import (  # noqa: E402
-    OWNER_UNKNOWN,
-    metadata_path,
-    read_metadata,
-    write_metadata,
-)
+from harness.core import task_record  # noqa: E402
+from harness.core.claim_metadata import OWNER_UNKNOWN  # noqa: E402
 from harness.core.providers import (  # noqa: E402
     DirectoryTaskProvider,
     Task,
@@ -80,17 +76,19 @@ class _QueueFixture(unittest.TestCase):
                corrupt: bool = False) -> Path:
         """A claim already sitting in claimed/, owned and aged as described.
 
-        No `owner` and no `corrupt` writes no sidecar at all — a claim taken
-        before ownership existed. `corrupt` writes one that will not parse. Both
-        read back as `OWNER_UNKNOWN`; the tests keep them apart because the
+        No `owner` and no `corrupt` writes no record at all — a claim taken
+        before ownership existed. `corrupt` writes a record that will not parse.
+        Both read back as `OWNER_UNKNOWN`; the tests keep them apart because the
         operator has to be able to tell an orphan from damage.
         """
         claim_file = self.claimed / name
         claim_file.write_text(f"# {name[:-3]}\nbody of {name}\n")
         if corrupt:
-            metadata_path(claim_file).write_text("{ not json")
+            record = task_record.record_path(self.dir, name[:-3])
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text("{ not json")
         elif owner is not None:
-            write_metadata(claim_file, owner)
+            task_record.set_claim(self.dir, name[:-3], owner)
         if hours_old:
             stamp = time.time() - hours_old * 3600
             os.utime(claim_file, (stamp, stamp))
@@ -102,11 +100,17 @@ class _QueueFixture(unittest.TestCase):
     def _claimed_names(self) -> list[str]:
         return sorted(p.name for p in self.claimed.glob("*.md"))
 
-    def _sidecar_names(self) -> list[str]:
-        return sorted(p.name for p in self.claimed.glob("*.claim.json"))
+    def _record_names(self) -> list[str]:
+        meta = self.dir / task_record.META_DIR_NAME
+        return sorted(p.name for p in meta.glob("*.json")) if meta.is_dir() \
+            else []
+
+    def _record_text(self, name: str) -> str:
+        return task_record.record_path(self.dir, name[:-3]).read_text()
 
     def _owner_of(self, name: str) -> str:
-        return read_metadata(self.claimed / name).owner
+        claim = task_record.read_record(self.dir, name[:-3]).claim
+        return claim.owner if claim is not None else OWNER_UNKNOWN
 
     def _logged(self) -> str:
         return " | ".join(self.messages)
@@ -121,7 +125,7 @@ class ProviderForceTest(_QueueFixture):
         self.assertEqual(dest, str(self.pending / "001-a.md"))
         self.assertEqual(self._pending_names(), ["001-a.md"])
         self.assertEqual(self._claimed_names(), [])
-        self.assertEqual(self._sidecar_names(), [],
+        self.assertEqual(self._record_names(), [],
                          "a forced requeue left an owner behind")
 
     def test_force_moves_a_claim_with_no_readable_owner(self):
@@ -170,8 +174,8 @@ class AutomaticStaleReclaimTest(_QueueFixture):
         self.assertEqual(self._sweep(), 1)
         self.assertEqual(self._pending_names(), ["001-a.md"])
         self.assertEqual(self._claimed_names(), [])
-        self.assertEqual(self._sidecar_names(), [],
-                         "the sidecar outlived the claim it described")
+        self.assertEqual(self._record_names(), [],
+                         "the claim record outlived the claim it described")
         self.assertIn("reclaimed stale claim: 001-a (48h)", self._logged())
 
     def test_an_old_claim_held_by_another_owner_is_left_alone(self):
@@ -184,7 +188,7 @@ class AutomaticStaleReclaimTest(_QueueFixture):
         self.assertIn("not reclaiming 002-b (48h)", logged)
         self.assertIn(PEER, logged, "the skip did not say who holds the claim")
 
-    def test_a_claim_with_no_sidecar_is_left_for_an_operator(self):
+    def test_a_claim_with_no_record_is_left_for_an_operator(self):
         self._plant("003-c.md", hours_old=STALE_HOURS)
         self.assertEqual(self._sweep(), 0)
         self.assertEqual(self._claimed_names(), ["003-c.md"])
@@ -195,12 +199,12 @@ class AutomaticStaleReclaimTest(_QueueFixture):
         self.assertNotIn("--force", logged,
                          "the log named a CLI flag this leaf does not ship")
 
-    def test_a_claim_with_a_corrupt_sidecar_is_left_for_an_operator(self):
+    def test_a_claim_with_a_corrupt_record_is_left_for_an_operator(self):
         self._plant("004-d.md", hours_old=STALE_HOURS, corrupt=True)
         self.assertEqual(self._sweep(), 0)
         self.assertEqual(self._claimed_names(), ["004-d.md"])
-        self.assertEqual(metadata_path(self.claimed / "004-d.md").read_text(),
-                         "{ not json", "an automatic sweep rewrote the evidence")
+        self.assertEqual(self._record_text("004-d.md"), "{ not json",
+                         "an automatic sweep rewrote the evidence")
         self.assertIn("not reclaiming 004-d (48h)", self._logged())
 
     def test_a_young_claim_of_the_named_owner_is_not_stale(self):
@@ -236,9 +240,8 @@ class AutomaticStaleReclaimTest(_QueueFixture):
         self.assertEqual(self._pending_names(), ["001-a.md"])
         self.assertEqual(self._claimed_names(),
                          ["002-b.md", "003-c.md", "004-d.md", "005-e.md"])
-        self.assertEqual(self._sidecar_names(),
-                         ["002-b.md.claim.json", "004-d.md.claim.json",
-                          "005-e.md.claim.json"],
+        self.assertEqual(self._record_names(),
+                         ["002-b.json", "004-d.json", "005-e.json"],
                          "a claim that stayed held lost its owner")
 
 
@@ -420,8 +423,8 @@ class OperatorRequeueClaimsTest(_WiredFixture):
                           {"owner": OWNER_UNKNOWN, "force": True, "moved": True}])
         self.assertEqual(self._pending_names(), ["002-b.md", "003-c.md"])
         self.assertEqual(self._claimed_names(), [])
-        self.assertEqual(self._sidecar_names(), [],
-                         "a forced requeue left a sidecar behind")
+        self.assertEqual(self._record_names(), [],
+                         "a forced requeue left a record behind")
         logged = self._logged()
         self.assertIn(f"requeued 002-b (48h) owner={OWNER_UNKNOWN}", logged)
         self.assertIn(f"requeued 003-c (48h) owner={OWNER_UNKNOWN}", logged)

@@ -42,11 +42,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.cli import handlers  # noqa: E402
-from harness.core.claim_metadata import (  # noqa: E402
-    OWNER_UNKNOWN,
-    read_metadata,
-    write_metadata,
-)
+from harness.core import task_record  # noqa: E402
+from harness.core.claim_metadata import OWNER_UNKNOWN  # noqa: E402
 from harness.core.providers import DirectoryTaskProvider, Task  # noqa: E402
 
 # A claim that belongs to another invocation, planted before the run under test.
@@ -164,14 +161,14 @@ class _RunFixture(unittest.TestCase):
 
     def _plant_foreign_claim(self, name: str,
                              owner: str = FOREIGN_OWNER) -> Path:
-        """A claim held by another invocation, sidecar and all."""
+        """A claim held by another invocation, record and all."""
         claim_file = self.claimed / name
         claim_file.write_text(f"# {name[:-3]}\nnot this run's work\n")
-        write_metadata(claim_file, owner)
+        task_record.set_claim(self.dir, name[:-3], owner)
         return claim_file
 
     def _plant_ownerless_claim(self, name: str) -> Path:
-        """A claim taken before ownership existed: markdown, no sidecar."""
+        """A claim taken before ownership existed: markdown, no record."""
         claim_file = self.claimed / name
         claim_file.write_text(f"# {name[:-3]}\npre-ownership evidence\n")
         return claim_file
@@ -182,11 +179,14 @@ class _RunFixture(unittest.TestCase):
     def _claimed_names(self) -> list[str]:
         return sorted(p.name for p in self.claimed.glob("*.md"))
 
-    def _sidecar_names(self) -> list[str]:
-        return sorted(p.name for p in self.claimed.glob("*.claim.json"))
+    def _record_names(self) -> list[str]:
+        meta = self.dir / task_record.META_DIR_NAME
+        return sorted(p.name for p in meta.glob("*.json")) if meta.is_dir() \
+            else []
 
     def _owner_of(self, name: str) -> str:
-        return read_metadata(self.claimed / name).owner
+        claim = task_record.read_record(self.dir, name[:-3]).claim
+        return claim.owner if claim is not None else OWNER_UNKNOWN
 
     def _logged(self) -> str:
         return " | ".join(self.messages)
@@ -304,7 +304,7 @@ class OwnClaimReturnTest(_RunFixture):
                          ["001-a.md", "002-b.md", "003-c.md"])
         self.assertEqual(self._claimed_names(), [],
                          "the run left its own claims sitting in claimed/")
-        self.assertEqual(self._sidecar_names(), [],
+        self.assertEqual(self._record_names(), [],
                          "released claims left ownership sidecars behind")
         self.assertIn("released 3 unprocessed claim(s) back to pending",
                       self._logged())
@@ -323,7 +323,7 @@ class OwnClaimReturnTest(_RunFixture):
         self.assertEqual(handlers.cmd_run(), 0)
         self.assertEqual(self._pending_names(), ["001-a.md", "002-b.md"])
         self.assertEqual(self._claimed_names(), [])
-        self.assertEqual(self._sidecar_names(), [])
+        self.assertEqual(self._record_names(), [])
 
     def test_an_aborted_run_hands_back_the_claim_it_holds(self):
         """The hand-back is a `finally`: an interrupt must not strand its claim."""
@@ -334,7 +334,7 @@ class OwnClaimReturnTest(_RunFixture):
         self.assertEqual(self._pending_names(), ["001-a.md", "002-b.md"])
         self.assertEqual(self._claimed_names(), [],
                          "an aborted run stranded the claim it was holding")
-        self.assertEqual(self._sidecar_names(), [])
+        self.assertEqual(self._record_names(), [])
 
     def test_run_one_hands_back_its_extras_under_the_owner_it_claimed_under(self):
         self._seed("001-a.md", "002-b.md", "003-c.md")
@@ -344,7 +344,7 @@ class OwnClaimReturnTest(_RunFixture):
                          "run-one handed back claims under another id")
         self.assertEqual(self._pending_names(), ["002-b.md", "003-c.md"])
         self.assertEqual(self._claimed_names(), [])
-        self.assertEqual(self._sidecar_names(), [])
+        self.assertEqual(self._record_names(), [])
 
     def test_no_run_path_sweeps_the_whole_claimed_directory(self):
         """A hand-back moves only its own claims; the bulk sweep is the operator's."""

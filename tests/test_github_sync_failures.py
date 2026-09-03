@@ -36,6 +36,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -59,8 +60,8 @@ from harness.core.sync_comments import HandoffCommentPoster  # noqa: E402
 from harness.core.sync_handoff_hook import HandoffSyncHook  # noqa: E402
 from harness.core.sync_inbound import normalize_title  # noqa: E402
 from harness.core.sync_outbound import run_outbound, OutboundParams  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
-    SyncLinkage, file_sidecar_path, write_linkage,
+from tests.legacy_sidecars import (  # noqa: E402
+    SyncLinkage, file_sidecar_path, write_legacy_linkage,
 )
 from harness.core.sync_stage_change_hook import run_stage_change_hook  # noqa: E402
 from harness.core.syncd import (  # noqa: E402
@@ -314,7 +315,7 @@ class FailureTestCase(unittest.TestCase):
         path = self.queue / location / f"{name}.md"
         path.write_text(body if body is not None else f"# {name} body")
         if issue is not None:
-            write_linkage(file_sidecar_path(path),
+            write_legacy_linkage(file_sidecar_path(path),
                           SyncLinkage(issue=issue, repo=REPO))
         return path
 
@@ -325,7 +326,7 @@ class FailureTestCase(unittest.TestCase):
             json.dumps({"id": name, "status": location}))
         (task_dir / "original.md").write_text(f"# {name} body")
         if issue is not None:
-            write_linkage(task_dir / "gh.json",
+            write_legacy_linkage(task_dir / "gh.json",
                           SyncLinkage(issue=issue, repo=REPO))
         return task_dir
 
@@ -512,10 +513,21 @@ class HookSiteFailureTest(FailureTestCase):
                     rules=[FailureRule(mode)])
                 slept: list[float] = []
                 spawns: list[int] = []
+
+                def spawn() -> int:
+                    # A real child: the loop reaps dead children, so a
+                    # fake pid would read as dead and re-spawn each pass.
+                    child = subprocess.Popen(
+                        [sys.executable, "-c",
+                         "import time; time.sleep(1)"])
+                    self.addCleanup(child.wait)
+                    spawns.append(child.pid)
+                    return child.pid
+
                 loop = SyncdLoop(SyncdParams(
                     work_dir=self.work_dir, sync_interval_s=10.0,
                     sync=lambda: engine.on_stage_change(),
-                    spawn=lambda: spawns.append(1) or os.getpid(),
+                    spawn=spawn,
                     log=self.messages.append,
                     sleep=lambda seconds, stop: slept.append(seconds),
                     check_pending=lambda: True,
@@ -526,6 +538,9 @@ class HookSiteFailureTest(FailureTestCase):
                 self.assert_no_pat(joined, "the daemon log")
                 self.assertIn("backing off", joined)
                 self.assertIn(10.0 * 5, slept)
+        # Note: the former fake child pid (os.getpid()) was replaced by a
+        # real child — the daemon now reaps dead children, so a non-child
+        # pid reads as dead and would re-spawn on every pass.
 
 
 # ---------------------------------------------------------------------------

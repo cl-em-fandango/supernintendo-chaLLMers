@@ -59,6 +59,23 @@ class StatsStore:
         if not self.path.exists():
             self.path.touch()
 
+    def prune(self, max_rows: int) -> None:
+        """Trim the stats file to keep only the most recent ``max_rows`` entries.
+
+        If the file has fewer rows than ``max_rows`` nothing is changed.
+        The operation is atomic: a temporary file is written and then renamed.
+        """
+        rows = self.all()
+        if len(rows) <= max_rows:
+            return
+        # Keep the newest ``max_rows`` rows (they are in chronological order)
+        keep = rows[-max_rows:]
+        tmp_path = self.path.with_suffix('.tmp')
+        with tmp_path.open('w', encoding='utf-8') as f:
+            for rec in keep:
+                f.write(json.dumps(rec) + "\n")
+        tmp_path.replace(self.path)
+
     def record(self, rec: SessionRecord) -> None:
         with self.path.open("a") as f:
             f.write(json.dumps(asdict(rec)) + "\n")
@@ -625,3 +642,24 @@ def _format_tokens(n: int) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}k"
     return str(n)
+
+
+def render_report_json(rows: list[dict]) -> dict:
+    """Return structured stats as a JSON‑serialisable dict.
+
+    The output mirrors ``render_report`` but is machine‑readable, containing:
+    * ``total_sessions`` – number of recorded sessions
+    * ``total_tokens`` – sum of ``peak_tokens`` across all rows
+    * ``models`` – list from :func:`model_report`
+    * ``stages`` – list from :func:`stage_report`
+    * ``tasks`` – list from :func:`task_report`
+    """
+    total_sessions = len(rows)
+    total_tokens = sum(int(r.get("peak_tokens", 0)) for r in rows)
+    return {
+        "total_sessions": total_sessions,
+        "total_tokens": total_tokens,
+        "models": model_report(rows),
+        "stages": stage_report(rows),
+        "tasks": task_report(rows),
+    }

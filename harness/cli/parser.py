@@ -75,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
     
     # report
     subparsers.add_parser("report", help="Print the stats report")
+    # report-json
+    subparsers.add_parser("report-json", help="Print the stats report as JSON")
+    # export-stats-csv
+    export_csv_parser = subparsers.add_parser("export-stats-csv", help="Export raw session stats to CSV")
+    export_csv_parser.add_argument("output", nargs="?", default="stats.csv",
+                                 help="Path to output CSV file (default: stats.csv)")
+    # stats-prune
+    prune_parser = subparsers.add_parser("stats-prune", help="Trim the stats store to recent rows")
+    prune_parser.add_argument("--max-rows", dest="max_rows", type=int, default=None,
+                                help="Maximum number of recent rows to keep (default from config or 10000)")
 
     # sync
     subparsers.add_parser(
@@ -90,7 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
                       "exits non-zero when another syncd holds the lock)")
 
     # board (with hidden kanban alias)
-    subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
+    board_parser = subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
+    board_parser.add_argument("--json", dest="json", action="store_true", default=False,
+                            help="Output board data as JSON instead of the formatted view")
     subparsers.add_parser("kanban", help=argparse.SUPPRESS)
 
     # journey
@@ -98,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     journey_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
     journey_parser.add_argument("--save", dest="save", action="store_true", default=False,
                                 help="Save journey graph to <statsDir>/journeys/<task_id>-journey.txt")
+
+    # journey-markdown
+    journey_md_parser = subparsers.add_parser("journey-md", help="Export workflow journey as Markdown with transcript links")
+    journey_md_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
+    journey_md_parser.add_argument("--save", dest="save", action="store_true", default=False,
+                                help="Save Markdown journey to <statsDir>/journeys/<task_id>-journey.md")
     
     # interrupt
     interrupt_parser = subparsers.add_parser(

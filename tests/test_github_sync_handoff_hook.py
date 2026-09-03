@@ -38,9 +38,9 @@ from harness.composition import (  # noqa: E402
 from harness.core.config import load  # noqa: E402
 from harness.core.sync import SyncReport  # noqa: E402
 from harness.core.sync_handoff_hook import HandoffSyncHook  # noqa: E402
-from harness.core.sync_sidecar import (  # noqa: E402
+from tests.legacy_sidecars import (  # noqa: E402
     SyncLinkage,
-    write_linkage,
+    write_legacy_linkage,
 )
 from harness.core.sync_stage_change_hook import run_stage_change_hook  # noqa: E402
 from harness.workflow.continuation import ContinuationNote, write_note  # noqa: E402
@@ -257,7 +257,7 @@ class WriteSiteTest(unittest.TestCase):
         (task_dir / "task.json").write_text(json.dumps(
             {"id": name, "status": "active"}))
         (task_dir / "original.md").write_text(f"# {name} body")
-        write_linkage(task_dir / "gh.json", SyncLinkage(issue=issue,
+        write_legacy_linkage(task_dir / "gh.json", SyncLinkage(issue=issue,
                                                         repo=REPO))
         return task_dir
 

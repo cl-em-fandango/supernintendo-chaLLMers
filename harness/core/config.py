@@ -15,6 +15,7 @@ from external.hardened_process import (
     DEFAULT_TOOL_TIMEOUT_S,
     GuardrailLimits,
 )
+from .demo_config import DemoConfig, parse_demo_config
 from .health import (
     DEFAULT_HEALTH_BACKOFF_BASE_S,
     DEFAULT_HEALTH_BACKOFF_CAP_S,
@@ -277,6 +278,17 @@ class Config:
     def github_sync_enabled(self) -> bool:
         """True only with both a PAT and a repo configured (FR-0.1)."""
         return bool(self.github_pat and self.github_repo)
+
+    # ------------------------------------------------------------------
+    # Demo web-app deployment (`snes-demo` FR-9). Disabled-safe: a config
+    # without a `demo` section yields every default with `enabled=False`,
+    # so the label is ignored and the pipeline hooks no-op.
+    # ------------------------------------------------------------------
+
+    @property
+    def demo(self) -> DemoConfig:
+        """The FR-9 `demo` section as one explicit parameters object."""
+        return parse_demo_config(self.raw, self.work_dir)
 
     def health_policy(self) -> HealthPolicy:
         """The FR-5.1 knobs as one explicit parameters object."""

@@ -8,8 +8,13 @@ Two phases of the inbound contract live here:
 * halt (Slice 4) — `snes-parked` parks the matching task from any queue
   location (FR-1.3) and `snes-deleted` deletes it (FR-1.4), stopping
   in-flight work through the existing interrupt/stand-down mechanism
-  (flag at the session boundary, never a kill). Exactly one action per
-  issue, ordered delete > park > ingest (FR-1.5).
+  (flag at the session boundary, never a kill).
+
+Exactly one action per issue, ordered delete > park > demo > ingest
+(demo spec FR-1.5). The `DEMO` action is an ingest that also records
+`demo: true` in the sidecar (demo spec FR-1.1–FR-1.3); when the demo
+feature is disabled (`InboundParams.demo_enabled`) the `snes-demo` label
+is ignored entirely (demo spec FR-9).
 
 State and behavior (CODING_STANDARDS §2): `TaskLocation` and
 `InboundParams` describe shape; `run_inbound()` acts. The GitHub side is
@@ -49,15 +54,9 @@ from .interrupt import (
     read_interrupt,
     write_interrupt,
 )
+from . import task_record
 from .sync_labels import TRIGGER_PRECEDENCE, TriggerLabel
-from .sync_sidecar import (
-    SyncLinkage,
-    file_sidecar_path,
-    move_sidecar_into_task_dir,
-    read_linkage,
-    task_dir_sidecar_path,
-    write_linkage,
-)
+from .sync_linkage import SyncLinkage
 
 # FR-1.1: pathological titles are truncated from the end before any
 # collision suffix is appended, so the path stays inside sane limits.
@@ -72,12 +71,15 @@ DIR_LOCATIONS = ("active", "parked", "failed", "done")
 
 @dataclass
 class TaskLocation:
-    """One task as found on a queue scan: its name, where it lives, and
-    where its GitHub linkage sidecar would be."""
+    """One task as found on a queue scan: its name, its task-file path (or
+    task directory) and the queue location it currently sits in.
+
+    `name` is the task id the metadata record is keyed by, so linkage is
+    resolved by task id (`task_record.read_record`) rather than by a path
+    derived from this entry — a transition can never orphan it."""
     name: str          # file stem, or task-dir name
     path: Path         # the task .md file or the task directory
     location: str      # queue location ("pending", "active", ...)
-    sidecar: Path
 
 
 @dataclass
@@ -92,6 +94,9 @@ class InboundParams:
     # The lifecycle authority for parking; None only in wiring that cannot
     # move tasks, and a halt then logs and skips.
     lifecycle: TaskLifecycle | None = None
+    # The `demo.enabled` switch (demo spec FR-9): when False, `snes-demo`
+    # labels are ignored — no listing, no action, no label changes.
+    demo_enabled: bool = False
 
 
 @dataclass
@@ -115,16 +120,14 @@ def scan_queue(queue_dir: Path) -> list[TaskLocation]:
         if directory.is_dir():
             for task_file in sorted(directory.glob("*.md")):
                 entries.append(TaskLocation(
-                    name=task_file.stem, path=task_file, location=location,
-                    sidecar=file_sidecar_path(task_file)))
+                    name=task_file.stem, path=task_file, location=location))
     for location in DIR_LOCATIONS:
         directory = queue_dir / location
         if directory.is_dir():
             for task_dir in sorted(p for p in directory.iterdir()
                                    if p.is_dir()):
                 entries.append(TaskLocation(
-                    name=task_dir.name, path=task_dir, location=location,
-                    sidecar=task_dir_sidecar_path(task_dir)))
+                    name=task_dir.name, path=task_dir, location=location))
     return entries
 
 
@@ -141,22 +144,31 @@ def find_task(queue_dir: Path, task_id: str) -> TaskLocation | None:
     return matches[-1] if matches else None
 
 
-def find_matching_task(issue, entries: list[TaskLocation]) -> TaskLocation | None:
+def find_matching_task(issue, entries: list[TaskLocation],
+                       queue_dir: Path) -> TaskLocation | None:
     """The task representing `issue`, or None (FR-1.2, FR-1.6).
 
-    Sidecar lookups take precedence: an entry whose sidecar names this
-    issue is the match, and an entry whose sidecar names a *different*
+    A recorded linkage takes precedence: an entry whose record names this
+    issue is the match, and an entry whose record names a *different*
     issue is off-limits to title matching (it belongs elsewhere). Only
-    entries with no readable sidecar fall back to the normalized-title
+    entries with no readable linkage fall back to the normalized-title
     comparison.
+
+    One task can be listed twice — the terminal task dir and the review
+    summary file left behind under the same name — and both now read the
+    same id-keyed record, so the last match wins, which is the task dir
+    (`scan_queue` lists dirs after files, the `find_task` precedence).
     """
     unlinked: list[TaskLocation] = []
+    matches: list[TaskLocation] = []
     for entry in entries:
-        linkage = read_linkage(entry.sidecar)
+        linkage = task_record.read_linkage(queue_dir, entry.name)
         if linkage is None:
             unlinked.append(entry)
         elif linkage.issue == issue.number:
-            return entry
+            matches.append(entry)
+    if matches:
+        return matches[-1]
     wanted = normalize_title(issue.title)
     return next((entry for entry in unlinked
                  if normalize_title(entry.name) == wanted), None)
@@ -191,13 +203,50 @@ def issue_task_body(issue) -> str:
     return f"{issue.title}\n\n{issue.html_url}\n"
 
 
+def _flag_existing_task(issue, match: TaskLocation,
+                        params: InboundParams) -> None:
+    """Demo spec edge 1: `snes-demo` on an already-synced issue flags the
+    existing task's sidecar without duplicating the task.
+
+    A task with no readable linkage (no record, or one that does not parse)
+    is left untouched; a fresh linkage is written only where the task was
+    unlinked, matching the outbound fresh-title-match rule (FR-1.6).
+    """
+    linkage = task_record.read_linkage(params.queue_dir, match.name)
+    if linkage is None:
+        task_record.write_linkage(
+            params.queue_dir, match.name,
+            SyncLinkage(issue=issue.number, repo=params.repo, demo=True))
+        params.log(f"  gh #{issue.number}: linked {match.name} in "
+                   f"{match.location}/ with demo flag")
+        return
+    if linkage.demo:
+        params.log(f"  gh #{issue.number}: skip (debug) — {match.name} in "
+                   f"{match.location}/ already flagged demo")
+        return
+    task_record.write_linkage(
+        params.queue_dir, match.name,
+        SyncLinkage(issue=linkage.issue, repo=linkage.repo,
+                    comment_ids=linkage.comment_ids, demo=True))
+    params.log(f"  gh #{issue.number}: demo flag added to {match.name} "
+               f"in {match.location}/")
+
+
 def _ingest_issue(issue, entries: list[TaskLocation],
-                  params: InboundParams) -> bool:
-    """One issue -> one pending task file. True when a file was created."""
-    match = find_matching_task(issue, entries)
+                  params: InboundParams, demo: bool = False) -> bool:
+    """One issue -> one pending task file. True when a file was created.
+
+    `demo=True` (the `snes-demo` trigger) records the flag in the sidecar
+    and, when the issue already matches a task, flags that task instead
+    of importing a duplicate (demo spec FR-1.3, edge 1).
+    """
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is not None:
-        params.log(f"  gh #{issue.number}: skip (debug) — matches {match.name} "
-                   f"in {match.location}/; not importing")
+        if demo:
+            _flag_existing_task(issue, match, params)
+        else:
+            params.log(f"  gh #{issue.number}: skip (debug) — matches "
+                       f"{match.name} in {match.location}/; not importing")
         return False
     filename = derive_task_filename(issue, entries)
     target = params.queue_dir / "pending" / filename
@@ -207,37 +256,47 @@ def _ingest_issue(issue, entries: list[TaskLocation],
         return False
     params.queue_dir.joinpath("pending").mkdir(parents=True, exist_ok=True)
     write_atomic(target, issue_task_body(issue))
-    sidecar = file_sidecar_path(target)
-    write_linkage(sidecar, SyncLinkage(issue=issue.number, repo=params.repo))
+    task_record.write_linkage(
+        params.queue_dir, target.stem,
+        SyncLinkage(issue=issue.number, repo=params.repo, demo=demo))
     entries.append(TaskLocation(name=target.stem, path=target,
-                                location="pending", sidecar=sidecar))
+                                location="pending"))
     params.log(f"  gh #{issue.number}: imported -> pending/{filename}")
     return True
 
 
-def _trigger_for(issue) -> TriggerLabel | None:
-    """The one action an issue's labels instruct, in FR-1.5 precedence."""
+def _trigger_for(issue, demo_enabled: bool = False) -> TriggerLabel | None:
+    """The one action an issue's labels instruct, in FR-1.5 precedence
+    (delete > park > demo > ingest). With the demo feature disabled,
+    `snes-demo` is not a trigger at all (demo spec FR-9).
+    """
     names = {label.name for label in issue.labels}
     for trigger in TRIGGER_PRECEDENCE:
+        if trigger is TriggerLabel.DEMO and not demo_enabled:
+            continue
         if trigger.value in names:
             return trigger
     return None
 
 
-def _collect_trigger_issues(api) -> dict[int, object]:
+def _collect_trigger_issues(api,
+                            demo_enabled: bool = False) -> dict[int, object]:
     """Every issue carrying a trigger label, keyed by number.
 
-    Ingest reads open issues only (FR-1.2); the halt triggers apply to
-    open *and* closed issues (FR-1.3). The open listing is taken first and
-    wins a merge, so an issue's recorded state is `open` whenever it is open
-    now (the delete anti-loop depends on it).
+    Ingest reads open issues only (FR-1.2), as does the demo trigger
+    (demo spec FR-1.2); the halt triggers apply to open *and* closed
+    issues (FR-1.3). The open listing is taken first and wins a merge, so
+    an issue's recorded state is `open` whenever it is open now (the
+    delete anti-loop depends on it). The `snes-demo` listing happens only
+    while the feature is enabled (demo spec FR-9).
     """
+    queries = [(TriggerLabel.DELETE, (IssueState.OPEN, IssueState.CLOSED)),
+               (TriggerLabel.PARK, (IssueState.OPEN, IssueState.CLOSED))]
+    if demo_enabled:
+        queries.append((TriggerLabel.DEMO, (IssueState.OPEN,)))
+    queries.append((TriggerLabel.INGEST, (IssueState.OPEN,)))
     found: dict[int, object] = {}
-    for label, states in ((TriggerLabel.INGEST, (IssueState.OPEN,)),
-                          (TriggerLabel.PARK, (IssueState.OPEN,
-                                               IssueState.CLOSED)),
-                          (TriggerLabel.DELETE, (IssueState.OPEN,
-                                                 IssueState.CLOSED))):
+    for label, states in queries:
         for state in states:
             for issue in api.list_issues(labels=[label.value], state=state):
                 found.setdefault(issue.number, issue)
@@ -267,21 +326,10 @@ def _stand_down_status(params: InboundParams) -> InterruptStatus | None:
     return None
 
 
-def _relocate_file_sidecar(match: TaskLocation, params: InboundParams) -> None:
-    """Move a task-file linkage sidecar into the parked task dir (FR-1.6).
-
-    `pending/X.md.gh.json` beside the moved file would otherwise strand the
-    linkage. Claim-ownership sidecars are not ours and stay untouched.
-    """
-    parked_dir = params.queue_dir / "parked" / match.name
-    move_sidecar_into_task_dir(match.sidecar, parked_dir)
-    match.sidecar = task_dir_sidecar_path(parked_dir)
-
-
 def _park_issue_task(issue, entries: list[TaskLocation],
                      params: InboundParams) -> bool:
     """FR-1.3: park the task matching a `snes-parked` issue. True when moved."""
-    match = find_matching_task(issue, entries)
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is None or match.location == "parked":
         params.log(f"  gh #{issue.number}: skip (debug) — nothing to park "
                    f"({'no matching task' if match is None else 'already parked'})")
@@ -294,8 +342,8 @@ def _park_issue_task(issue, entries: list[TaskLocation],
     was = match.location
     params.lifecycle.park(match.name, f"parked via GitHub issue #{issue.number}",
                           from_=was)
-    if was in FILE_LOCATIONS:
-        _relocate_file_sidecar(match, params)
+    # The record is keyed by task id, so parking needs no metadata move
+    # (FR-C.3): the linkage is still found by `match.name` in `parked/`.
     match.path = params.queue_dir / "parked" / match.name
     match.location = "parked"
     params.log(f"  gh #{issue.number}: parked {match.name} (was {was}/)")
@@ -306,13 +354,19 @@ def _close_and_unlabel(api, issue, params: InboundParams) -> None:
     """FR-1.4 anti-loop: close the issue and drop `snes`/`snes-deleted`.
 
     Only labels the issue actually carries are removed (no 404 churn);
-    human labels are never touched. A failure here is logged by the
-    per-issue guard in `run_inbound`, not silently retried.
+    human labels are never touched. `snes-demo` is removed exactly where
+    `snes` is removed (demo spec FR-1.6) — and only while the feature is
+    enabled, since a disabled pass never acts on the label at all. A
+    failure here is logged by the per-issue guard in `run_inbound`, not
+    silently retried.
     """
     if issue.state is IssueState.OPEN:
         api.close_issue(issue.number)
     carried = {label.name for label in issue.labels}
-    for name in (TriggerLabel.INGEST.value, TriggerLabel.DELETE.value):
+    removable = [TriggerLabel.INGEST.value, TriggerLabel.DELETE.value]
+    if params.demo_enabled:
+        removable.append(TriggerLabel.DEMO.value)
+    for name in removable:
         if name in carried:
             api.remove_label(issue.number, name)
 
@@ -320,7 +374,7 @@ def _close_and_unlabel(api, issue, params: InboundParams) -> None:
 def _delete_issue_task(api, issue, entries: list[TaskLocation],
                        params: InboundParams) -> bool:
     """FR-1.4: delete the task matching a `snes-deleted` issue. True if gone."""
-    match = find_matching_task(issue, entries)
+    match = find_matching_task(issue, entries, params.queue_dir)
     if match is None:
         params.log(f"  gh #{issue.number}: skip (debug) — no matching task "
                    f"to delete")
@@ -331,7 +385,11 @@ def _delete_issue_task(api, issue, entries: list[TaskLocation],
         shutil.rmtree(match.path, ignore_errors=True)
     else:
         match.path.unlink(missing_ok=True)
-        match.sidecar.unlink(missing_ok=True)
+    # The task is gone, so its linkage goes with it — otherwise the record
+    # would keep claiming a deleted task belongs to this (now closed) issue.
+    if not task_record.clear_linkage(params.queue_dir, match.name):
+        params.log(f"  gh #{issue.number}: anomaly — could not clear the "
+                   f"linkage record of {match.name}")
     _close_and_unlabel(api, issue, params)
     entries.remove(match)
     params.log(f"  gh #{issue.number}: deleted {match.name} from "
@@ -342,26 +400,30 @@ def _delete_issue_task(api, issue, entries: list[TaskLocation],
 def run_inbound(api, params: InboundParams) -> InboundResult:
     """FR-1 phase 1: apply every issue's trigger action to the queue.
 
-    One action per issue in FR-1.5 precedence (delete > park > ingest). A
-    failure on one issue is logged and skipped — it never aborts the pass
-    (NFR-1). Idempotent (FR-1.7): a second pass sees imports as sidecar
-    matches, parks as already-parked, and deletes as gone — no queue changes.
+    One action per issue in FR-1.5 precedence (delete > park > demo >
+    ingest). A failure on one issue is logged and skipped — it never
+    aborts the pass (NFR-1). Idempotent (FR-1.7): a second pass sees
+    imports as sidecar matches, demo flags as already-flagged, parks as
+    already-parked, and deletes as gone — no queue changes.
     """
     result = InboundResult()
     entries = scan_queue(params.queue_dir)
     actions = {
         TriggerLabel.INGEST: lambda issue: _ingest_issue(issue, entries, params),
+        TriggerLabel.DEMO: lambda issue: _ingest_issue(issue, entries, params, demo=True),
         TriggerLabel.PARK: lambda issue: _park_issue_task(issue, entries, params),
         TriggerLabel.DELETE: lambda issue: _delete_issue_task(api, issue, entries, params),
     }
     tallies = {
         TriggerLabel.INGEST: "imported",
+        TriggerLabel.DEMO: "imported",
         TriggerLabel.PARK: "parked",
         TriggerLabel.DELETE: "deleted",
     }
-    issues = _collect_trigger_issues(api)
+    issues = _collect_trigger_issues(api, demo_enabled=params.demo_enabled)
     for number in sorted(issues):
-        trigger = _trigger_for(issues[number])
+        trigger = _trigger_for(issues[number],
+                               demo_enabled=params.demo_enabled)
         if trigger is None:
             continue
         try:

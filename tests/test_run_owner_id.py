@@ -1,6 +1,6 @@
 """T52 — one owner id per run-command invocation, used for claim and cleanup.
 
-T51 gave the provider an ownership sidecar and made an ownership-checked requeue
+T51 gave the provider an ownership record and made an ownership-checked requeue
 refuse a foreign claim, but nothing generated an owner id: the run commands
 claimed anonymously (`fetch_pending(claim=True)`) and cleaned up anonymously
 (`requeue_claim(task)`), so the ownership gate was never reached from the CLI.
@@ -12,11 +12,11 @@ Covered here, against the real directory provider in temp dirs:
   * each invocation generates a distinct, non-empty owner id, and two
     invocations of the same command in one process still differ;
   * the claim a run holds is recorded against that run's own id (read from the
-    sidecar while the run is inside `pipeline.process`);
+    record while the run is inside `pipeline.process`);
   * the cleanup names the same id the claim was taken under — `run`,
     `run-one` and `run-task-loop` alike;
   * one invocation cannot clean another owner's claim: a peer's claim, and a
-    pre-ownership claim with no sidecar, both survive a full run untouched;
+    pre-ownership claim with no record, both survive a full run untouched;
   * a crashed run's claim (owner A) is still owner A's after a later invocation
     (owner B) runs over the same queue;
   * no run path sweeps the whole `claimed/` directory (`requeue_all_claims`).
@@ -34,12 +34,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from harness.cli import handlers  # noqa: E402
-from harness.core.claim_metadata import (  # noqa: E402
-    OWNER_UNKNOWN,
-    metadata_path,
-    read_metadata,
-    write_metadata,
-)
+from harness.core import task_record  # noqa: E402
+from harness.core.claim_metadata import OWNER_UNKNOWN  # noqa: E402
 from harness.core.providers import DirectoryTaskProvider, Task  # noqa: E402
 
 # A claim that belongs to somebody else, planted before each invocation.
@@ -77,8 +73,12 @@ class _SpyProvider(DirectoryTaskProvider):
 
     def held_owners(self) -> dict[str, str]:
         """`{claim filename: recorded owner}` for everything held in claimed/."""
-        return {f.name: read_metadata(f).owner
+        return {f.name: self._record_owner(f.stem)
                 for f in sorted(self.claimed_dir.glob("*.md"))}
+
+    def _record_owner(self, stem: str) -> str:
+        claim = task_record.read_record(self.queue_dir, stem).claim
+        return claim.owner if claim is not None else OWNER_UNKNOWN
 
 
 class _RecordingPipeline:
@@ -94,6 +94,7 @@ class _RecordingPipeline:
 
     def __init__(self, claimed_dir: Path):
         self.claimed_dir = claimed_dir
+        self.queue_dir = claimed_dir.parent
         self.processed: list[str] = []
         self.owners_seen: dict[str, str] = {}
         self.raises: type[BaseException] | None = None
@@ -101,8 +102,10 @@ class _RecordingPipeline:
     def process(self, task: Task) -> None:
         self.processed.append(task.id)
         claim_file = self.claimed_dir / f"{task.id}.md"
-        self.owners_seen[task.id] = (read_metadata(claim_file).owner
-                                     if claim_file.exists() else OWNER_UNKNOWN)
+        claim = (task_record.read_record(self.queue_dir, task.id).claim
+                 if claim_file.exists() else None)
+        self.owners_seen[task.id] = (claim.owner if claim is not None
+                                     else OWNER_UNKNOWN)
         if self.raises is not None and len(self.processed) == 1:
             raise self.raises("simulated abort inside the session")
 
@@ -152,10 +155,10 @@ class _RunFixture(unittest.TestCase):
             (self.pending / name).write_text(f"# {name[:-3]}\nwork on {name}\n")
 
     def _plant_foreign_claim(self, name: str, owner: str = FOREIGN_OWNER) -> Path:
-        """A claim held by another invocation, sidecar and all."""
+        """A claim held by another invocation, record and all."""
         claim_file = self.claimed / name
         claim_file.write_text(f"# {name[:-3]}\nnot this run's work\n")
-        write_metadata(claim_file, owner)
+        task_record.set_claim(self.dir, name[:-3], owner)
         return claim_file
 
     def _pending_names(self) -> list[str]:
@@ -164,8 +167,10 @@ class _RunFixture(unittest.TestCase):
     def _claimed_names(self) -> list[str]:
         return sorted(p.name for p in self.claimed.glob("*.md"))
 
-    def _sidecar_names(self) -> list[str]:
-        return sorted(p.name for p in self.claimed.glob("*.claim.json"))
+    def _record_names(self) -> list[str]:
+        meta = self.dir / task_record.META_DIR_NAME
+        return sorted(p.name for p in meta.glob("*.json")) if meta.is_dir() \
+            else []
 
     def _claim_owners(self) -> list[str | None]:
         """The owner id of every claim-taking fetch this invocation performed."""
@@ -176,7 +181,7 @@ class _RunFixture(unittest.TestCase):
 
     def _assert_foreign_untouched(self, name: str) -> None:
         self.assertIn(name, self._claimed_names(), "a foreign claim was swept")
-        self.assertEqual(read_metadata(self.claimed / name).owner, FOREIGN_OWNER,
+        self.assertEqual(self.provider._record_owner(name[:-3]), FOREIGN_OWNER,
                          "a foreign claim's ownership was rewritten")
 
 
@@ -198,15 +203,14 @@ class OwnerIdGenerationTest(unittest.TestCase):
         self.assertNotEqual(handlers._new_owner_id("run"),
                             handlers._new_owner_id("run-one"))
 
-    def test_an_owner_id_is_a_usable_sidecar_owner(self):
-        """Whatever the id is made of, it round-trips through the sidecar."""
+    def test_an_owner_id_is_a_usable_record_owner(self):
+        """Whatever the id is made of, it round-trips through the record."""
         directory = Path(tempfile.mkdtemp(prefix="t52-id-"))
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
-        claim_file = directory / "001-a.md"
-        claim_file.write_text("A")
         owner = handlers._new_owner_id("run")
-        write_metadata(claim_file, owner)
-        self.assertEqual(read_metadata(claim_file).owner, owner)
+        task_record.set_claim(directory, "001-a", owner)
+        self.assertEqual(task_record.read_record(directory, "001-a").claim.owner,
+                         owner)
 
 
 class RunOwnershipTest(_RunFixture):
@@ -246,8 +250,8 @@ class RunOwnershipTest(_RunFixture):
         self.assertEqual(self._claimed_names(), [], "the run left its own claims")
         self.assertEqual(self._pending_names(),
                          ["001-a.md", "002-b.md", "003-c.md"])
-        self.assertEqual(self._sidecar_names(), [],
-                         "released claims left ownership sidecars behind")
+        self.assertEqual(self._record_names(), [],
+                         "released claims left ownership records behind")
 
     def test_a_run_cannot_release_a_foreign_owner_s_claim(self):
         """The provider gate, driven with the ids the handlers generate."""
@@ -270,22 +274,25 @@ class RunOwnershipTest(_RunFixture):
         self.assertEqual(self._claimed_names(), [])
 
     def test_a_peer_claim_survives_a_full_run(self):
-        foreign = self._plant_foreign_claim("099-peer.md")
+        self._plant_foreign_claim("099-peer.md")
         self._seed("001-a.md", "002-b.md")
         self.assertEqual(handlers.cmd_run(), 0)
         self._assert_foreign_untouched("099-peer.md")
-        self.assertEqual(metadata_path(foreign).read_text().count(FOREIGN_OWNER), 1)
+        self.assertEqual(self._record_names(), ["099-peer.json"],
+                         "a foreign claim's record was rewritten away")
+        self.assertIn(FOREIGN_OWNER,
+                      task_record.record_path(self.dir, "099-peer").read_text())
         self.assertNotIn(FOREIGN_OWNER, self._requeue_owners(),
                          "cleanup tried to move a claim it does not own")
         self.assertEqual(self._pending_names(), ["001-a.md", "002-b.md"])
 
     def test_a_pre_ownership_claim_survives_a_full_run(self):
-        """A claim with no sidecar reads unknown; an owned cleanup refuses it."""
+        """A claim with no record reads unknown; an owned cleanup refuses it."""
         (self.claimed / "098-legacy.md").write_text("pre-ownership evidence\n")
         self._seed("001-a.md")
         self.assertEqual(handlers.cmd_run(), 0)
         self.assertEqual(self._claimed_names(), ["098-legacy.md"])
-        self.assertEqual(read_metadata(self.claimed / "098-legacy.md").owner,
+        self.assertEqual(self.provider._record_owner("098-legacy"),
                          OWNER_UNKNOWN)
 
     def test_a_run_never_sweeps_the_whole_claimed_directory(self):
