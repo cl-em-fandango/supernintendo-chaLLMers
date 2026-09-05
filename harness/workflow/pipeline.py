@@ -141,7 +141,8 @@ class Pipeline:
     def __init__(self, cfg: Config, runner: SessionRunner, log=print, provider=None,
                  health_wait=wait_for_healthy_server, stand_down_check=None,
                  handoff_sync=None, sync_engine=None, placeholder_hook=None,
-                 demo_app_generator=None, final_deploy_hook=None):
+                 demo_app_generator=None, final_deploy_hook=None,
+                 stage_sync=None):
         self.cfg = cfg
         self.runner = runner
         self.log = log
@@ -151,6 +152,11 @@ class Pipeline:
         # composition root only when sync is enabled; shared with the
         # lifecycle so every write site posts through one dedup map.
         self.handoff_sync = handoff_sync
+        # Journey spec FR-1/FR-5: the stage-completion comment callable
+        # (poster dedup + retry queue, *no* inbound sync pass). Built by
+        # the composition root only when GitHub is configured; None makes
+        # every stage-comment site a no-op (FR-0.1).
+        self.stage_sync = stage_sync
         # The GitHub sync dispatcher (spec FR-3), built once by the
         # composition root and shared with the lifecycle hook sites; None
         # when GitHub is unconfigured, which makes every hook a no-op
@@ -407,6 +413,7 @@ class Pipeline:
                     outcome = self._stage_failed(task.id, stage, task_dir)
                     return outcome
                 self.lifecycle.checkpoint(task.id, stage)
+                self._post_stage_completion(ctx, stage)
             outcome = self.stage_holistic(ctx)
             return outcome
         except OverContextBudget as e:
@@ -464,6 +471,29 @@ class Pipeline:
             return outcome
         finally:
             self._persist_journey_readout(task.id, task_dir)
+
+    def _post_stage_completion(self, ctx: StageContext,
+                               stage: CheckpointStage) -> None:
+        """Journey spec FR-1: one comment per stage checkpoint, right after
+        the checkpoint landed.
+
+        Posts through the opaque `stage_sync` callable (same dedup map and
+        retry queue as every other comment, no inbound pass — FR-5/NFR-4),
+        so with GitHub unconfigured (`stage_sync is None`) this is a no-op
+        and no API call is reachable (FR-0.1). A summary that cannot be
+        composed must never cost a checkpointed stage its comment or the
+        task its run, so composition falls back to the bare outcome line;
+        posting failures stay inside the wrapper (NFR-1).
+        """
+        if self.stage_sync is None:
+            return
+        try:
+            summary = stage_completion_summary(stage, ctx.task_dir)
+        except Exception as e:  # noqa: BLE001 - a comment never breaks a stage
+            self.log(f"  ⚠ could not compose the {stage.value} stage "
+                     f"summary: {e} — posting the bare outcome")
+            summary = STAGE_SUMMARY_OUTCOME_PASS
+        self.stage_sync(ctx.task_id, stage.value, summary)
 
     def _deploy_demo_placeholder(self, task: Task, state, workdir: Path) -> None:
         """Demo spec FR-2.1/FR-6.2: the placeholder fires before `stage_spec`
@@ -968,6 +998,39 @@ def file_session_output(r: SessionResult, dest: Path) -> None:
         shutil.copy(src, dest)
     else:
         dest.write_text(r.output)
+
+
+# The outcome line every stage-completion summary opens with. A stage
+# function only returns True when its last required verdict passed, so
+# "pass" is the honest outcome at every checkpoint site (journey FR-4).
+STAGE_SUMMARY_OUTCOME_PASS = "outcome: pass"
+
+
+def stage_completion_summary(stage: CheckpointStage, task_dir: Path) -> str:
+    """The 2–6 line factual summary of a completed stage (journey FR-4).
+
+    Composed by the harness from the stage's durable artifacts on disk —
+    verdict plus artifact counts — never from LLM output, transcripts or
+    file contents. A missing artifact degrades to a count-free line
+    rather than raising: the comment describes the checkpoint, and the
+    checkpoint is the fact that matters.
+    """
+    lines = [STAGE_SUMMARY_OUTCOME_PASS]
+    if stage is CheckpointStage.SPEC:
+        lines.append("spec written to artifacts/spec.md"
+                     if (task_dir / "artifacts" / "spec.md").exists()
+                     else "spec approved")
+    elif stage is CheckpointStage.FEASIBILITY:
+        lines.append("feasibility: feasible")
+    elif stage is CheckpointStage.SLICING:
+        planned = len(_parse_slices(task_dir / "artifacts" / "slices.md"))
+        lines.append(f"{planned} slices planned" if planned
+                     else "slice plan written to artifacts/slices.md")
+    elif stage is CheckpointStage.SLICES:
+        completed = len(_parse_slices(task_dir / "artifacts" / "slices.md"))
+        lines.append(f"{completed} slices completed" if completed
+                     else "all slices reviewed")
+    return "\n".join(lines)
 
 
 def _stage_value(stage: Stage | str) -> str:

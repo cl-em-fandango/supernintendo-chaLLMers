@@ -37,6 +37,13 @@ from .sync_inbound import find_task
 # in one issue's comment map while keeping sidecars readable.
 EVENT_ID_DIGEST_CHARS = 16
 
+# Hard cap on one comment body (journey spec FR-4). The header always
+# survives; a longer body truncates the prose, never the header.
+MAX_COMMENT_CHARS = 2000
+
+# Appended to prose cut by `_truncated_prose` so a reader sees the cut.
+TRUNCATION_MARKER = "…"
+
 
 @dataclass
 class HandoffEvent:
@@ -77,8 +84,30 @@ def _context_line(event: HandoffEvent) -> str:
 
 
 def comment_body(event: HandoffEvent) -> str:
-    """The FR-2.5 comment: bold stage header, context line, verbatim prose."""
-    return f"**[{event.stage}]** {_context_line(event)}\n\n{event.prose}"
+    """The FR-2.5 comment: bold stage header, context line, verbatim prose.
+
+    Prose is verbatim while the whole body fits `MAX_COMMENT_CHARS`; a
+    longer body keeps the header intact and truncates the prose with a
+    marker (journey spec FR-4). The event id still rides on the *full*
+    prose, so truncation never blurs dedup identity.
+    """
+    header = f"**[{event.stage}]** {_context_line(event)}"
+    body = f"{header}\n\n{event.prose}"
+    if len(body) <= MAX_COMMENT_CHARS:
+        return body
+    budget = MAX_COMMENT_CHARS - len(header) - 2
+    return f"{header}\n\n{_truncated_prose(event.prose, budget)}"
+
+
+def _truncated_prose(prose: str, budget: int) -> str:
+    """`prose` cut to at most `budget` characters, marker included.
+
+    A budget too small to hold marker plus any text drops the prose
+    entirely — the header is what the reader needs to place the comment,
+    and it is never shortened."""
+    if budget <= len(TRUNCATION_MARKER):
+        return ""
+    return prose[:budget - len(TRUNCATION_MARKER)].rstrip() + TRUNCATION_MARKER
 
 
 class HandoffCommentPoster:

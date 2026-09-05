@@ -11,7 +11,7 @@ from .core.stats import StatsStore
 from .core.stand_down import StandDownWatcher
 from .core.sync import SyncEngine
 from .core.sync_comments import HandoffCommentPoster
-from .core.sync_handoff_hook import HandoffSyncHook
+from .core.sync_handoff_hook import HandoffSyncHook, StageCommentSync
 from .workflow.demo_generate import (
     DemoAppGenerationHook,
     DemoGenerationHookParams,
@@ -61,6 +61,7 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
         log=log,
     )
     handoff_sync = None
+    stage_sync = None
     sync_engine = None
     if cfg.github_sync_enabled:
         # Spec FR-2.5/FR-3: one poster and one engine shared by the
@@ -77,6 +78,12 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
         # the poster *and* run the targeted + inbound pass through this
         # hook, which shares the engine's own poster (one dedup map).
         handoff_sync = HandoffSyncHook(sync_engine, poster, log=log)
+        # Journey spec FR-5: stage-completion comments post through this
+        # dedicated callable — same poster (one dedup map, one retry
+        # queue) but no engine, so a stage completion can never trigger
+        # an inbound sync pass (NFR-4). The pipeline takes it at its
+        # checkpoint sites.
+        stage_sync = StageCommentSync(poster, log=log)
     placeholder_hook = None
     if sync_engine is not None:
         # Demo spec FR-6.2: the placeholder hook is wired only when the
@@ -97,6 +104,7 @@ def build(cfg_path: Path | None = None, repo: str | Path | None = None) -> tuple
     pipeline = Pipeline(cfg, runner, log=log, provider=provider,
                         stand_down_check=stand_down,
                         handoff_sync=handoff_sync,
+                        stage_sync=stage_sync,
                         sync_engine=sync_engine,
                         placeholder_hook=placeholder_hook,
                         demo_app_generator=demo_app_generator,
@@ -136,6 +144,21 @@ def build_handoff_sync(engine, log=None):
                            log=log if log is not None else engine.log)
 
 
+def build_stage_sync(engine, log=None) -> StageCommentSync | None:
+    """Wrap a dispatcher's poster in the stage-comment callable (FR-5).
+
+    Returns None when there is no engine — GitHub unconfigured — which
+    keeps every stage-completion hook site a no-op (FR-0.1, NFR-2). The
+    wrapper takes only the engine's own poster, never the engine: dedup
+    and the failed-post retry queue stay shared with every other comment
+    path, and no inbound sync pass is reachable through it (NFR-4).
+    """
+    if engine is None:
+        return None
+    return StageCommentSync(engine.comment_poster,
+                            log=log if log is not None else engine.log)
+
+
 def build_placeholder_hook(cfg, api=None, log=None) -> DemoPlaceholderHook | None:
     """Build the pre-spec placeholder deploy hook (demo spec FR-2, FR-6.2).
 
@@ -156,7 +179,7 @@ def build_placeholder_hook(cfg, api=None, log=None) -> DemoPlaceholderHook | Non
     params = PlaceholderDeployParams(
         queue_dir=cfg.queue_dir,
         apps_dir=cfg.demo.apps_dir,
-        harness_repo=cfg.repo_dir,
+        harness_repo=cfg.target_codebase_dir or cfg.repo_dir,
         deploy_dir=cfg.demo.deploy_dir,
         deploy_branch=cfg.demo.deploy_branch,
         trunk_branch=cfg.trunk_branch,
@@ -212,7 +235,7 @@ def build_final_deploy_hook(cfg, api=None,
     params = FinalDeployParams(
         queue_dir=cfg.queue_dir,
         apps_dir=cfg.demo.apps_dir,
-        harness_repo=cfg.repo_dir,
+        harness_repo=cfg.target_codebase_dir or cfg.repo_dir,
         deploy_dir=cfg.demo.deploy_dir,
         deploy_branch=cfg.demo.deploy_branch,
         trunk_branch=cfg.trunk_branch,

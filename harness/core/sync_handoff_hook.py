@@ -1,4 +1,9 @@
-"""The handoff sync hook every handoff write site calls (spec FR-3, NFR-1).
+"""The sync hooks that post handoff/stage comments (spec FR-3, NFR-1, FR-5).
+
+`HandoffSyncHook` (below) and `StageCommentSync` (bottom) are the two
+opaque callables the composition root wires over the handoff-comment
+poster; the journey spec's stage-completion sites use the latter, which
+shares the poster's dedup map and retry queue but never runs a pass.
 
 Slice 6 put the handoff-comment poster at the three write sites
 (`continuation.write_note`, the `task_lifecycle` `Handoff` section, and the
@@ -79,3 +84,32 @@ class HandoffSyncHook:
                      f"{type(exc).__name__}: {exc}")
             return
         self.log(report.summary_line())
+
+
+class StageCommentSync:
+    """Post a stage-completion comment; never runs an inbound sync pass.
+
+    The handoff hook above posts a comment *and* syncs the in-flight task;
+    a stage completion must not trigger a full pass per stage (journey
+    spec FR-5, NFR-4), so this wrapper holds only the poster — the same
+    `comment_ids` dedup map and the same failed-post retry queue — and no
+    engine at all, which makes every sync-engine method unreachable
+    through it. `__call__` takes the same primitive signature as the
+    handoff hook, so workflow modules keep the sync opaque
+    (CODING_STANDARDS §4), and never raises (NFR-1): the poster swallows
+    and queues its own failed posts, and the guard here covers a broken
+    poster object itself.
+    """
+
+    def __init__(self, poster, log: Callable[[str], None] = print):
+        self.poster = poster
+        self.log = log
+
+    def __call__(self, task_id: str, stage: str, prose: str,
+                 slice_id: str | None = None,
+                 iteration: int | None = None) -> None:
+        try:
+            self.poster(task_id, stage, prose, slice_id, iteration)
+        except Exception as exc:  # noqa: BLE001 - NFR-1: a comment never breaks a stage
+            self.log(f"  ⚠ github stage comment failed: "
+                     f"{type(exc).__name__}: {exc}")
