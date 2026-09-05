@@ -33,6 +33,10 @@
 
     var game = new VT.Game.Game(new VT.Game.GameOptions());
     VT.Input.attachKeyboard(game);
+    VT.MobileControls.attachMobileControls(
+      game,
+      document.querySelector('.mobile-controls')
+    );
     var newGameButton = VT.NewGameButton.attachNewGameButton(
       game,
       newGameButtonElement

@@ -33,6 +33,16 @@
 
     <main class="playfield-column">
       <canvas id="playfield" width="300" height="600"></canvas>
+      <section class="mobile-controls" aria-label="Touch controls">
+        <button type="button" data-action="moveLeft" aria-label="Move left">←</button>
+        <button type="button" data-action="rotateCCW" aria-label="Rotate counter-clockwise">↺</button>
+        <button type="button" data-action="rotateCW" aria-label="Rotate clockwise">↻</button>
+        <button type="button" data-action="moveRight" aria-label="Move right">→</button>
+        <button type="button" data-action="softDrop" aria-label="Soft drop">↓</button>
+        <button type="button" data-action="hardDrop" aria-label="Hard drop">Drop</button>
+        <button type="button" data-action="hold" aria-label="Hold piece">Hold</button>
+        <button type="button" data-action="togglePause" aria-label="Pause game">Pause</button>
+      </section>
       <!-- FR-18: the game-over screen's only affordance. Hidden until the
            taunt appears; activating it leaves the page (no restart). -->
       <button id="new-game" class="new-game-button" type="button" hidden>
@@ -68,6 +78,7 @@
   <script src="js/new_game_button.js"></script>
   <script src="js/render.js"></script>
   <script src="js/input.js"></script>
+  <script src="js/mobile_controls.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
