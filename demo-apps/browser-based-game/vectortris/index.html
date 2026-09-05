@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vectortris</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+
+    <aside class="hud">
+      <section class="hud-panel">
+        <h2 class="hud-label">Score</h2>
+        <p class="hud-value" id="hud-score">0</p>
+      </section>
+      <section class="hud-panel">
+        <h2 class="hud-label">Level</h2>
+        <p class="hud-value" id="hud-level">1</p>
+      </section>
+      <section class="hud-panel">
+        <h2 class="hud-label">Lines</h2>
+        <p class="hud-value" id="hud-lines">0</p>
+      </section>
+      <section class="hud-panel">
+        <h2 class="hud-label">Next</h2>
+        <canvas id="next-panel" class="piece-panel" width="120" height="80"></canvas>
+      </section>
+      <section class="hud-panel">
+        <h2 class="hud-label">Hold</h2>
+        <canvas id="hold-panel" class="piece-panel" width="120" height="80"></canvas>
+      </section>
+    </aside>
+
+    <main class="playfield-column">
+      <canvas id="playfield" width="300" height="600"></canvas>
+      <!-- FR-18: the game-over screen's only affordance. Hidden until the
+           taunt appears; activating it leaves the page (no restart). -->
+      <button id="new-game" class="new-game-button" type="button" hidden>
+        New Game
+      </button>
+      <p class="debug-tick" id="debug-tick"></p>
+    </main>
+
+    <aside class="legend">
+      <h2 class="legend-title">Controls</h2>
+      <dl class="legend-list">
+        <dt>Backspace / R</dt><dd>Start or restart (start screen only)</dd>
+        <dt>Enter</dt><dd>Confirm focused control</dd>
+        <dt>&larr; / &rarr;</dt><dd>Move 1 cell horizontally</dd>
+        <dt>&darr;</dt><dd>Soft drop</dd>
+        <dt>&uarr; / X</dt><dd>Rotate clockwise</dd>
+        <dt>Z / Ctrl</dt><dd>Rotate counter-clockwise</dd>
+        <dt>Space</dt><dd>Hard drop</dd>
+        <dt>C / Shift</dt><dd>Hold piece</dd>
+        <dt>P / Esc</dt><dd>Toggle pause</dd>
+      </dl>
+    </aside>
+
+  </div>
+
+  <script src="js/constants.js"></script>
+  <script src="js/rotation.js"></script>
+  <script src="js/board.js"></script>
+  <script src="js/pieces.js"></script>
+  <script src="js/rng.js"></script>
+  <script src="js/explosion.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/new_game_button.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

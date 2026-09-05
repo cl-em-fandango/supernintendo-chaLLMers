@@ -1,0 +1,150 @@
+/* style.css — layout and dark theme for the Vectortris page skeleton.
+ * Sized to fit a 1024x768 viewport with no scrolling (NFR-02). */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden; /* the page must never scroll (AC-09 groundwork) */
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: monospace;
+}
+
+.layout {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px;
+  height: 100%;
+}
+
+/* HUD column: Score / Level / Lines / Next / Hold */
+
+.hud {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 140px;
+}
+
+.hud-panel {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.hud-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #8b949e;
+}
+
+.hud-value {
+  font-size: 20px;
+  margin-top: 4px;
+}
+
+.piece-panel {
+  display: block;
+  width: 120px;
+  height: 80px;
+  margin-top: 6px;
+}
+
+/* Playfield */
+
+.playfield-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The CSS box may be smaller than the 300x600 logical drawing space on a
+ * short viewport; js/render.js fitCanvas() rescales the drawing to it on
+ * boot and on every resize (EC-10, NFR-02). */
+#playfield {
+  display: block;
+  width: min(300px, 42vh);  /* 10 columns x 30px (js/board.js) */
+  height: min(600px, 84vh); /* 20 rows x 30px, same 1:2 aspect */
+}
+
+/* FR-18: the "New Game" button — the only game-over affordance. It leaves
+ * the page instead of restarting, so it is styled as the way out. */
+.new-game-button {
+  display: block;
+  align-self: center;
+  margin-top: 8px;
+  padding: 8px 22px;
+  font: inherit;
+  font-size: 16px;
+  letter-spacing: 1px;
+  color: #e6edf3;
+  background: #3a0d16;
+  border: 2px solid #ff1744;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.new-game-button[hidden] {
+  display: none;
+}
+
+.new-game-button:hover {
+  background: #54121f;
+}
+
+/* Focus must stay obvious: the keyboard path to the redirect is Enter/Space
+ * on the focused button (FR-18). */
+.new-game-button:focus {
+  outline: 3px solid #ffd600;
+  outline-offset: 2px;
+}
+
+.debug-tick {
+  font-size: 11px;
+  color: #8b949e;
+}
+
+/* Control legend (FR-05 / FR-21) */
+
+.legend {
+  width: 240px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+.legend-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #8b949e;
+  margin-bottom: 8px;
+}
+
+.legend-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 10px;
+  row-gap: 4px;
+  font-size: 12px;
+}
+
+.legend-list dt {
+  color: #e6edf3;
+  white-space: nowrap;
+}
+
+.legend-list dd {
+  color: #8b949e;
+}
