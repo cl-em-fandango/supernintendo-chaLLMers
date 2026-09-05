@@ -77,6 +77,30 @@ body {
   height: min(600px, 84vh); /* 20 rows x 30px, same 1:2 aspect */
 }
 
+.mobile-controls {
+  display: none;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  touch-action: manipulation;
+}
+
+.mobile-controls button {
+  min-height: 44px;
+  padding: 6px;
+  color: #e6edf3;
+  background: #21262d;
+  border: 1px solid #8b949e;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 14px;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.mobile-controls button:active {
+  background: #3b434d;
+}
+
 /* FR-18: the "New Game" button — the only game-over affordance. It leaves
  * the page instead of restarting, so it is styled as the way out. */
 .new-game-button {
@@ -147,4 +171,38 @@ body {
 
 .legend-list dd {
   color: #8b949e;
+}
+
+@media (max-width: 700px) {
+  html,
+  body {
+    overflow: auto;
+  }
+
+  .layout {
+    align-items: center;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .hud,
+  .legend {
+    display: none;
+  }
+
+  .playfield-column {
+    width: min(100%, 360px);
+  }
+
+  #playfield {
+    width: min(300px, 82vw);
+    height: auto;
+    aspect-ratio: 1 / 2;
+    align-self: center;
+  }
+
+  .mobile-controls {
+    display: grid;
+  }
 }
