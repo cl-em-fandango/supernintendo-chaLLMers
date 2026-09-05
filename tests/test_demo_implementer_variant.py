@@ -250,7 +250,7 @@ class PipelineBranchTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.work_dir = Path(self._tmp.name)
         self.cfg = Config(
-            work_dir=self.work_dir, token_budget=100_000,
+            harness_execution_and_queue_dir=self.work_dir, token_budget=100_000,
             max_spec_kickbacks=3, max_slice_implement=5,
             max_slice_tech_review=5, max_slice_func_review=5,
             max_slice_check_loops=3, autonomous_queue_target=5,
@@ -258,7 +258,7 @@ class PipelineBranchTest(unittest.TestCase):
             directory_provider={},
             models={"technicalWriter": "m", "implementer": "m",
                     "assessor": "m"},
-            model_context_map={}, repo_dir=self.work_dir / "repo")
+            model_context_map={}, target_codebase_dir=self.work_dir / "repo")
         self.messages: list[str] = []
 
     def pipeline(self, generator):
@@ -425,7 +425,7 @@ class CompositionHookTest(unittest.TestCase):
 class FactoryGatingTest(unittest.TestCase):
     def _cfg(self, enabled: bool) -> Config:
         cfg = Config(
-            work_dir=self.root, token_budget=100_000,
+            harness_execution_and_queue_dir=self.root, token_budget=100_000,
             max_spec_kickbacks=3, max_slice_implement=5,
             max_slice_tech_review=5, max_slice_func_review=5,
             max_slice_check_loops=3, autonomous_queue_target=5,
@@ -433,7 +433,7 @@ class FactoryGatingTest(unittest.TestCase):
             directory_provider={},
             models={"technicalWriter": "m", "implementer": "m",
                     "assessor": "m"},
-            model_context_map={}, repo_dir=self.root / "repo",
+            model_context_map={}, target_codebase_dir=self.root / "repo",
             raw={"demo": {"enabled": enabled}})
         return cfg
 

@@ -30,7 +30,7 @@ from tests.test_pipeline_resume import FakeRunner, _make_repo
 
 def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
     return Config(
-        work_dir=queue_dir.parent,
+        harness_execution_and_queue_dir=queue_dir.parent,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -43,7 +43,7 @@ def _cfg(queue_dir: Path, repo: Path | None = None) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
-        repo_dir=repo,
+        target_codebase_dir=repo,
     )
 
 

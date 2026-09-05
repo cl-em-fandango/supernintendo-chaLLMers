@@ -13,7 +13,7 @@ survives a process restart and never reuses a number already on disk.
 
 Sessions with no task association (the autonomous loop, `task_id=None`) have
 no task dir and no journey to link from. They are recorded in a work-dir-level
-pool, `<work_dir>/artifacts/sessions/`, in the same format, named with a
+pool, `<harnessExecutionAndQueueDir>/artifacts/sessions/`, in the same format, named with a
 sortable UTC timestamp prefix instead of a task sequence number.
 """
 from __future__ import annotations

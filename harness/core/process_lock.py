@@ -2,10 +2,10 @@
 
 Two locks share this mechanism:
 
-* `<workDir>/run.lock` — taken by a harness run command for its whole life;
+* `<harnessExecutionAndQueueDir>/run.lock` — taken by a harness run command for its whole life;
   the daemon reads it to decide whether a harness is already running, and a
   hand-started run blocks spawning equally (FR-4.3).
-* `<workDir>/syncd.lock` — the daemon's own single-instance lock; a second
+* `<harnessExecutionAndQueueDir>/syncd.lock` — the daemon's own single-instance lock; a second
   `harness syncd` exits non-zero while a live daemon holds it (AC-10).
 
 A lock is a file whose only content is the holder's PID. A lock whose PID is

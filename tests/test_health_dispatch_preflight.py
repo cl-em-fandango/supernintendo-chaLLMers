@@ -50,7 +50,7 @@ def _git(cwd: Path, *args: str) -> None:
 
 def _cfg(work_dir: Path, raw: dict | None = None) -> Config:
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -228,7 +228,7 @@ class ProcessCatchSiteTest(unittest.TestCase):
             (self.queue_dir / sub).mkdir(parents=True)
         self.repo = self._make_repo(self.work_dir / "repo")
         self.cfg = _cfg(self.work_dir)
-        self.cfg.repo_dir = self.repo
+        self.cfg.target_codebase_dir = self.repo
         self.lines: list[str] = []
         self.runner = RecordingRunner()
 

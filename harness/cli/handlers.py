@@ -120,10 +120,10 @@ def _interrupt_takes_work_away(cfg, log) -> bool:
     transitioned — only no-arg `resume` or quick-mode completion may do that.
     A corrupt file reads fail-safe as an active stand-down (FR-5.3).
 
-    A cfg without a `work_dir` (a partial wiring) has no state file to read,
+    A cfg without a `harness_execution_and_queue_dir` (a partial wiring) has no state file to read,
     so it has no interrupt — same defensive read as `_requeue_stale_enabled`.
     """
-    work_dir = getattr(cfg, "work_dir", None)
+    work_dir = getattr(cfg, "harness_execution_and_queue_dir", None)
     if work_dir is None:
         return False
     status = read_interrupt(work_dir, log=log)
@@ -144,24 +144,24 @@ def _stand_down_at_boundary(cfg, log) -> bool:
     no parking, no crash-retry, tasks stay in `active/` with their
     checkpoints and claims (FR-6.2/FR-6.4/FR-6.5).
 
-    A cfg without a `work_dir` (a partial wiring) has no state file to read,
+    A cfg without a `harness_execution_and_queue_dir` (a partial wiring) has no state file to read,
     so it has no interrupt — same defensive read as `_requeue_stale_enabled`.
     """
-    return StandDownWatcher(getattr(cfg, "work_dir", None), log=log)()
+    return StandDownWatcher(getattr(cfg, "harness_execution_and_queue_dir", None), log=log)()
 
 
 @contextlib.contextmanager
 def _run_lock(cfg, log):
-    """Hold `<workDir>/run.lock` for the life of a run command (FR-4.3).
+    """Hold `<harnessExecutionAndQueueDir>/run.lock` for the life of a run command (FR-4.3).
 
     The daemon reads this lock before spawning, so a harness run started by
     hand blocks spawning equally. Yields False — without holding anything —
     when a live process already holds the lock; the caller returns non-zero.
-    A cfg without a `work_dir` (a partial wiring, same defensive read as
+    A cfg without a `harness_execution_and_queue_dir` (a partial wiring, same defensive read as
     `_requeue_stale_enabled`) has no lock to take and yields True: the run
     proceeds unrecorded rather than dying on an absent attribute.
     """
-    work_dir = getattr(cfg, "work_dir", None)
+    work_dir = getattr(cfg, "harness_execution_and_queue_dir", None)
     if work_dir is None:
         yield True
         return
@@ -269,7 +269,7 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
                 log("queue empty -> entering autonomous mode")
                 gen = AutonomousGenerator(cfg, runner, provider, log=log,
                                           sync_engine=getattr(pipeline, "sync_engine", None))
-                target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+                target_repo = getattr(cfg, "target_codebase_dir", None) or Path(__file__).resolve().parent.parent
                 gen.run(target_repo,
                         stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
             return 0
@@ -585,7 +585,7 @@ def cmd_autonomous(repo: str | Path | None = None) -> int:
         runner.validate_models()
     gen = AutonomousGenerator(cfg, runner, provider, log=log,
                               sync_engine=getattr(pipeline, "sync_engine", None))
-    target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+    target_repo = getattr(cfg, "target_codebase_dir", None) or Path(__file__).resolve().parent.parent
     # The generator owns the per-attempt boundary: it is what spawns the
     # suggest/review `pi` sessions, so the stand-down check travels with the
     # loop rather than only guarding its single call site.
@@ -642,7 +642,10 @@ def _interrupt_status_line(cfg, log) -> None:
     through `read_interrupt`, which sends its recovery warning to `log`, so
     the surface shows the fail-safe record plus the hint (spec FR-5.3).
     """
-    status = read_interrupt(cfg.work_dir, log=log)
+    work_dir = getattr(cfg, "harness_execution_and_queue_dir", None)
+    if work_dir is None:
+        return
+    status = read_interrupt(work_dir, log=log)
     if status is None:
         return
     age = _format_interrupt_age(interrupt_age_seconds(status))
@@ -956,10 +959,14 @@ def cmd_syncd() -> int:
         # (FR-4.2a).
         sync = engine.on_stage_change
     loop = SyncdLoop(SyncdParams(
-        work_dir=cfg.work_dir,
+        work_dir=cfg.harness_execution_and_queue_dir,
         sync_interval_s=cfg.github_sync_interval_s,
         sync=sync,
-        spawn=spawn_harness_run_task_loop,
+        # The child's stderr (tracebacks included) lands in a dedicated
+        # append-only log instead of DEVNULL, so a crash that happens
+        # before the child's own log sink is alive is still visible.
+        spawn=lambda: spawn_harness_run_task_loop(
+            spawn_log=cfg.logs_dir / "spawn.log"),
         log=log))
     _register_syncd_signals(loop, log)
     return loop.run()
@@ -1115,12 +1122,12 @@ def cmd_interrupt(stand_down: bool = False, no_wait: bool = False,
                                     timeout=timeout,
                                     poll_interval=poll_interval)
     cfg, _store, _runner, _provider, _pipeline, log = build()
-    existing = read_interrupt(cfg.work_dir, log=log)
+    existing = read_interrupt(cfg.harness_execution_and_queue_dir, log=log)
     if existing is not None:
         log(f"interrupt already active (mode={existing.mode.name} "
             f"state={existing.state.name}); request unchanged")
         return 0
-    write_interrupt(cfg.work_dir, InterruptMode.STAND_DOWN,
+    write_interrupt(cfg.harness_execution_and_queue_dir, InterruptMode.STAND_DOWN,
                     InterruptState.REQUESTED, requester_pid=os.getpid())
     log("interrupt requested: harness will stand down at the next "
         "session boundary")
@@ -1128,7 +1135,7 @@ def cmd_interrupt(stand_down: bool = False, no_wait: bool = False,
         return 0
     wait_s = (cfg.session_timeout + INTERRUPT_WAIT_EXTRA_S
               if timeout is None else float(timeout))
-    result = wait_for_paused(cfg.work_dir, wait_s,
+    result = wait_for_paused(cfg.harness_execution_and_queue_dir, wait_s,
                              poll_interval=poll_interval)
     if result is StandDownWaitResult.PAUSED:
         print(STAND_DOWN_COMPLETE)
@@ -1221,23 +1228,23 @@ def _cmd_interrupt_quick(model: str | None, prompt: str | None,
             "for an interactive quick session, or pass --prompt TEXT for a "
             "one-shot session")
         return 1
-    existing = read_interrupt(cfg.work_dir, log=log)
+    existing = read_interrupt(cfg.harness_execution_and_queue_dir, log=log)
     if existing is not None:
         log(f"interrupt: quick mode refused — an interrupt is already active "
             f"(mode={existing.mode.name} state={existing.state.name}); "
             "recover with `harness.py resume`")
         return 1
-    write_interrupt(cfg.work_dir, InterruptMode.QUICK,
+    write_interrupt(cfg.harness_execution_and_queue_dir, InterruptMode.QUICK,
                     InterruptState.REQUESTED, requester_pid=os.getpid())
     log("interrupt requested (quick): harness will pause at the next "
         "session boundary")
     wait_s = (cfg.session_timeout + INTERRUPT_WAIT_EXTRA_S
               if timeout is None else float(timeout))
-    result = wait_for_paused(cfg.work_dir, wait_s,
+    result = wait_for_paused(cfg.harness_execution_and_queue_dir, wait_s,
                              poll_interval=poll_interval)
     if result is StandDownWaitResult.TIMED_OUT:
         return _cancel_quick_request(
-            cfg.work_dir, log,
+            cfg.harness_execution_and_queue_dir, log,
             f"timed out after {wait_s:.0f}s waiting for the harness to "
             "pause; quick request cancelled")
     if result is StandDownWaitResult.CLEARED:
@@ -1245,11 +1252,11 @@ def _cmd_interrupt_quick(model: str | None, prompt: str | None,
             "(harness.py resume?); no session was started")
         return 1
     rc = run_quick_pi_session(model=resolved_model,
-                              workdir=getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path.cwd(),
+                              workdir=getattr(cfg, "target_codebase_dir", None) or Path.cwd(),
                               prompt=prompt)
     log(f"quick session exited (rc={rc})")
     log(QUICK_RESUMING_LOG)
-    clear_interrupt(cfg.work_dir)
+    clear_interrupt(cfg.harness_execution_and_queue_dir)
     print("quick session finished — the harness resumes at its next boundary")
     return 0
 
@@ -1258,7 +1265,10 @@ def _resume_clear_interrupt(repo: str | Path | None = None) -> int:
     """No-arg `resume`: clear an active interrupt and let the run continue
     (spec FR-3.2). Idempotent: with no file, prints and exits 0."""
     cfg, _store, _runner, _provider, _pipeline, log = build(repo=repo)
-    status = read_interrupt(cfg.work_dir, log=log)
+    work_dir = getattr(cfg, "harness_execution_and_queue_dir", None)
+    if work_dir is None:
+        return
+    status = read_interrupt(work_dir, log=log)
     if status is None:
         print("no interrupt active")
         return 0
@@ -1266,7 +1276,7 @@ def _resume_clear_interrupt(repo: str | Path | None = None) -> int:
     log(f"interrupt cleared: mode={status.mode.name} "
         f"state={status.state.name} requested_at={status.requested_at} "
         f"duration={duration:.0f}s")
-    clear_interrupt(cfg.work_dir)
+    clear_interrupt(cfg.harness_execution_and_queue_dir)
     print("interrupt cleared — the harness resumes at its next boundary")
     return 0
 

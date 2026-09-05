@@ -30,7 +30,7 @@ from harness.workflow.task_lifecycle import TaskLifecycle
 def _cfg(queue_dir: Path) -> Config:
     """A Config whose `queue_dir` is `queue_dir` (queue_dir.parent == work_dir)."""
     return Config(
-        work_dir=queue_dir.parent,
+        harness_execution_and_queue_dir=queue_dir.parent,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -152,7 +152,7 @@ class QueueWorkdirGuardTest(unittest.TestCase):
 
     def test_missing_workdir_parks_without_mkdir(self):
         ghost = self.root / "not-a-repo"
-        self.cfg.repo_dir = ghost
+        self.cfg.target_codebase_dir = ghost
         status = self.pipeline.process(self._task(f"work in {ghost}\n"))
 
         self.assertEqual("parked", status)

@@ -92,8 +92,8 @@ def _cfg(work_dir: Path, continuations: int | None = None,
     if max_crash_retries is not None:
         raw["maxCrashRetries"] = max_crash_retries
     return Config(
-        work_dir=work_dir,
-        repo_dir=repo,
+        harness_execution_and_queue_dir=work_dir,
+        target_codebase_dir=repo,
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,

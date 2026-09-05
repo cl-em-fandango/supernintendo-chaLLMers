@@ -532,7 +532,7 @@ class TaskLifecycle:
         Uses `cfg.target_codebase_dir` (configured in config.json as targetCodebaseDir
         or passed via CLI --repo). Falls back to `task_dir` (which the queue guard
         rejects) if no target repo is configured. Never extracts paths from markdown."""
-        target = getattr(self.cfg, "target_codebase_dir", None) or getattr(self.cfg, "repo_dir", None)
+        target = self.cfg.target_codebase_dir
         if target is not None:
             return target
         return task_dir

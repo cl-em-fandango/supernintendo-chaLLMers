@@ -168,13 +168,13 @@ class SessionTimeoutPropagationTest(unittest.TestCase):
         self.work_repo.mkdir()
 
     def _cfg(self, raw_extra: dict) -> Config:
-        raw = {"workDir": str(self.work_dir),
+        raw = {"harnessExecutionAndQueueDir": str(self.work_dir),
                "maxPromptTokens": 60_000,
                "models": {"technicalWriter": "m", "implementer": "m",
                           "assessor": "m"}}
         raw.update(raw_extra)
         return Config(
-            work_dir=self.work_dir,
+            harness_execution_and_queue_dir=self.work_dir,
             token_budget=60_000,
             max_spec_kickbacks=3,
             max_slice_implement=5,

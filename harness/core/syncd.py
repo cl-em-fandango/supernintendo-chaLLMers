@@ -14,7 +14,7 @@ Everything else is policy the caller injects through `SyncdParams`: the
 sync callable, the spawn callable, the sleep, the pending check. Tests drive
 the loop in-process with fakes (NFR-5); nothing here imports the pipeline.
 
-Single instance (FR-4.1, AC-10): `<workDir>/syncd.lock` with dead-PID stale
+Single instance (FR-4.1, AC-10): `<harnessExecutionAndQueueDir>/syncd.lock` with dead-PID stale
 recovery (AC-11). Failure backoff (FR-4.5): at N consecutive failed sync
 passes the interval backs off 5x and exactly one warning is logged per
 backoff *entry*; a successful pass resets both the counter and the interval.

@@ -81,7 +81,7 @@ def _cfg(work_dir: Path, target: int) -> Config:
     """A config for the generator: only the queue target and a model pool are
     read on the counting path, but the dataclass demands the whole shape."""
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,

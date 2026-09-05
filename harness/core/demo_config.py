@@ -53,7 +53,7 @@ def parse_demo_config(raw: dict[str, Any], work_dir: Path) -> DemoConfig:
     """Build a `DemoConfig` from the `demo` section of a raw config dict.
 
     A missing or empty section yields all defaults; `deployDir` defaults to
-    `<work_dir>/demo-deploy` so the deploy checkout never lands in the
+    `<harnessExecutionAndQueueDir>/demo-deploy` so the deploy checkout never lands in the
     harness workdir's task areas.
     """
     section = raw.get("demo") or {}

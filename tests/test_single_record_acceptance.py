@@ -98,8 +98,8 @@ class _QueueRoot(unittest.TestCase):
         for sub in QUEUE_LOCATIONS_ALL:
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work),
-                                        "repoDir": str(self.work)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work),
+                                        "targetCodebaseDir": str(self.work)}))
         self.cfg = load(cfg_path)
         self.messages: list[str] = []
         self.provider = DirectoryTaskProvider(self.queue / "pending",

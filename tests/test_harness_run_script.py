@@ -218,7 +218,7 @@ class TestDryRunOverrides(_HarnessRunScriptBase):
 
     def test_work_dir_resolved_from_config_when_unset(self) -> None:
         config = self.base / "config.json"
-        config.write_text(json.dumps({"workDir": str(self.workdir)}))
+        config.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.workdir)}))
         overrides = {
             "HARNESS_CONFIG": str(config),
             "WORK_DIR": "",

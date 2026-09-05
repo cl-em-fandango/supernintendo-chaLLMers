@@ -309,7 +309,7 @@ class EphemeralContainer:
         imp = imp_model or self.imp_model
         a = assessor or self.assessor
         cfg_dict = {
-            "workDir": "/workspace",
+            "harnessExecutionAndQueueDir": "/workspace",
             "logDir": "/workspace/logs",
             "statsDir": "/workspace/stats",
             "queueDir": "/workspace/queue",

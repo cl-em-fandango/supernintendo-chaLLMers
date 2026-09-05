@@ -20,7 +20,7 @@ from harness.workflow.task_lifecycle import TaskLifecycle, TaskState, write_atom
 
 def _cfg(queue_dir: Path) -> Config:
     return Config(
-        work_dir=queue_dir.parent,
+        harness_execution_and_queue_dir=queue_dir.parent,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -179,7 +179,7 @@ class TaskLifecycleCheckpointTest(unittest.TestCase):
     def test_resolve_workdir_uses_config_repo_dir(self):
         repo = self.queue_dir / "repo"
         (repo / ".git").mkdir(parents=True)
-        self.lifecycle.cfg.repo_dir = repo
+        self.lifecycle.cfg.target_codebase_dir = repo
         td = self._intake(body="# t1\n\nbody")
         self.assertEqual(self.lifecycle.resolve_workdir(td), repo)
 

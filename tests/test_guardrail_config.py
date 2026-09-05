@@ -44,7 +44,7 @@ class GuardrailConfigDefaultsTest(unittest.TestCase):
     """A config without the new keys still answers every guardrail accessor."""
 
     def setUp(self):
-        self.cfg = _load({"workDir": "/tmp/unused-by-this-test"})
+        self.cfg = _load({"harnessExecutionAndQueueDir": "/tmp/unused-by-this-test"})
 
     def test_missing_keys_fall_back_to_spec_defaults(self):
         self.assertEqual(self.cfg.session_timeout, DEFAULT_SESSION_TIMEOUT_S)
@@ -72,7 +72,7 @@ class GuardrailConfigOverrideTest(unittest.TestCase):
 
     def setUp(self):
         self.cfg = _load({
-            "workDir": "/tmp/unused-by-this-test",
+            "harnessExecutionAndQueueDir": "/tmp/unused-by-this-test",
             "sessionTimeout": 7200,
             "toolTimeout": 30,
             "maxOutputBytes": 4096,

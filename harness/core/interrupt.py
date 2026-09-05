@@ -1,4 +1,4 @@
-"""The managed-interrupt state file: `<workDir>/state/interrupt.json`.
+"""The managed-interrupt state file: `<harnessExecutionAndQueueDir>/state/interrupt.json`.
 
 One file, one owner: this module owns the shape of the interrupt record and
 every read, write and delete of that file. Absence of the file means no
@@ -64,7 +64,7 @@ class InterruptStatus:
 
 
 def interrupt_path(work_dir: Path) -> Path:
-    """The one location of the state file for a given workDir."""
+    """The one location of the state file for a given harness execution and queue dir."""
     return Path(work_dir) / STATE_SUBDIR / INTERRUPT_FILENAME
 
 

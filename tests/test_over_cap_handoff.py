@@ -74,7 +74,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _cfg(work_dir: Path, repo: Path | None = None) -> Config:
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -87,7 +87,7 @@ def _cfg(work_dir: Path, repo: Path | None = None) -> Config:
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
-        repo_dir=repo,
+        target_codebase_dir=repo,
         raw={},
     )
 

@@ -270,7 +270,7 @@ class MetadataNonEnumerationTest(_QueueFixture):
         provider = DirectoryTaskProvider(self.dir / "pending",
                                          self.dir / CLAIMED_LOCATION,
                                          log=self.messages.append)
-        cfg = types.SimpleNamespace(work_dir=self.dir, queue_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir, queue_dir=self.dir,
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")
         wired = (cfg, StatsStore(cfg.stats_path), None, provider, None,
@@ -298,7 +298,7 @@ class RequeueClaimsOrphanTest(_QueueFixture):
         self.provider = DirectoryTaskProvider(
             self.dir / "pending", self.dir / CLAIMED_LOCATION,
             log=self.messages.append)
-        cfg = types.SimpleNamespace(work_dir=self.dir, queue_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir, queue_dir=self.dir,
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")
         wired = (cfg, StatsStore(cfg.stats_path), None, self.provider, None,

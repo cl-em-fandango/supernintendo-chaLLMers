@@ -26,7 +26,7 @@ mkdir -p "${TEST_DIR}"/{queue/pending,queue/claimed,queue/active,queue/done,queu
 
 cat << EOF > "${TEST_DIR}/config.json"
 {
-  "workDir": "${TEST_DIR}",
+  "harnessExecutionAndQueueDir": "${TEST_DIR}",
   "logDir": "${TEST_DIR}/logs",
   "statsDir": "${TEST_DIR}/stats",
   "tokenBudget": 100000,

@@ -35,7 +35,7 @@ from harness.workflow.task_lifecycle import TaskLifecycle
 
 def _cfg(queue_dir: Path) -> Config:
     return Config(
-        work_dir=queue_dir.parent,
+        harness_execution_and_queue_dir=queue_dir.parent,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,

@@ -231,7 +231,7 @@ class SessionRunner:
             # instead of being skipped. The log line names the pool file; a
             # failed pooled write emits its own skip-warning (FR-5 C4
             # fallback), keeps the capture, and the run continues.
-            pool_path = write_pooled_transcript(self.cfg.work_dir,
+            pool_path = write_pooled_transcript(self.cfg.harness_execution_and_queue_dir,
                                                 transcript, self.log)
             if pool_path is not None:
                 self.log(f"  · pooled transcript: {pool_path}")

@@ -77,7 +77,7 @@ STATES = (interrupt.InterruptState.REQUESTED, interrupt.InterruptState.PAUSED)
 
 
 class _TempWorkDir(unittest.TestCase):
-    """Shared temp workDir; nothing here resolves config.json."""
+    """Shared temp dir; nothing here resolves config.json."""
 
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="interrupt-b-"))
@@ -194,7 +194,7 @@ class _BoundaryFixture(unittest.TestCase):
         self.provider = DirectoryTaskProvider(self.pending, self.claimed,
                                               log=self.messages.append)
         self.pipeline = _RecordingPipeline()
-        cfg = types.SimpleNamespace(work_dir=self.dir, queue_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir, queue_dir=self.dir,
                                     logs_dir=self.dir / "logs")
         wired = (cfg, None, None, self.provider, self.pipeline,
                  lambda line="": self.messages.append(line))
@@ -424,7 +424,7 @@ class TestAutonomousBoundary(unittest.TestCase):
         work = Path(tempfile.mkdtemp(prefix="interrupt-auto-"))
         self.addCleanup(shutil.rmtree, work, ignore_errors=True)
         messages: list[str] = []
-        cfg = types.SimpleNamespace(work_dir=work, queue_dir=work,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=work, queue_dir=work,
                                     logs_dir=work / "logs")
         wired = (cfg, None, None, None, None,
                  lambda line="": messages.append(line))
@@ -455,7 +455,7 @@ class TestAutonomousBoundary(unittest.TestCase):
         cfg = types.SimpleNamespace(autonomous_queue_target=1,
                                     fast_pool=["m1", "m2"],
                                     random_pool=["m1", "m2"],
-                                    work_dir=work,
+                                    harness_execution_and_queue_dir=work,
                                     queue_dir=work / "queue")
         stages: list = []
 
@@ -489,7 +489,7 @@ class TestAutonomousBoundary(unittest.TestCase):
         cfg = types.SimpleNamespace(autonomous_queue_target=2,
                                     fast_pool=["m1", "m2"],
                                     random_pool=["m1", "m2"],
-                                    work_dir=work,
+                                    harness_execution_and_queue_dir=work,
                                     queue_dir=work / "queue")
         calls: list[int] = []
 

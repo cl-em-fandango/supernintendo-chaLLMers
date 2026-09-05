@@ -118,7 +118,7 @@ def _run_inbound(cfg, api, log: Callable[[str], None],
     """Phase 1 with its parameters object built at the call site."""
     return run_inbound(api, InboundParams(
         queue_dir=cfg.queue_dir, repo=cfg.github_repo, log=log,
-        work_dir=cfg.work_dir, lifecycle=lifecycle,
+        work_dir=cfg.harness_execution_and_queue_dir, lifecycle=lifecycle,
         demo_enabled=cfg.demo.enabled))
 
 

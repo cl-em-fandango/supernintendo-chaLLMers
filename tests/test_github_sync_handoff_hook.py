@@ -246,7 +246,7 @@ class WriteSiteTest(unittest.TestCase):
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": "ghp_token",
             "githubRepo": REPO}))
         self.cfg = load(cfg_path)
         self.messages = []
@@ -395,7 +395,7 @@ class WriteSiteTest(unittest.TestCase):
 
     def test_disabled_config_wires_no_engine_no_hook(self):
         cfg_path = self.work_dir / "disabled.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work_dir)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work_dir)}))
         cfg = load(cfg_path)
         self.assertFalse(cfg.github_sync_enabled)
         self.assertIsNone(build_sync_engine(cfg, log=self.messages.append))

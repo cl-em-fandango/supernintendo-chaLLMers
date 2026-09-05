@@ -370,7 +370,7 @@ class StatusProbeStaysGreenWhileInterruptedTest(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp(prefix="sup-int-status-"))
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         cfg = types.SimpleNamespace(queue_dir=self.dir,
-                                    work_dir=self.dir,
+                                    harness_execution_and_queue_dir=self.dir,
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")
         wired = (cfg, StatsStore(cfg.stats_path), None, _StatusProvider(),

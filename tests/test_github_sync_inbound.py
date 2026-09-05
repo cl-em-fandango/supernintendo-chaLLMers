@@ -223,7 +223,7 @@ class SyncPassTest(InboundTestCase):
     def _cfg(self):
         cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": self._tmp.name, "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": self._tmp.name, "githubPat": "ghp_token",
             "githubRepo": REPO}))
         return load(cfg_path)
 
@@ -238,7 +238,7 @@ class SyncPassTest(InboundTestCase):
         # Slice 2 wiring: `demo.enabled` reaches the inbound parameters.
         cfg_path = Path(self._tmp.name) / "config-demo.json"
         cfg_path.write_text(json.dumps({
-            "workDir": self._tmp.name, "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": self._tmp.name, "githubPat": "ghp_token",
             "githubRepo": REPO, "demo": {"enabled": True}}))
         api = FakeApi([_issue(7, "Pizza fan site", labels=("snes-demo",))])
         report = sync_pass(load(cfg_path), api, log=self.messages.append)
@@ -255,7 +255,7 @@ class SyncPassTest(InboundTestCase):
     def test_cmd_sync_enabled_prints_summary(self):
         cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": self._tmp.name, "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": self._tmp.name, "githubPat": "ghp_token",
             "githubRepo": REPO}))
         api = FakeApi([_issue(7, "Test sync feature")])
         out = io.StringIO()
@@ -271,7 +271,7 @@ class SyncPassTest(InboundTestCase):
     def test_cmd_sync_reports_failure_without_crashing(self):
         cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": self._tmp.name, "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": self._tmp.name, "githubPat": "ghp_token",
             "githubRepo": REPO}))
 
         class _Boom:

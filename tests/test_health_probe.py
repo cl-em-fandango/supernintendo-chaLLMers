@@ -132,7 +132,7 @@ class ConfigPlumbingTest(unittest.TestCase):
     @staticmethod
     def _cfg(raw: dict) -> Config:
         return Config(
-            work_dir=Path("/tmp/unused"),
+            harness_execution_and_queue_dir=Path("/tmp/unused"),
             token_budget=100_000,
             max_spec_kickbacks=3,
             max_slice_implement=5,

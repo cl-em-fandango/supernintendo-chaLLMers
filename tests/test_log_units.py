@@ -48,7 +48,7 @@ K_SUFFIX = re.compile(r"(budget|ctx)=\d+k")
 
 def _cfg(work_dir: Path, model_context_map: dict | None = None) -> Config:
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=60_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,

@@ -129,7 +129,7 @@ class SyncEngineTestCase(unittest.TestCase):
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": "ghp_token",
             "githubRepo": REPO}))
         self.cfg = load(cfg_path)
         self.messages = []
@@ -308,7 +308,7 @@ class CompositionWiringTest(unittest.TestCase):
 
     def _config(self, raw: dict) -> Path:
         cfg_path = self.work / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work), **raw}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work), **raw}))
         return cfg_path
 
     def test_build_exposes_one_shared_engine(self):

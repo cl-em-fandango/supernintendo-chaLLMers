@@ -140,7 +140,7 @@ def _issue(number, title, labels):
 
 def _cfg(work_dir: Path, repo: Path, demo_enabled: bool) -> Config:
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -154,7 +154,7 @@ def _cfg(work_dir: Path, repo: Path, demo_enabled: bool) -> Config:
         models={"technicalWriter": MODEL, "implementer": MODEL,
                 "assessor": MODEL},
         model_context_map={MODEL: 128_000},
-        repo_dir=repo,
+        target_codebase_dir=repo,
         raw={"demo": {"enabled": demo_enabled,
                       "contentModel": MODEL,
                       "fallbackTopic": "History of Morris Dancing"}},

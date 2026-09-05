@@ -109,7 +109,7 @@ class OutboundTestCase(unittest.TestCase):
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": "ghp_token",
             "githubRepo": REPO}))
         self.cfg = load(cfg_path)
         self.messages = []

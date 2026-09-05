@@ -72,7 +72,7 @@ SIGTERM_RC = 143
 def _cfg(work_dir: Path) -> Config:
     """A hand-built config with the shipped 60,000-token cap."""
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,

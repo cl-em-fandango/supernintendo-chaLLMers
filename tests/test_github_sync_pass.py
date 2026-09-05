@@ -139,7 +139,7 @@ class SyncPassTestCase(unittest.TestCase):
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": "ghp_token",
             "githubRepo": REPO}))
         self.cfg = load(cfg_path)
         self.messages = []
@@ -241,7 +241,7 @@ class CmdSyncSummaryTest(unittest.TestCase):
 
     def _run_sync(self, raw: dict, api=None) -> tuple[int, str]:
         cfg_path = self.work / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work), **raw}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work), **raw}))
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"HARNESS_CONFIG": str(cfg_path)}):
             factory = (lambda cfg, log=None: api) if api is not None \

@@ -58,7 +58,7 @@ def _cfg(work_dir: Path, max_crash_retries: int | None = None,
     """
     raw = {} if max_crash_retries is None else {"maxCrashRetries": max_crash_retries}
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=100_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,
@@ -71,7 +71,7 @@ def _cfg(work_dir: Path, max_crash_retries: int | None = None,
         directory_provider={},
         models={"technicalWriter": "m", "implementer": "m", "assessor": "m"},
         model_context_map={},
-        repo_dir=repo,
+        target_codebase_dir=repo,
         raw=raw,
     )
 

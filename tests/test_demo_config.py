@@ -46,7 +46,7 @@ class DemoConfigDefaultsTest(unittest.TestCase):
     """A config with no `demo` section still answers every accessor."""
 
     def setUp(self):
-        self.cfg = _load({"workDir": WORK_DIR})
+        self.cfg = _load({"harnessExecutionAndQueueDir": WORK_DIR})
 
     def test_missing_section_falls_back_to_spec_defaults(self):
         demo = self.cfg.demo
@@ -76,7 +76,7 @@ class DemoConfigDefaultsTest(unittest.TestCase):
                          Path(WORK_DIR) / "demo-deploy")
 
     def test_empty_section_also_yields_defaults(self):
-        cfg = _load({"workDir": WORK_DIR, "demo": {}})
+        cfg = _load({"harnessExecutionAndQueueDir": WORK_DIR, "demo": {}})
         self.assertIs(cfg.demo.enabled, False)
         self.assertEqual(cfg.demo.deploy_branch, "pi/app-demo")
         self.assertEqual(cfg.demo.deploy_dir,
@@ -88,7 +88,7 @@ class DemoConfigOverrideTest(unittest.TestCase):
 
     def setUp(self):
         self.cfg = _load({
-            "workDir": WORK_DIR,
+            "harnessExecutionAndQueueDir": WORK_DIR,
             "demo": {
                 "enabled": True,
                 "deployBranch": "pi/pages",
@@ -111,11 +111,11 @@ class DemoConfigOverrideTest(unittest.TestCase):
         self.assertEqual(demo.deploy_dir, Path("/tmp/demo-checkout"))
 
     def test_enabled_parses_explicit_false(self):
-        cfg = _load({"workDir": WORK_DIR, "demo": {"enabled": False}})
+        cfg = _load({"harnessExecutionAndQueueDir": WORK_DIR, "demo": {"enabled": False}})
         self.assertIs(cfg.demo.enabled, False)
 
     def test_enabled_true_enables_the_feature(self):
-        cfg = _load({"workDir": WORK_DIR, "demo": {"enabled": True}})
+        cfg = _load({"harnessExecutionAndQueueDir": WORK_DIR, "demo": {"enabled": True}})
         self.assertIs(cfg.demo.enabled, True)
         # untouched keys keep their defaults alongside an explicit enable
         self.assertEqual(cfg.demo.deploy_branch, "pi/app-demo")

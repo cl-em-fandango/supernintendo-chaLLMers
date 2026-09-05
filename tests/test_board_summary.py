@@ -47,7 +47,7 @@ class _WiredFixture(unittest.TestCase):
         self.messages: list[str] = []
         self.provider = DirectoryTaskProvider(self.pending, self.claimed,
                                               log=self.messages.append)
-        cfg = types.SimpleNamespace(work_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir,
                                     queue_dir=self.dir,
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")

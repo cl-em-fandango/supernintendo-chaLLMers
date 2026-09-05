@@ -1,7 +1,7 @@
 """Tests for deterministic repo path resolution via config.json and CLI flags.
 
 Verifies:
-- repoDir in config.json is loaded and used as the working repository.
+- targetCodebaseDir in config.json is loaded and used as the working repository.
 - CLI --repo flag overrides config.json.
 - Markdown task content is never scraped for repo paths.
 - Proper refusal when no repo is configured and task defaults to queue dir.
@@ -74,39 +74,39 @@ class RepoResolutionTest(unittest.TestCase):
         cfg = load(cfg_file)
         self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
         self.assertEqual(cfg.harness_execution_and_queue_dir, self.work_dir)
-        self.assertEqual(cfg.repo_dir, self.repo.resolve())
-        self.assertEqual(cfg.work_dir, self.work_dir)
+        self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
+        self.assertEqual(cfg.harness_execution_and_queue_dir, self.work_dir)
 
     def test_config_json_repo_dir(self):
         cfg_file = self.root / "config.json"
         cfg_file.write_text(json.dumps({
-            "workDir": str(self.work_dir),
-            "repoDir": str(self.repo),
+            "harnessExecutionAndQueueDir": str(self.work_dir),
+            "targetCodebaseDir": str(self.repo),
             "trunkBranch": "pi/trunk",
         }))
         cfg = load(cfg_file)
-        self.assertEqual(cfg.repo_dir, self.repo.resolve())
+        self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
         self.assertEqual(cfg.target_codebase_dir, self.repo.resolve())
 
     def test_cli_repo_flag_overrides_config(self):
         cfg_file = self.root / "config.json"
         cfg_file.write_text(json.dumps({
-            "workDir": str(self.work_dir),
-            "repoDir": str(self.repo),
+            "harnessExecutionAndQueueDir": str(self.work_dir),
+            "targetCodebaseDir": str(self.repo),
             "trunkBranch": "pi/trunk",
         }))
         args = parse_args(["run-task-loop", "--repo", str(self.other_repo)])
         self.assertEqual(args.repo, str(self.other_repo))
 
         cfg, _, _, _, _, _ = build(cfg_file, repo=args.repo)
-        self.assertEqual(cfg.repo_dir, self.other_repo.resolve())
+        self.assertEqual(cfg.target_codebase_dir, self.other_repo.resolve())
 
     def test_markdown_paths_are_ignored(self):
-        """Even if markdown contains paths to other repos, the configured repoDir is used."""
+        """Even if markdown contains paths to other repos, the configured targetCodebaseDir is used."""
         cfg_file = self.root / "config.json"
         cfg_file.write_text(json.dumps({
-            "workDir": str(self.work_dir),
-            "repoDir": str(self.repo),
+            "harnessExecutionAndQueueDir": str(self.work_dir),
+            "targetCodebaseDir": str(self.repo),
             "trunkBranch": "pi/trunk",
         }))
         cfg, store, runner, provider, pipeline, log = build(cfg_file)
@@ -126,7 +126,7 @@ class RepoResolutionTest(unittest.TestCase):
         """When no repo is configured, resolving to active/ under queue parks with clear message."""
         cfg_file = self.root / "config.json"
         cfg_file.write_text(json.dumps({
-            "workDir": str(self.work_dir),
+            "harnessExecutionAndQueueDir": str(self.work_dir),
             "trunkBranch": "pi/trunk",
         }))
         cfg, store, runner, provider, pipeline, log = build(cfg_file)
@@ -141,7 +141,7 @@ class RepoResolutionTest(unittest.TestCase):
         review_text = review_file.read_text()
         self.assertTrue(
             "configure targetCodebaseDir in config.json or pass --repo on the CLI" in review_text
-            or "configure repoDir in config.json or pass --repo on the CLI" in review_text
+            or "configure targetCodebaseDir in config.json or pass --repo on the CLI" in review_text
         )
 
 

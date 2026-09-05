@@ -1,13 +1,13 @@
 """Slice-1 tests: the interrupt state file and its two CLI ends.
 
-`harness/core/interrupt.py` owns `<workDir>/state/interrupt.json`: the
+`harness/core/interrupt.py` owns `<harnessExecutionAndQueueDir>/state/interrupt.json`: the
 dataclass + Enums, the atomic write, the fail-safe read, the delete and the
 age helper. Slice 1 wires the two commands that only touch the file —
 `interrupt --stand-down` (write, idempotent) and no-arg `resume` (clear) —
 and this file tests both the module and those handlers at the handler edge.
 
 Covered here:
-  * write→read round-trip at `<workDir>/state/interrupt.json`, values as the
+  * write→read round-trip at `<harnessExecutionAndQueueDir>/state/interrupt.json`, values as the
     Enum wire values, timestamps UTC ISO-8601 (FR-5.1/FR-5.2);
   * read of a missing file is "no interrupt" (None) (FR-5.2);
   * a corrupt file reads as STAND_DOWN/REQUESTED and logs the recovery hint
@@ -50,7 +50,7 @@ from harness.core import interrupt  # noqa: E402
 
 
 class _TempWorkDir(unittest.TestCase):
-    """Shared temp workDir; nothing here resolves config.json."""
+    """Shared temp dir; nothing here resolves config.json."""
 
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="interrupt-"))
@@ -143,13 +143,13 @@ class TestStateFile(_TempWorkDir):
 
 
 class _HandlerFixture(_TempWorkDir):
-    """`build()` patched to the temp workDir; no real wiring, no real pi."""
+    """`build()` patched to the temp dir; no real wiring, no real pi."""
 
     def setUp(self) -> None:
         super().setUp()
         self.messages: list[str] = []
         cfg = types.SimpleNamespace(
-            work_dir=self.dir,
+            harness_execution_and_queue_dir=self.dir,
             models={"technicalWriter": "WriterModel"},
             model_context_map={}, configured_models=["WriterModel"])
         wired = (cfg, None, None, None, None,
@@ -189,7 +189,7 @@ class TestCmdInterruptStandDown(_HandlerFixture):
         self.assertIn("interrupt already active", self._logged())
 
     def test_request_survives_with_no_harness_running(self):
-        # FR-1.4: the handler only touches the file — a plain temp workDir
+        # FR-1.4: the handler only touches the file — a plain temp dir
         # *is* "no harness running".
         self.assertEqual(
             handlers.cmd_interrupt(stand_down=True, no_wait=True), 0)

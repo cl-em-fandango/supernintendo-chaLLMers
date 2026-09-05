@@ -338,7 +338,7 @@ class Pipeline:
             self.log(f"═══ task {task.id} ═══ workflow = {workflow_name}")
             self.log(f"  resuming from checkpoint — skipping: {', '.join(skipped)}" if skipped
                      else f"  resuming (no checkpoints yet)")
-            target_codebase = getattr(self.cfg, "target_codebase_dir", None) or getattr(self.cfg, "repo_dir", None)
+            target_codebase = self.cfg.target_codebase_dir
             if not state.workdir:
                 # Old-format task.json: migrate once, then never re-derive.
                 self.log(f"  workdir not recorded for {task.id}, "

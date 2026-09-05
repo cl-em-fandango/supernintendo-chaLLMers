@@ -43,7 +43,7 @@ from harness.core.stats import StatsStore  # noqa: E402
 
 
 class _WiredFixture(unittest.TestCase):
-    """Temp workDir with a real state dir, provider and stats store, `build()` wired."""
+    """Temp dir with a real state dir, provider and stats store, `build()` wired."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="interrupt-status-"))
@@ -55,7 +55,7 @@ class _WiredFixture(unittest.TestCase):
         self.messages: list[str] = []
         self.provider = DirectoryTaskProvider(self.pending, self.claimed,
                                               log=self.messages.append)
-        cfg = types.SimpleNamespace(work_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir,
                                     queue_dir=self.dir / "queue",
                                     logs_dir=self.dir / "logs",
                                     stats_path=self.dir / "stats.jsonl")

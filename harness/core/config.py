@@ -87,13 +87,10 @@ class Config:
         model_context_map: dict | None = None,
         target_codebase_dir: Path | None = None,
         raw: dict | None = None,
-        *,
-        work_dir: Path | None = None,
-        repo_dir: Path | None = None,
     ):
-        exec_dir = harness_execution_and_queue_dir if harness_execution_and_queue_dir is not None else work_dir
+        exec_dir = harness_execution_and_queue_dir
         if exec_dir is None:
-            raise ValueError("Config requires harness_execution_and_queue_dir (or work_dir)")
+            raise ValueError("Config requires harness_execution_and_queue_dir")
         self.harness_execution_and_queue_dir = Path(exec_dir)
         self.token_budget = token_budget
         self.max_spec_kickbacks = max_spec_kickbacks
@@ -107,27 +104,9 @@ class Config:
         self.directory_provider = directory_provider if directory_provider is not None else {}
         self.models = models if models is not None else {}
         self.model_context_map = model_context_map if model_context_map is not None else {}
-        tb_dir = target_codebase_dir if target_codebase_dir is not None else repo_dir
-        self.target_codebase_dir = Path(tb_dir) if tb_dir is not None else None
+        self.target_codebase_dir = (Path(target_codebase_dir)
+                                     if target_codebase_dir is not None else None)
         self.raw = raw if raw is not None else {}
-
-    @property
-    def work_dir(self) -> Path:
-        """Compatibility alias for harness_execution_and_queue_dir."""
-        return self.harness_execution_and_queue_dir
-
-    @work_dir.setter
-    def work_dir(self, val: Path) -> None:
-        self.harness_execution_and_queue_dir = Path(val) if val is not None else val
-
-    @property
-    def repo_dir(self) -> Path | None:
-        """Compatibility alias for target_codebase_dir."""
-        return self.target_codebase_dir
-
-    @repo_dir.setter
-    def repo_dir(self, val: Path | None) -> None:
-        self.target_codebase_dir = Path(val) if val is not None else None
 
     @property
     def queue_dir(self) -> Path:
@@ -347,7 +326,7 @@ class Config:
     @property
     def demo(self) -> DemoConfig:
         """The FR-9 `demo` section as one explicit parameters object."""
-        return parse_demo_config(self.raw, self.work_dir)
+        return parse_demo_config(self.raw, self.harness_execution_and_queue_dir)
 
     def health_policy(self) -> HealthPolicy:
         """The FR-5.1 knobs as one explicit parameters object."""
@@ -368,26 +347,13 @@ class Config:
 def load(path: str | Path) -> Config:
     p = Path(path)
     raw: dict[str, Any] = json.loads(p.read_text())
-    exec_dir_raw = (
-        raw.get("harnessExecutionAndQueueDir")
-        or raw.get("harness_execution_and_queue_dir")
-        or raw.get("workDir")
-        or raw.get("work_dir")
-    )
+    exec_dir_raw = raw.get("harnessExecutionAndQueueDir")
     if not exec_dir_raw:
         raise ValueError(
-            f"config {path} requires 'harnessExecutionAndQueueDir' (or legacy 'workDir')"
+            f"config {path} requires 'harnessExecutionAndQueueDir'"
         )
     harness_execution_and_queue_dir = Path(exec_dir_raw).expanduser()
-    target_codebase_raw = (
-        raw.get("targetCodebaseDir")
-        or raw.get("target_codebase_dir")
-        or raw.get("repoDir")
-        or raw.get("repoPath")
-        or raw.get("repo_dir")
-        or raw.get("repo")
-        or raw.get("targetRepo")
-    )
+    target_codebase_raw = raw.get("targetCodebaseDir")
     target_codebase_dir = Path(target_codebase_raw).expanduser().resolve() if target_codebase_raw else None
     return Config(
         harness_execution_and_queue_dir=harness_execution_and_queue_dir,

@@ -110,8 +110,8 @@ def _cfg(work_dir: Path, max_crash_retries: int | None = None,
     if max_context_continuations is not None:
         raw["maxContextContinuations"] = max_context_continuations
     return Config(
-        work_dir=work_dir,
-        repo_dir=repo,
+        harness_execution_and_queue_dir=work_dir,
+        target_codebase_dir=repo,
         token_budget=CAP,
         max_spec_kickbacks=3,
         max_slice_implement=5,

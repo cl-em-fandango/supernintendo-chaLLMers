@@ -107,7 +107,7 @@ from external.pi_cli import validate_models_present  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = HARNESS_DIR / "config.json"
-WORK_DIR = Path(load(CONFIG_PATH).work_dir)
+WORK_DIR = Path(load(CONFIG_PATH).harness_execution_and_queue_dir)
 TRUNK = load(CONFIG_PATH).trunk_branch   # the branch the breaker rolls back
 LOG = WORK_DIR / "logs" / "supervisor.log"
 PIDFILE = WORK_DIR / "logs" / "supervisor.pid"

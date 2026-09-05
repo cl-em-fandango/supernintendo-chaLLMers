@@ -71,7 +71,7 @@ SLICE_1_FILES = (
 def _config_from(raw: dict):
     """A real `Config` loaded from a temp config.json carrying `raw`."""
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump({"workDir": tempfile.mkdtemp(), **raw}, f)
+        json.dump({"harnessExecutionAndQueueDir": tempfile.mkdtemp(), **raw}, f)
         path = Path(f.name)
     try:
         return load(path)
@@ -172,7 +172,7 @@ class CmdSyncDisabledTest(unittest.TestCase):
     """`harness sync` end-to-end through the real `build()`, temp work dir."""
 
     def _run_sync(self, raw: dict) -> tuple[int, str]:
-        cfg_raw = {"workDir": str(self.work), **raw}
+        cfg_raw = {"harnessExecutionAndQueueDir": str(self.work), **raw}
         cfg_path = Path(self.work) / "config.json"
         cfg_path.write_text(json.dumps(cfg_raw))
         out = io.StringIO()

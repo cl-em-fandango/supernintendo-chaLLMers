@@ -85,8 +85,8 @@ class TransitionTestCase(unittest.TestCase):
         for sub in LOCATIONS:
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work),
-                                        "repoDir": str(self.work)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work),
+                                        "targetCodebaseDir": str(self.work)}))
         self.cfg = load(cfg_path)
         self.messages: list[str] = []
         self.lifecycle = TaskLifecycle(self.cfg, log=self.messages.append)
@@ -291,7 +291,7 @@ class DisabledSyncTest(TransitionTestCase):
     def test_disabled_sync_creates_no_meta_store(self):
         self.seed_file("pending", "untouched")
         cfg_path = self.work / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work)}))
         with mock.patch.dict(os.environ, {"HARNESS_CONFIG": str(cfg_path)}):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 rc = handlers.cmd_sync()

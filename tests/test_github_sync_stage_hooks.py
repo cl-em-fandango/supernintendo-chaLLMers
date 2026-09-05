@@ -158,7 +158,7 @@ class LifecycleHookTest(unittest.TestCase):
         self.queue = self.work_dir / "queue"
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": "ghp_token",
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": "ghp_token",
             "githubRepo": REPO}))
         self.cfg_path = cfg_path
 
@@ -307,7 +307,7 @@ class ResumeHookTest(unittest.TestCase):
         for sub in LOCATIONS:
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work_dir)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work_dir)}))
         self.cfg = load(cfg_path)
         self.lifecycle = TaskLifecycle(self.cfg, log=lambda _m: None)
         self.messages = []
@@ -376,7 +376,7 @@ class AutonomousHookTest(unittest.TestCase):
         self.pending.mkdir(parents=True)
         self.claimed.mkdir(parents=True)
         self.cfg = Config(
-            work_dir=self.work_dir,
+            harness_execution_and_queue_dir=self.work_dir,
             token_budget=100_000,
             max_spec_kickbacks=3,
             max_slice_implement=5,
@@ -422,7 +422,7 @@ class DisabledConfigRegressionTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.work_dir = Path(self._tmp.name)
         cfg_path = self.work_dir / "config.json"
-        cfg_path.write_text(json.dumps({"workDir": str(self.work_dir)}))
+        cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(self.work_dir)}))
         self.cfg_path = cfg_path
 
     def test_full_lifecycle_with_github_disabled_makes_no_http_calls(self):

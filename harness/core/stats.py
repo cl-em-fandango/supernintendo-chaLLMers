@@ -1,6 +1,6 @@
 """Unified historical store for per-session stats.
 
-Every pi invocation is recorded as one JSONL row in <workDir>/stats/sessions.jsonl.
+Every pi invocation is recorded as one JSONL row in <harnessExecutionAndQueueDir>/stats/sessions.jsonl.
 Rows are append-only; analytics are computed on read.
 
 Row schema:

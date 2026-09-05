@@ -7,7 +7,7 @@ the wait entirely). Success prints the exact stand-down line and exits 0; a
 timeout prints the running session's log pointer, exits non-zero and leaves
 the request in place — the harness still stands down at its next boundary.
 
-Every fixture is a temp workDir with `build()` patched and a background
+Every fixture is a temp dir with `build()` patched and a background
 acknowledger thread flipping the file to `paused` where a live harness would
 — no containers, no real `pi`, no `/srv/pi-harness` writes (C2/C3).
 """
@@ -33,13 +33,13 @@ SESSION_TIMEOUT_S = 3600
 
 
 class _WaitFixture(unittest.TestCase):
-    """Temp workDir, `build()` patched, stdout/stderr captured."""
+    """Temp dir, `build()` patched, stdout/stderr captured."""
 
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="interrupt-wait-"))
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.messages: list[str] = []
-        cfg = types.SimpleNamespace(work_dir=self.dir,
+        cfg = types.SimpleNamespace(harness_execution_and_queue_dir=self.dir,
                                     session_timeout=SESSION_TIMEOUT_S,
                                     logs_dir=self.dir / "logs")
         wired = (cfg, None, None, None, None,

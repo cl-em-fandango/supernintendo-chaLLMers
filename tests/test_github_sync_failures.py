@@ -281,7 +281,7 @@ class FailureTestCase(unittest.TestCase):
             (self.queue / sub).mkdir(parents=True)
         cfg_path = self.work_dir / "config.json"
         cfg_path.write_text(json.dumps({
-            "workDir": str(self.work_dir), "githubPat": PAT,
+            "harnessExecutionAndQueueDir": str(self.work_dir), "githubPat": PAT,
             "githubRepo": REPO, "githubApiBaseUrl": BASE}))
         self.cfg = load(cfg_path)
         self.messages: list[str] = []
@@ -762,7 +762,7 @@ class StandardsReadThroughTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             cfg_path = work / "config.json"
-            cfg_path.write_text(json.dumps({"workDir": str(work)}))
+            cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(work)}))
             builder = mock.Mock(side_effect=AssertionError("HTTP client built"))
             out = io.StringIO()
             with mock.patch.dict(os.environ,

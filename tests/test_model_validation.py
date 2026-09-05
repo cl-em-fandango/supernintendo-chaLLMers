@@ -134,7 +134,7 @@ class TestModelValidationSubprocess(unittest.TestCase):
 class TestConfiguredModels(unittest.TestCase):
     def test_config_configured_models_extracts_all_roles_and_pools(self):
         cfg = Config(
-            work_dir=Path("/tmp/work"),
+            harness_execution_and_queue_dir=Path("/tmp/work"),
             token_budget=60000,
             max_spec_kickbacks=3,
             max_slice_implement=5,
@@ -167,7 +167,7 @@ class TestConfiguredModels(unittest.TestCase):
 class TestSessionRunnerValidation(unittest.TestCase):
     def test_session_runner_validates_models_before_run(self):
         cfg = Config(
-            work_dir=Path("/tmp/work"),
+            harness_execution_and_queue_dir=Path("/tmp/work"),
             token_budget=60000,
             max_spec_kickbacks=3,
             max_slice_implement=5,

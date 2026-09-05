@@ -16,7 +16,7 @@
 #   HARNESS_ENGINE         podman|docker (default: first found on PATH)
 #   HARNESS_DRY_RUN        1 = print the assembled command and exit 0
 #   IMAGE_TAG              image (default harness-sandbox:frozen-latest)
-#   WORK_DIR               repo work dir (default: workDir from config.json)
+#   WORK_DIR               host dir to run against (default: harnessExecutionAndQueueDir)
 #   HARNESS_CONFIG         path to config.json (default <repo root>/config.json)
 #   HARNESS_QUEUE_DIR      queue dir mount (default ${WORK_DIR}/queue)
 #   PI_AGENT_DIR           host pi agent dir staged writable (default ~/.pi/agent)
@@ -79,20 +79,93 @@ detect_engine() {
 }
 
 # ---------------------------------------------------------------------------
-# Work directory resolution (FR-2.2): WORK_DIR env wins, else config workDir.
+# Config directory resolution (FR-2.2): WORK_DIR env wins, else the config's
+# harnessExecutionAndQueueDir. The config also names targetCodebaseDir; both are
+# absolute paths that are commonly symlinks on the host (/srv/pi-harness ->
+# ~/work), and a bind mount of the resolved path does not make the *declared*
+# path exist inside the container. So each declared directory is mounted at
+# exactly the path the config names, mirroring the host layout the config was
+# written against.
 # ---------------------------------------------------------------------------
-resolve_work_dir() {
-    if [ -n "${WORK_DIR:-}" ]; then
+EXEC_DIR=""
+TARGET_DIR=""
+
+declare -a MOUNTS=() MNT_SRC=() MNT_DST=()
+
+# add_mount <host_source> <container_target> [force] — idempotent, and skips a
+# mount an earlier one already provides (same source subtree at the matching
+# relative position under an earlier target). `force` keeps the mount anyway:
+# the queue dir is named explicitly on purpose (spec §9 fail-fast, ownership),
+# so it is not collapsed into the mount of its parent.
+add_mount() {
+    local src="$1" dst="$2" force="${3:-}" i rel
+    dst="${dst%/}"
+    [ -n "$dst" ] || dst="/"
+    for i in "${!MNT_DST[@]}"; do
+        [ "${MNT_DST[$i]}" = "$dst" ] && return 0
+    done
+    [ -n "$force" ] || for i in "${!MNT_SRC[@]}"; do
+        case "${src}/" in
+            "${MNT_SRC[$i]}"/*)
+                rel="${src#${MNT_SRC[$i]}/}"
+                rel="${rel#/}"
+                if [ "${MNT_DST[$i]}/${rel}" = "$dst" ]; then
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    MNT_SRC+=("$src")
+    MNT_DST+=("$dst")
+    MOUNTS+=("-v" "${src}:${dst}${selinux_suffix}")
+}
+
+# mount_declared <declared_path> <label> — skip (never hand to the engine) a
+# declared path that does not exist here: the engine would create it root-owned.
+mount_declared() {
+    local declared="$1" label="$2" src
+    [ -n "$declared" ] || return 0
+    if [ ! -e "$declared" ] && [ ! -L "$declared" ]; then
+        echo "Warning: ${label} '${declared}' does not exist on this host; not mounted." >&2
         return 0
     fi
-    if [ ! -r "$CONFIG_FILE" ]; then
-        echo "Error: cannot read config '${CONFIG_FILE}' to resolve workDir." >&2
-        echo "       Set WORK_DIR explicitly or point HARNESS_CONFIG at a readable config.json." >&2
-        return 1
+    src="$(realpath "$declared" 2>/dev/null)" || {
+        echo "Warning: ${label} '${declared}' could not be resolved; not mounted." >&2
+        return 0
+    }
+    add_mount "$src" "$declared"
+}
+
+read_config_dirs() {
+    EXEC_DIR=""
+    TARGET_DIR=""
+    [ -r "$CONFIG_FILE" ] || return 0
+    mapfile -t _cfg_dirs < <(python3 -c '
+import json, sys
+raw = json.load(open(sys.argv[1]))
+print(raw.get("harnessExecutionAndQueueDir") or "")
+print(raw.get("targetCodebaseDir") or "")
+' "$CONFIG_FILE" 2>/dev/null || true)
+    EXEC_DIR="${_cfg_dirs[0]:-}"
+    TARGET_DIR="${_cfg_dirs[1]:-}"
+}
+
+resolve_work_dir() {
+    read_config_dirs
+    if [ -z "${WORK_DIR:-}" ]; then
+        if [ -z "$EXEC_DIR" ] && [ ! -r "$CONFIG_FILE" ]; then
+            echo "Error: cannot read config '${CONFIG_FILE}'." >&2
+            echo "       Set WORK_DIR explicitly or point HARNESS_CONFIG at a readable config.json." >&2
+            return 1
+        fi
+        if [ -z "$EXEC_DIR" ]; then
+            echo "Error: no harnessExecutionAndQueueDir in config '${CONFIG_FILE}' and WORK_DIR is not set." >&2
+            return 1
+        fi
+        WORK_DIR="$EXEC_DIR"
     fi
-    WORK_DIR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workDir"])' "$CONFIG_FILE" 2>/dev/null)"
-    if [ -z "$WORK_DIR" ]; then
-        echo "Error: no workDir in config '${CONFIG_FILE}' and WORK_DIR is not set." >&2
+    if [ ! -d "$WORK_DIR" ]; then
+        echo "Error: WORK_DIR '${WORK_DIR}' does not exist." >&2
         return 1
     fi
 }
@@ -172,10 +245,6 @@ cleanup_pi_auth_stage() {
 # ---------------------------------------------------------------------------
 build_run_command() {
     local -n out_ref="$1"
-    local selinux=""
-    if [ "$ENGINE_CMD" = "podman" ]; then
-        selinux=":z"  # SELinux label flag; plain docker may reject it.
-    fi
     out_ref=(
         "$ENGINE_CMD" run --rm -i
         --memory "$MEM_LIMIT"
@@ -184,15 +253,27 @@ build_run_command() {
         --cpus "$CPU_QUOTA"
         --pids-limit "$PIDS_LIMIT"
         --oom-score-adj "$OOM_SCORE_ADJ"
-        -v "${WORK_DIR}:${WORK_DIR}${selinux}"
-        -v "${WORK_DIR}:/workspace${selinux}"
-        -v "${QUEUE_DIR}:${QUEUE_DIR}${selinux}"
         -w "$WORK_DIR"
         --tmpfs /tmp
     )
+    # WORK_DIR at itself and at /workspace, then the config-declared dirs at
+    # their declared paths (the queue dir rides along with, or is explicit).
+    # WORK_DIR may itself be a symlinked config path, so bind the resolved dir.
+    local work_src
+    # `cd ... && pwd -P` rather than realpath: the tests put a stub engine dir
+    # first on PATH, and a missing external must not blank the mount source.
+    work_src="$(cd "$WORK_DIR" 2>/dev/null && pwd -P)" || work_src="$WORK_DIR"
+    add_mount "$work_src" "$WORK_DIR"
+    add_mount "$work_src" "/workspace"
+    mount_declared "$EXEC_DIR" "harnessExecutionAndQueueDir"
+    mount_declared "$TARGET_DIR" "targetCodebaseDir"
+    local queue_src
+    queue_src="$(cd "$QUEUE_DIR" 2>/dev/null && pwd -P)" || queue_src="$QUEUE_DIR"
+    add_mount "$queue_src" "$QUEUE_DIR" force
+    out_ref+=("${MOUNTS[@]}")
     if [ -n "$PI_AGENT_STAGE" ]; then
         # Writable on purpose — read-only breaks pi's auth.json.lock.
-        out_ref+=(-v "${PI_AGENT_STAGE}:${PI_AGENT_MOUNT}${selinux}")
+        out_ref+=(-v "${PI_AGENT_STAGE}:${PI_AGENT_MOUNT}${selinux_suffix}")
     fi
     out_ref+=("$IMAGE_TAG" python3 harness.py run --continue "${FORWARD_ARGS[@]}")
 }
@@ -223,8 +304,13 @@ run_restart_loop() {
 main() {
     FORWARD_ARGS=("$@")
     detect_engine || exit 1
+    # SELinux relabel suffix; plain docker rejects the flag.
+    selinux_suffix=""
+    if [ "$ENGINE_CMD" = "podman" ]; then
+        selinux_suffix=":z"
+    fi
     resolve_work_dir || exit 1
-    QUEUE_DIR="${HARNESS_QUEUE_DIR:-${WORK_DIR}/queue}"
+    QUEUE_DIR="${HARNESS_QUEUE_DIR:-${EXEC_DIR:-$WORK_DIR}/queue}"
     assert_queue_dir || exit 1
     assert_cpuset_fits_host || exit 1
     stage_pi_auth || exit 1

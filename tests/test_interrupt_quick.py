@@ -14,7 +14,7 @@ The full borrow-the-model lifecycle, verified in-process:
   (auto-resume); a wait timeout cancels the request; a killed requester
   leaves the file in place for `harness.py resume` (FR-2.5/E3).
 
-Every fixture is a temp workDir with `build()` patched and a fake `pi`
+Every fixture is a temp dir with `build()` patched and a fake `pi`
 executable on PATH recording its argv — no containers, no real `pi`, no
 `/srv/pi-harness` writes (C2/C3).
 """
@@ -68,14 +68,14 @@ class _TTY:
 
 
 class _QuickFixture(unittest.TestCase):
-    """Temp workDir, `build()` patched, fake `pi` on PATH, stdio captured."""
+    """Temp dir, `build()` patched, fake `pi` on PATH, stdio captured."""
 
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="interrupt-quick-"))
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.messages: list[str] = []
         cfg = types.SimpleNamespace(
-            work_dir=self.dir, session_timeout=SESSION_TIMEOUT_S,
+            harness_execution_and_queue_dir=self.dir, session_timeout=SESSION_TIMEOUT_S,
             logs_dir=self.dir / "logs", repo_dir=self.dir,
             models=dict(MODELS), model_context_map=dict(MODEL_CONTEXT),
             configured_models=["WriterModel", "CoderModel", "FastA",

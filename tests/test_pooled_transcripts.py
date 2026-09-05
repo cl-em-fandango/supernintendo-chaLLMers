@@ -49,7 +49,7 @@ _POOLED_NAME = re.compile(
 
 def _cfg(work_dir: Path) -> Config:
     return Config(
-        work_dir=work_dir,
+        harness_execution_and_queue_dir=work_dir,
         token_budget=60_000,
         max_spec_kickbacks=3,
         max_slice_implement=5,

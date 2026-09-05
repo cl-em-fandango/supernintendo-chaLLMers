@@ -18,7 +18,7 @@ subprocess, no HTTP):
     modules — sync and spawn are the only outward calls (FR-4.4);
   * `external/harness_cli`: the spawn command line is
     `harness.py run-task-loop`, detached (no real child is started);
-  * the run commands take `<workDir>/run.lock` and refuse (exit 1)
+  * the run commands take `<harnessExecutionAndQueueDir>/run.lock` and refuse (exit 1)
     while a live process holds it (FR-4.3);
   * `cmd_syncd` wiring: disabled config yields `sync=None`, enabled
     config wires the engine's full-pass dispatch.
@@ -42,7 +42,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from external.github_api import GitHubApiError  # noqa: E402
-from external.harness_cli import spawn_harness_run_task_loop  # noqa: E402
+from external.harness_cli import (  # noqa: E402
+    child_env, spawn_harness_run_task_loop)
 from harness.cli import handlers  # noqa: E402
 from harness.core.config import load  # noqa: E402
 from harness.core.process_lock import (  # noqa: E402
@@ -133,7 +134,7 @@ class ProcessLockTest(unittest.TestCase):
 def _make_cfg(work: Path, **raw) -> object:
     """A real `Config` loaded from a temp config.json inside `work`."""
     cfg_path = work / "config.json"
-    cfg_path.write_text(json.dumps({"workDir": str(work), **raw}))
+    cfg_path.write_text(json.dumps({"harnessExecutionAndQueueDir": str(work), **raw}))
     return load(cfg_path)
 
 
@@ -432,9 +433,87 @@ class DaemonBoundaryTest(unittest.TestCase):
         self.assertEqual("run-task-loop", started["argv"][-1])
         self.assertTrue(started["start_new_session"])
 
+    def test_spawn_env_carries_local_bin_on_path(self):
+        """A cron-minimal PATH still finds `pi`: /usr/local/bin is added."""
+        started = {}
+
+        def fake_popen(argv, **kwargs):
+            started.update(kwargs)
+            return SimpleNamespace(pid=98765)
+
+        cron_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        with mock.patch.dict(os.environ, {"PATH": cron_path}), \
+                mock.patch("external.harness_cli.subprocess.Popen",
+                           new=fake_popen):
+            spawn_harness_run_task_loop()
+        path = started["env"]["PATH"].split(os.pathsep)
+        self.assertIn("/usr/local/bin", path)
+        self.assertEqual([p for p in path if p != "/usr/local/bin"],
+                         cron_path.split(":"))
+
+    def test_spawn_log_captures_child_stderr_with_header(self):
+        """A given `spawn_log` becomes the child's stderr file, preceded
+        by a header line, and the parent's copy of the fd is closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "logs" / "spawn.log"
+            started = {}
+
+            def fake_popen(argv, **kwargs):
+                started.update(kwargs)
+                # the child would write here
+                started["stderr"].write("Traceback: boom\n")
+                return SimpleNamespace(pid=98765)
+
+            with mock.patch("external.harness_cli.subprocess.Popen",
+                            new=fake_popen):
+                pid = spawn_harness_run_task_loop(spawn_log=log_path)
+            self.assertEqual(98765, pid)
+            text = log_path.read_text()
+            self.assertIn("=== spawned", text)
+            self.assertIn("Traceback: boom", text)
+            self.assertTrue(started["stderr"].closed)
+
+    def test_spawn_log_unwritable_degrades_to_devnull(self):
+        """An unopenable log path must not lose the spawn itself."""
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "blocker"   # a file where a dir is needed
+            blocker.write_text("")
+            started = {}
+
+            def fake_popen(argv, **kwargs):
+                started.update(kwargs)
+                return SimpleNamespace(pid=98765)
+
+            with mock.patch("external.harness_cli.subprocess.Popen",
+                            new=fake_popen):
+                pid = spawn_harness_run_task_loop(
+                    spawn_log=blocker / "spawn.log")
+            self.assertEqual(98765, pid)
+            self.assertIs(subprocess.DEVNULL, started["stderr"])
+
+    def test_no_spawn_log_keeps_stderr_devnull(self):
+        started = {}
+
+        def fake_popen(argv, **kwargs):
+            started.update(kwargs)
+            return SimpleNamespace(pid=98765)
+
+        with mock.patch("external.harness_cli.subprocess.Popen",
+                        new=fake_popen):
+            spawn_harness_run_task_loop()
+        self.assertIs(subprocess.DEVNULL, started["stderr"])
+        self.assertIs(subprocess.DEVNULL, started["stdout"])
+
+    def test_child_env_is_idempotent_and_does_not_mutate_source(self):
+        env = {"PATH": "/usr/local/bin:/usr/bin", "HOME": "/home/x"}
+        out = child_env(env)
+        self.assertEqual(env, out)  # already present: unchanged contents
+        out["PATH"] = "mutated"
+        self.assertEqual("/usr/local/bin:/usr/bin", env["PATH"])
+
 
 class RunLockTest(unittest.TestCase):
-    """FR-4.3: run commands hold `<workDir>/run.lock` for their life."""
+    """FR-4.3: run commands hold `<harnessExecutionAndQueueDir>/run.lock` for their life."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -527,7 +606,21 @@ class CmdSyncdWiringTest(unittest.TestCase):
         params = self._run_syncd()
         self.assertIsNone(params.sync)
         self.assertEqual(self.work, Path(params.work_dir))
-        self.assertIs(params.spawn, spawn_harness_run_task_loop)
+        self.assertTrue(callable(params.spawn))
+        # The wiring must still be the spawn boundary, with the child's
+        # stderr captured to `<logs_dir>/spawn.log` (not DEVNULL).
+        started = {}
+
+        def fake_popen(argv, **kwargs):
+            started.update(kwargs)
+            return SimpleNamespace(pid=98765)
+
+        with mock.patch("external.harness_cli.subprocess.Popen",
+                        new=fake_popen):
+            self.assertEqual(98765, params.spawn())
+        self.assertEqual("run-task-loop", started["argv"][-1])
+        self.assertEqual(self.work / "logs" / "spawn.log",
+                         Path(started["stderr"].name))
 
     def test_enabled_config_wires_the_full_pass_dispatch(self):
         engine = SimpleNamespace(on_stage_change=lambda task_id=None: None)

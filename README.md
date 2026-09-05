@@ -464,7 +464,7 @@ The daemon does exactly two things per pass:
 Operational behaviour:
 
 - **Interval** — `githubSyncIntervalS` (default 60s).
-- **Single instance** — `<workDir>/syncd.lock`. A second `syncd` exits non-zero with
+- **Single instance** — `<harnessExecutionAndQueueDir>/syncd.lock`. A second `syncd` exits non-zero with
   the lock message; a lock left behind by a killed daemon is detected as stale (dead
   PID) and taken, so a crash needs no manual cleanup.
 - **Failure backoff** — after 5 consecutive failed sync passes the interval goes 5x
@@ -588,7 +588,7 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
 - **Stand-down mode** stops the harness taking work and keeps it down until
   `python3 harness.py resume` (no task_id). Tasks stay in `active/` at their
   checkpoints.
-- State lives in `<workDir>/state/interrupt.json` (atomic writes). A corrupt or
+- State lives in `<harnessExecutionAndQueueDir>/state/interrupt.json` (atomic writes). A corrupt or
   orphaned request file is treated as an active stand-down — fail-safe: the
   model stays with the operator; recover with `harness.py resume`.
 - `--no-wait` returns immediately after writing the request; `--timeout S`
@@ -603,8 +603,8 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
 
 ```json
 {
-  "workDir": "/home/donald/work",
-  "repoDir": "/srv/pi-harness/harness_build",
+  "harnessExecutionAndQueueDir": "/srv/pi-harness",
+  "targetCodebaseDir": "/srv/pi-harness/harness_build",
   "trunkBranch": "pi/trunk",
   "githubPat": "",
   "githubRepo": "owner/repo",
@@ -685,8 +685,10 @@ python3 harness.py interrupt --stand-down       # stop work until `harness.py re
 }
 ```
 
-`repoDir` is the target git repository the pipeline branches and merges in;
-any subcommand accepts `--repo <path>` (`--repo-dir`) to override it. The
+`harnessExecutionAndQueueDir` is where the harness code, `queue/`, `logs/` and
+`stats/` live. `targetCodebaseDir` is the target git repository the pipeline
+branches and merges in; any subcommand accepts `--repo <path>` (`--repo-dir`) to
+override it. The
 guardrail keys bound execution: `sessionTimeout` is the wall-clock cap per pi
 session, `toolTimeout` the cap for wrapped shell helpers, `maxOutputBytes` the
 per-stream capture cap, and `toolUlimitNproc` / `toolUlimitVmemKB` the process
@@ -710,7 +712,7 @@ is `max(4096, min(maxPromptTokens, window - 8192))`.
 | `demo.docsDir` | `docs` | Pages artifact directory, on the deploy branch only. |
 | `demo.contentModel` | `GLM4.5-AIR_Q4_K_M` | One-shot model for site-content generation. |
 | `demo.fallbackTopic` | `History of Morris Dancing` | Subject of the fallback content when a ticket has no usable topic. |
-| `demo.deployDir` | `<workDir>/demo-deploy` | Dedicated checkout used to publish demo apps. |
+| `demo.deployDir` | `<harnessExecutionAndQueueDir>/demo-deploy` | Dedicated checkout used to publish demo apps. |
 | `llmHealthUrl` | empty | Model-server health endpoint for the pre-run probe. Empty disables the gate. |
 | `llmHealthEnabled` | true | Explicit off switch, even with a URL configured. |
 
@@ -784,7 +786,7 @@ python3 harness.py autonomous
 python3 harness.py sync
 
 # Sync daemon: poll + sync, and spawn one run when pending/ has work and no run
-# is active. Single instance via <workDir>/syncd.lock — a second syncd exits
+# is active. Single instance via <harnessExecutionAndQueueDir>/syncd.lock — a second syncd exits
 # non-zero while a live one holds it. SIGINT/SIGTERM stop it after its pass.
 python3 harness.py syncd
 
