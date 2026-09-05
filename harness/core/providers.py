@@ -51,9 +51,6 @@ def _task_meta(queue_dir: Path, task_id: str) -> dict:
     """A Task's `meta` resolved by task id through the record API (FR-B1)."""
     return _meta_from_record(task_record.read_record(queue_dir, task_id))
 
-<<<<<<< HEAD
-=======
-
 def task_meta(queue_dir: Path, task_id: str) -> dict:
     """Public entry to the record-backed `Task.meta` for one task id.
 
@@ -62,8 +59,6 @@ def task_meta(queue_dir: Path, task_id: str) -> dict:
     exactly as it does for provider-claimed tasks (FR-1.4).
     """
     return _task_meta(queue_dir, task_id)
-
->>>>>>> pi/auto-11-proposal-automated-task-post-mortem-analysis
 
 @dataclass
 class Task:

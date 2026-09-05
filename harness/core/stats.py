@@ -165,6 +165,45 @@ def stage_report(rows: list[dict]) -> list[dict]:
     return report
 
 
+def model_stage_report(rows: list[dict]) -> list[dict]:
+    """Per-(model, stage) quality/speed stats — the performance matrix.
+
+    Answers "does this model succeed in this stage?". Metrics are computed
+    with exactly the semantics of `model_report` over each pair's rows, so
+    the matrix reconciles with the per-model and per-stage tables:
+      decided       = outcome not in (error, unknown)
+      rejections    = decided and outcome in (kickback, fail, kickout)
+      passes        = decided and outcome in (pass, done, resliced)
+      error_rate    = error / all rows of the pair
+
+    Rows missing `model`/`stage` group under "unknown" (via `_group`);
+    `None` values group under "None" (existing `_group` stringification).
+    The returned list is sorted by (model, stage), so both grouping levels
+    are iterated with `sorted(...)`.
+    """
+    report = []
+    for model, model_rows in sorted(_group(rows, "model").items()):
+        for stage, rs in sorted(_group(model_rows, "stage").items()):
+            n = len(rs)
+            decided = [r for r in rs if r["outcome"] not in ("error", "unknown")]
+            rejections = [r for r in decided if r["outcome"] in ("kickback", "fail", "kickout")]
+            passes = [r for r in decided if r["outcome"] in ("pass", "done", "resliced")]
+            errors = [r for r in rs if r["outcome"] == "error"]
+            report.append({
+                "model": model,
+                "stage": stage,
+                "sessions": n,
+                "rejections": len(rejections),
+                "rejection_rate": round(len(rejections) / len(decided), 3) if decided else None,
+                "pass_rate": round(len(passes) / len(decided), 3) if decided else None,
+                "error_rate": round(len(errors) / n, 3) if n else None,
+                "avg_duration_s": round(sum(r["duration_s"] for r in rs) / n, 1) if n else None,
+                "avg_peak_tokens": int(sum(r["peak_tokens"] for r in rs) / n) if n else None,
+                "total_tokens": sum(r["peak_tokens"] for r in rs),
+            })
+    return report
+
+
 def task_report(rows: list[dict]) -> list[dict]:
     report = []
     for task, rs in sorted(_group(rows, "task_id").items()):
@@ -197,6 +236,16 @@ def render_report(rows: list[dict]) -> str:
         lines.append(
             f"{s['stage']:<22} {s['sessions']:>5} {_pct(s['bounce_rate']):>8} "
             f"{s['avg_duration_s'] or 0:>7.1f} {s['avg_peak_tokens'] or 0:>8}"
+        )
+
+    lines.append("\n--- By Model & Stage (Performance Matrix) ---")
+    lines.append(f"{'model':<52} {'stage':<22} {'sess':>5} {'rej%':>6} "
+                 f"{'pass%':>6} {'err%':>6} {'avg_s':>7} {'avg_tok':>8}")
+    for m in model_stage_report(rows):
+        lines.append(
+            f"{m['model'][:52]:<52} {m['stage'][:22]:<22} {m['sessions']:>5} "
+            f"{_pct(m['rejection_rate']):>6} {_pct(m['pass_rate']):>6} {_pct(m['error_rate']):>6} "
+            f"{m['avg_duration_s'] or 0:>7.1f} {m['avg_peak_tokens'] or 0:>8}"
         )
 
     lines.append("\n--- By task ---")
@@ -652,6 +701,7 @@ def render_report_json(rows: list[dict]) -> dict:
     * ``total_tokens`` – sum of ``peak_tokens`` across all rows
     * ``models`` – list from :func:`model_report`
     * ``stages`` – list from :func:`stage_report`
+    * ``model_stages`` – list from :func:`model_stage_report`
     * ``tasks`` – list from :func:`task_report`
     """
     total_sessions = len(rows)
@@ -661,5 +711,6 @@ def render_report_json(rows: list[dict]) -> dict:
         "total_tokens": total_tokens,
         "models": model_report(rows),
         "stages": stage_report(rows),
+        "model_stages": model_stage_report(rows),
         "tasks": task_report(rows),
     }

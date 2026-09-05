@@ -43,7 +43,9 @@ from harness.core.stats import (
     _group,
     _pct,
     model_report,
+    model_stage_report,
     render_report,
+    render_report_json,
     stage_report,
     task_report,
 )
@@ -151,6 +153,35 @@ def rendered_line(text: str, prefix: str) -> str:
     matches = [ln for ln in text.splitlines() if ln.startswith(prefix)]
     assert len(matches) == 1, f"{prefix!r} matched {len(matches)} lines"
     return matches[0]
+
+
+MATRIX_HEADER = "--- By Model & Stage (Performance Matrix) ---"
+
+
+def matrix_data_lines(text: str) -> list[str]:
+    """The matrix section's data lines (header and column header excluded)."""
+    lines = text.splitlines()
+    start = lines.index(MATRIX_HEADER) + 2
+    out: list[str] = []
+    for ln in lines[start:]:
+        if not ln or ln.startswith("---"):
+            break
+        out.append(ln)
+    return out
+
+
+def strip_matrix_section(text: str) -> str:
+    """The report with the matrix section (header + rows) cut out.
+
+    Used to compare the *pre-existing* sections against a snapshot: the blank
+    line preceding the matrix header belonged to the matrix section, so it is
+    cut with it and the By-task section keeps its own separating blank line.
+    """
+    lines = text.splitlines()
+    start = lines.index(MATRIX_HEADER)
+    end = next(i for i in range(start, len(lines))
+               if lines[i].startswith("--- By task"))
+    return "\n".join(lines[:start] + lines[end:])
 
 
 class FixtureTest(unittest.TestCase):
@@ -300,6 +331,129 @@ class StageReportTest(unittest.TestCase):
         self.assertEqual(stage_report(rows)[0]["bounces"], 1)
 
 
+def by_pair(model: str, stage: str) -> dict:
+    matches = [p for p in model_stage_report(ROWS)
+               if p["model"] == model and p["stage"] == stage]
+    assert len(matches) == 1, f"({model!r}, {stage!r}) missing from model_stage_report"
+    return matches[0]
+
+
+class ModelStageReportTest(unittest.TestCase):
+    """`model_stage_report`: per-(model, stage) matrix, hand-computed."""
+
+    def test_pairs_are_sorted_and_complete(self):
+        report = model_stage_report(ROWS)
+        self.assertEqual(
+            [(p["model"], p["stage"]) for p in report],
+            [(MODEL_ALPHA, "slice_implement"),
+             (MODEL_ALPHA, "spec_author"),
+             (MODEL_ALPHA, "tech_review"),
+             (MODEL_BETA, "slice_implement"),
+             (MODEL_BETA, "spec_author"),
+             (MODEL_BETA, "tech_review")])
+        # Every pair appears exactly once and the sessions cover the fixture.
+        self.assertEqual(sum(p["sessions"] for p in report), len(ROWS))
+
+    def test_alpha_slice_implement_pair(self):
+        # A2 done (200.0s, 2000) + A3 error (300.0s, 3000).
+        # decided -> A2 only; rejections 0; passes 1; errors 1.
+        p = by_pair(MODEL_ALPHA, "slice_implement")
+        self.assertEqual(p["sessions"], 2)
+        self.assertEqual(p["rejections"], 0)
+        self.assertEqual(p["rejection_rate"], 0.0)     # 0 / 1 decided
+        self.assertEqual(p["pass_rate"], 1.0)          # 1 / 1 decided
+        self.assertEqual(p["error_rate"], 0.5)         # 1 / 2 rows
+        self.assertEqual(p["avg_duration_s"], 250.0)   # (200 + 300) / 2
+        self.assertEqual(p["avg_peak_tokens"], 2500)   # (2000 + 3000) / 2
+        self.assertEqual(p["total_tokens"], 5000)
+
+    def test_beta_slice_implement_pair(self):
+        # B2 pass (500.0s, 5000), B3 kickback (600.0s, 6000),
+        # B5 error (800.0s, 8000).
+        # decided -> B2, B3; rejections -> B3; passes -> B2; errors -> B5.
+        p = by_pair(MODEL_BETA, "slice_implement")
+        self.assertEqual(p["sessions"], 3)
+        self.assertEqual(p["rejections"], 1)
+        self.assertEqual(p["rejection_rate"], 0.5)     # 1 / 2 decided
+        self.assertEqual(p["pass_rate"], 0.5)          # 1 / 2 decided
+        self.assertEqual(p["error_rate"], 0.333)       # 1 / 3, round(.,3)
+        # (500 + 600 + 800) / 3 = 633.333 -> round(.,1)
+        self.assertEqual(p["avg_duration_s"], 633.3)
+        # (5000 + 6000 + 8000) / 3 = 6333.33 -> int 6333
+        self.assertEqual(p["avg_peak_tokens"], 6333)
+        self.assertEqual(p["total_tokens"], 19000)
+
+    def test_beta_spec_author_pair(self):
+        # B1 reject(->unknown, 400.0s, 4000) + B6 fail (900.0s, 9000).
+        # decided -> B6 only; rejections -> B6; passes 0; errors 0.
+        p = by_pair(MODEL_BETA, "spec_author")
+        self.assertEqual(p["sessions"], 2)
+        self.assertEqual(p["rejections"], 1)
+        self.assertEqual(p["rejection_rate"], 1.0)     # 1 / 1 decided
+        self.assertEqual(p["pass_rate"], 0.0)          # 0 / 1 decided
+        self.assertEqual(p["error_rate"], 0.0)         # 0 / 2 rows
+        self.assertEqual(p["avg_duration_s"], 650.0)   # (400 + 900) / 2
+        self.assertEqual(p["avg_peak_tokens"], 6500)   # (4000 + 9000) / 2
+        self.assertEqual(p["total_tokens"], 13000)
+
+    def test_all_error_pair_has_no_decided_rows(self):
+        rows = [
+            row(model="m-err", stage="s1", verdict="error",
+                outcome="error", duration_s=10.0, peak_tokens=100),
+            row(model="m-err", stage="s1", verdict="error",
+                outcome="error", duration_s=30.0, peak_tokens=300),
+        ]
+        p = model_stage_report(rows)[0]
+        self.assertIsNone(p["rejection_rate"])   # no decided rows
+        self.assertIsNone(p["pass_rate"])        # no decided rows
+        self.assertEqual(p["error_rate"], 1.0)   # 2 / 2
+        self.assertEqual(p["avg_duration_s"], 20.0)   # (10 + 30) / 2
+        self.assertEqual(p["avg_peak_tokens"], 200)   # (100 + 300) / 2
+        self.assertEqual(p["total_tokens"], 400)
+
+    def test_undecided_only_pair(self):
+        # All rows outcome `unknown` (the `reject` verdict quirk): nothing is
+        # decided, so both decided-rates are None and error_rate is 0.0.
+        rows = [
+            row(model="m-und", stage="s1", verdict="reject",
+                outcome="unknown", duration_s=40.0, peak_tokens=400),
+        ]
+        p = model_stage_report(rows)[0]
+        self.assertIsNone(p["rejection_rate"])
+        self.assertIsNone(p["pass_rate"])
+        self.assertEqual(p["error_rate"], 0.0)   # 0 errors / 1 row
+
+    def test_single_row_pair_has_exact_rates(self):
+        # A4: alpha/tech_review, outcome unknown, 0.0s, at the 32k cap.
+        # One row, no division by zero; the cap value formats without blowing up.
+        p = by_pair(MODEL_ALPHA, "tech_review")
+        self.assertEqual(p["sessions"], 1)
+        self.assertIsNone(p["rejection_rate"])   # 0 decided rows
+        self.assertIsNone(p["pass_rate"])
+        self.assertEqual(p["error_rate"], 0.0)   # 0 / 1
+        self.assertEqual(p["avg_duration_s"], 0.0)
+        self.assertEqual(p["avg_peak_tokens"], PEAK_TOKENS_CAP)
+        self.assertEqual(p["total_tokens"], PEAK_TOKENS_CAP)
+
+    def test_empty_rows_produce_no_report_rows(self):
+        self.assertEqual(model_stage_report([]), [])
+
+    def test_missing_model_and_stage_keys_group_as_unknown(self):
+        r = row()
+        del r["model"]
+        del r["stage"]
+        report = model_stage_report([r])
+        self.assertEqual([(p["model"], p["stage"]) for p in report],
+                         [("unknown", "unknown")])
+
+    def test_none_values_group_as_none_string(self):
+        # Pinned `_group` behaviour: str(None) == "None", not "unknown".
+        rows = [row(model=None, stage=None)]
+        report = model_stage_report(rows)
+        self.assertEqual([(p["model"], p["stage"]) for p in report],
+                         [("None", "None")])
+
+
 class TaskReportTest(unittest.TestCase):
     """`task_report`: totals per task, including the rows with no task."""
 
@@ -394,7 +548,9 @@ class RenderReportTest(unittest.TestCase):
             self.assertIn(name, text)
 
     def test_model_lines_match_model_report(self):
-        text = render_report(ROWS)
+        # The matrix rows also start with the model name, so the By-model
+        # lines are located in the report with the matrix section removed.
+        text = strip_matrix_section(render_report(ROWS))
         # columns: model, sess, rej%, pass%, err%, avg_s, avg_tok
         self.assertEqual(
             rendered_line(text, MODEL_ALPHA).split(),
@@ -433,6 +589,221 @@ class RenderReportTest(unittest.TestCase):
         self.assertIn(f"=== Session stats ({len(ROWS)} total) ===",
                       render_report(ROWS))
 
+    def test_matrix_section_header_present(self):
+        self.assertIn(MATRIX_HEADER, render_report(ROWS))
+
+    def test_matrix_section_sits_between_stage_and_task(self):
+        lines = render_report(ROWS).splitlines()
+        stage_i = lines.index("--- By stage (bounce rate) ---")
+        matrix_i = lines.index(MATRIX_HEADER)
+        task_i = lines.index("--- By task ---")
+        self.assertLess(stage_i, matrix_i)
+        self.assertLess(matrix_i, task_i)
+        # Leading blank line, like the other sections.
+        self.assertEqual(lines[matrix_i - 1], "")
+
+    def test_matrix_column_header_lists_every_column(self):
+        lines = render_report(ROWS).splitlines()
+        header = lines[lines.index(MATRIX_HEADER) + 1]
+        self.assertEqual(
+            header.split(),
+            ["model", "stage", "sess", "rej%", "pass%", "err%",
+             "avg_s", "avg_tok"])
+
+    def test_matrix_lines_match_model_stage_report(self):
+        # One data line per `model_stage_report` entry, in the same order,
+        # each carrying model, stage, sessions, rej/pass/err, avg_s, avg_tok.
+        text = render_report(ROWS)
+        report = model_stage_report(ROWS)
+        data = matrix_data_lines(text)
+        self.assertEqual(len(data), len(report))
+        # Hand-computed from the fixture (see ModelStageReportTest), in
+        # (model, stage) sort order — `slice_implement` precedes `spec_author`:
+        # alpha/slice_implement: A2 done + A3 error -> 0/1, 1/1, 1/2.
+        self.assertEqual(
+            data[0].split(),
+            ["alpha-model", "slice_implement", "2", "0%", "100%", "50%",
+             "250.0", "2500"])
+        # alpha/spec_author: A1 -> 1 sess, 0/1 rej, 1/1 pass, 0/1 err.
+        self.assertEqual(
+            data[1].split(),
+            ["alpha-model", "spec_author", "1", "0%", "100%", "0%",
+             "100.0", "1000"])
+        # alpha/tech_review: A4 undecided-only -> both decided-rates None,
+        # which `_pct` renders as "  -"; the 32k-cap token value formats.
+        self.assertEqual(
+            data[2].split(),
+            ["alpha-model", "tech_review", "1", "-", "-", "0%",
+             "0.0", "32768"])
+        # beta/slice_implement: B2, B3, B5 -> 1/2, 1/2, 1/3 (rounds to 33%).
+        self.assertEqual(
+            data[3].split(),
+            ["beta-model", "slice_implement", "3", "50%", "50%", "33%",
+             "633.3", "6333"])
+        # beta/spec_author: B1 unknown + B6 fail -> 1/1, 0/1, 0/2.
+        self.assertEqual(
+            data[4].split(),
+            ["beta-model", "spec_author", "2", "100%", "0%", "0%",
+             "650.0", "6500"])
+        # beta/tech_review: B4 done only -> 0/1, 1/1, 0/1.
+        self.assertEqual(
+            data[5].split(),
+            ["beta-model", "tech_review", "1", "0%", "100%", "0%",
+             "700.0", "7000"])
+
+    def test_empty_rows_still_print_matrix_headers(self):
+        lines = render_report([]).splitlines()
+        self.assertIn(MATRIX_HEADER, lines)
+        header = lines[lines.index(MATRIX_HEADER) + 1]
+        self.assertEqual(
+            header.split(),
+            ["model", "stage", "sess", "rej%", "pass%", "err%",
+             "avg_s", "avg_tok"])
+        self.assertEqual(matrix_data_lines(render_report([])), [])
+
+    def test_existing_sections_are_byte_for_byte_unchanged(self):
+        # AC-3: the matrix is additive. With the matrix section cut out, the
+        # rest of the report must equal the pre-auto-30 snapshot exactly.
+        self.assertEqual(strip_matrix_section(render_report(ROWS)),
+                         LEGACY_REPORT)
+
+
+# `render_report(ROWS)` before auto-30 added the matrix section, captured
+# verbatim; `test_existing_sections_are_byte_for_byte_unchanged` diffs against
+# it so a change to an existing column shows up here, not in a review comment.
+LEGACY_REPORT = """\
+=== Session stats (10 total) ===
+
+--- By model (quality & speed) ---
+model                                                 sess   rej%  pass%   err%   avg_s  avg_tok
+alpha-model                                              4     0%   100%    25%   150.0     9692
+beta-model                                               6    50%    50%    17%   650.0     6500
+
+--- By stage (bounce rate) ---
+stage                   sess  bounce%   avg_s  avg_tok
+slice_implement            5      20%   480.0     4800
+spec_author                3      33%   466.7     4666
+tech_review                2       0%   350.0    19884
+
+--- By task ---
+None                                     sessions=1    tokens=7000      time=   700.0s bounces=0
+t1                                       sessions=3    tokens=12000     time=  1200.0s bounces=1
+t2                                       sessions=3    tokens=39768     time=   700.0s bounces=0
+t3                                       sessions=3    tokens=19000     time=  1900.0s bounces=1"""
+
+
+class MatrixReconciliationTest(unittest.TestCase):
+    """The matrix must reconcile with `model_report`/`stage_report` (AC-4).
+
+    Same outcome definitions on every level: a pair's numbers are the
+    `model_report` formulas over the pair's rows, so summing the pairs along
+    either axis reproduces the parent tables' counts exactly.
+    """
+
+    def test_pair_sessions_sum_to_model_report_sessions(self):
+        report = model_stage_report(ROWS)
+        for m in model_report(ROWS):
+            pairs = [p for p in report if p["model"] == m["model"]]
+            self.assertEqual(sum(p["sessions"] for p in pairs),
+                             m["sessions"], m["model"])
+
+    def test_pair_sessions_sum_to_stage_report_sessions(self):
+        report = model_stage_report(ROWS)
+        for s in stage_report(ROWS):
+            pairs = [p for p in report if p["stage"] == s["stage"]]
+            self.assertEqual(sum(p["sessions"] for p in pairs),
+                             s["sessions"], s["stage"])
+
+    def test_pair_rejections_sum_to_model_report_rejections(self):
+        report = model_stage_report(ROWS)
+        for m in model_report(ROWS):
+            pairs = [p for p in report if p["model"] == m["model"]]
+            self.assertEqual(sum(p["rejections"] for p in pairs),
+                             m["rejections"], m["model"])
+
+    def test_pair_rejections_sum_to_stage_report_bounces(self):
+        # `stage_report` counts bounces over all rows, `model_stage_report`
+        # over decided rows — equal because kickback/fail/kickout are always
+        # decided. This pins that the two outcome lists stay in step.
+        report = model_stage_report(ROWS)
+        for s in stage_report(ROWS):
+            pairs = [p for p in report if p["stage"] == s["stage"]]
+            self.assertEqual(sum(p["rejections"] for p in pairs),
+                             s["bounces"], s["stage"])
+
+    def test_pair_total_tokens_sum_to_model_report_totals(self):
+        report = model_stage_report(ROWS)
+        for m in model_report(ROWS):
+            pairs = [p for p in report if p["model"] == m["model"]]
+            self.assertEqual(sum(p["total_tokens"] for p in pairs),
+                             m["total_tokens"], m["model"])
+
+    def test_beta_slice_implement_pair_agrees_with_both_parents(self):
+        # The discriminating pair: it feeds model beta's rejection/pass
+        # rates and stage slice_implement's bounce rate simultaneously.
+        p = by_pair(MODEL_BETA, "slice_implement")
+        m = by_model(MODEL_BETA)
+        s = by_stage("slice_implement")
+        # pair: B2 pass, B3 kickback, B5 error -> 1/2, 1/2, 1/3.
+        self.assertEqual((p["rejection_rate"], p["pass_rate"],
+                          p["error_rate"]), (0.5, 0.5, 0.333))
+        # model beta's 2 rejections = B3 (this pair) + B6 (spec_author pair).
+        self.assertEqual(m["rejections"], 2)
+        self.assertEqual(p["rejections"]
+                         + by_pair(MODEL_BETA, "spec_author")["rejections"],
+                         m["rejections"])
+        # stage slice_implement's single bounce is B3, this pair's rejection.
+        self.assertEqual(s["bounces"], p["rejections"])
+
+    def test_single_pair_model_and_stage_share_the_pair_rates(self):
+        # A model with exactly one stage and a stage with exactly one model:
+        # all three levels must report the same rates for the same rows.
+        rows = [
+            row(model="solo", stage="solo_stage", verdict="pass",
+                outcome="pass"),
+            row(model="solo", stage="solo_stage", verdict="kickback",
+                outcome="kickback"),
+        ]
+        p = model_stage_report(rows)[0]
+        m = model_report(rows)[0]
+        s = stage_report(rows)[0]
+        self.assertEqual(p["rejection_rate"], 0.5)      # 1 / 2 decided
+        self.assertEqual(p["rejection_rate"], m["rejection_rate"])
+        self.assertEqual(p["pass_rate"], m["pass_rate"])
+        self.assertEqual(p["error_rate"], m["error_rate"])
+        self.assertEqual(s["bounce_rate"], p["rejection_rate"])  # 1 / 2 rows
+
+
+class ReportJsonTest(unittest.TestCase):
+    """`harness.py report-json` exposes the matrix under `model_stages` (G3)."""
+
+    def test_model_stages_key_equals_model_stage_report(self):
+        self.assertEqual(render_report_json(ROWS)["model_stages"],
+                         model_stage_report(ROWS))
+
+    def test_model_stages_is_json_serialisable(self):
+        # The whole payload must survive a JSON round trip — the pair keys
+        # are plain str/float/int/None, no dataclasses leak in.
+        import json
+        payload = json.loads(json.dumps(render_report_json(ROWS)))
+        self.assertEqual(payload["model_stages"], model_stage_report(ROWS))
+
+    def test_pre_existing_keys_are_unchanged(self):
+        # AC-3: `model_stages` is additive; every prior key keeps its value.
+        result = render_report_json(ROWS)
+        self.assertEqual(result["total_sessions"], 10)
+        self.assertEqual(result["total_tokens"],
+                         sum(r["peak_tokens"] for r in ROWS))  # 77768
+        self.assertEqual(result["models"], model_report(ROWS))
+        self.assertEqual(result["stages"], stage_report(ROWS))
+        self.assertEqual(result["tasks"], task_report(ROWS))
+
+    def test_empty_rows_produce_empty_model_stages(self):
+        result = render_report_json([])
+        self.assertEqual(result["model_stages"], [])
+        self.assertEqual(result["total_sessions"], 0)
+        self.assertEqual(result["total_tokens"], 0)
+
 
 class DivisionGuardTest(unittest.TestCase):
     """Degenerate inputs: the report must render, not divide by zero."""
@@ -462,7 +833,8 @@ class DivisionGuardTest(unittest.TestCase):
         # `avg_duration_s or 0` in the renderer must not turn 0.0 into a crash
         # or a missing column.
         self.assertEqual(
-            rendered_line(render_report(rows), "delta").split(),
+            rendered_line(strip_matrix_section(render_report(rows)),
+                          "delta").split(),
             ["delta", "2", "0%", "100%", "0%", "0.0", "0"])
 
     def test_single_row_model(self):
