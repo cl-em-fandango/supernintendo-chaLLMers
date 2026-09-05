@@ -529,9 +529,10 @@ class TaskLifecycle:
     def resolve_workdir(self, task_dir: Path) -> Path:
         """Resolve the target repository workdir deterministically.
 
-        Uses `cfg.repo_dir` (configured in config.json or passed via CLI).
-        Falls back to `task_dir` (which the queue guard rejects) if no target
-        repo is configured. Never extracts paths from markdown."""
-        if self.cfg.repo_dir is not None:
-            return self.cfg.repo_dir
+        Uses `cfg.target_codebase_dir` (configured in config.json as targetCodebaseDir
+        or passed via CLI --repo). Falls back to `task_dir` (which the queue guard
+        rejects) if no target repo is configured. Never extracts paths from markdown."""
+        target = getattr(self.cfg, "target_codebase_dir", None) or getattr(self.cfg, "repo_dir", None)
+        if target is not None:
+            return target
         return task_dir

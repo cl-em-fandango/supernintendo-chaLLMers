@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from ..core.config import Config
-from ..core.providers import Task
+from ..core.providers import Task, task_meta
 from .task_lifecycle import TaskLifecycle
 
 
@@ -37,7 +37,11 @@ def task_from_dir(task_dir: Path, lifecycle: TaskLifecycle) -> Task:
     source = "resume"
     state = lifecycle.load_state(task_dir.name)
     source = state.source or "resume"
-    return Task(id=task_dir.name, body=body, source=source)
+    # Carry the recorded flags (demo) through the resume exactly as a
+    # provider claim would; the checkpointed `task.json` demo field is
+    # informational — the metadata record is the source of truth.
+    return Task(id=task_dir.name, body=body, source=source,
+                meta=task_meta(lifecycle.cfg.queue_dir, task_dir.name))
 
 
 def resume_in_flight(lifecycle: TaskLifecycle, pipeline, log=print) -> int:

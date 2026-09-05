@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..core.config import Config
 from ..core.enums import CheckpointStage, Stage
-from ..core.providers import Task
+from ..core.providers import Task, task_meta
 from .continue_fresh import fresh_restart, task_from_dir
 from ..core.sync_stage_change_hook import run_stage_change_hook
 from .pipeline import STAGE_SEQUENCE
@@ -121,7 +121,8 @@ def resume_task(task_id: str, yes: bool, cfg: Config, pipeline,
             (task_dir / artifacts_backup.name).mkdir(parents=True)
             shutil.rmtree(task_dir / artifacts_backup.name)
             shutil.copytree(artifacts_backup, task_dir / artifacts_backup.name)
-        pipeline.process(Task(id=task_id, body=body, source=source))
+        pipeline.process(Task(id=task_id, body=body, source=source,
+                              meta=task_meta(cfg.queue_dir, task_id)))
         return 0
 
     _print_plan(task_id, where, lifecycle, log)

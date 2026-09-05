@@ -1,0 +1,319 @@
+/* theme.css — design tokens and shared utilities for Hannah Montana Linux.
+ * Palette: gold/blonde, hot pink, purple glamour over dark "terminal" surfaces.
+ */
+
+:root {
+  /* Brand palette */
+  --hml-gold: #f5c518;
+  --hml-gold-soft: #ffe27a;
+  --hml-pink: #ff2ea6;
+  --hml-pink-soft: #ff8ad4;
+  --hml-purple: #8a2be2;
+  --hml-purple-deep: #4b0f78;
+
+  /* Surfaces */
+  --hml-bg: #160a1f;
+  --hml-bg-elevated: #221033;
+  --hml-surface: #2b1540;
+  --hml-terminal: #0c0714;
+
+  /* Text */
+  --hml-text: #f7f2fa;
+  --hml-text-muted: #cbb8dd;
+  --hml-text-on-accent: #1a0b26;
+
+  /* Lines and effects */
+  --hml-border: rgba(255, 214, 120, 0.22);
+  --hml-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --hml-shadow-hover: 0 14px 40px rgba(255, 46, 166, 0.28);
+  --hml-radius: 14px;
+
+  /* Spacing scale */
+  --hml-space-1: 0.25rem;
+  --hml-space-2: 0.5rem;
+  --hml-space-3: 1rem;
+  --hml-space-4: 1.5rem;
+  --hml-space-5: 2.5rem;
+  --hml-space-6: 4rem;
+
+  /* Typography */
+  --hml-font-display: "Trebuchet MS", "Segoe UI", Verdana, sans-serif;
+  --hml-font-body: Georgia, "Times New Roman", serif;
+  --hml-font-mono: "Courier New", ui-monospace, Menlo, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1100px 500px at 80% -10%, rgba(138, 43, 226, 0.35), transparent 60%),
+    radial-gradient(900px 420px at 10% 0%, rgba(255, 46, 166, 0.22), transparent 55%),
+    var(--hml-bg);
+  color: var(--hml-text);
+  font-family: var(--hml-font-body);
+  line-height: 1.65;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--hml-font-display);
+  line-height: 1.15;
+  color: var(--hml-gold-soft);
+}
+
+h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  background: linear-gradient(90deg, var(--hml-gold), var(--hml-pink), var(--hml-purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+a {
+  color: var(--hml-pink-soft);
+}
+
+code,
+pre {
+  font-family: var(--hml-font-mono);
+  background: var(--hml-terminal);
+  color: var(--hml-gold-soft);
+  border-radius: 8px;
+}
+
+code {
+  padding: 0.1rem 0.35rem;
+}
+
+pre {
+  padding: var(--hml-space-3);
+  overflow-x: auto;
+}
+
+/* Layout helpers */
+.hml-container {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--hml-space-4);
+}
+
+.hml-section {
+  margin-block: var(--hml-space-5);
+}
+
+.hml-grid {
+  display: grid;
+  gap: var(--hml-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+/* Cards */
+.hml-card {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 46, 166, 0.08),
+    rgba(138, 43, 226, 0.06)
+  ),
+    var(--hml-surface);
+  border: 1px solid var(--hml-border);
+  border-radius: var(--hml-radius);
+  box-shadow: var(--hml-shadow);
+  padding: var(--hml-space-4);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.hml-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--hml-shadow-hover);
+}
+
+/* Buttons */
+.hml-button {
+  display: inline-block;
+  padding: var(--hml-space-2) var(--hml-space-4);
+  border-radius: 999px;
+  border: 1px solid var(--hml-border);
+  font-family: var(--hml-font-display);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.hml-button:hover {
+  box-shadow: var(--hml-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.hml-button--primary {
+  background: linear-gradient(90deg, var(--hml-pink), var(--hml-purple));
+  color: #ffffff;
+}
+
+.hml-button--secondary {
+  background: linear-gradient(90deg, var(--hml-gold), var(--hml-gold-soft));
+  color: var(--hml-text-on-accent);
+}
+
+/* Skip link — visually hidden until focused (keyboard a11y). */
+.hml-skip-link {
+  position: absolute;
+  left: var(--hml-space-3);
+  top: -100vh;
+  z-index: 20;
+  padding: var(--hml-space-2) var(--hml-space-4);
+  border-radius: 0 0 var(--hml-radius) var(--hml-radius);
+  background: var(--hml-gold);
+  color: var(--hml-text-on-accent);
+  font-family: var(--hml-font-display);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.hml-skip-link:focus {
+  top: 0;
+}
+
+/* Header */
+.hml-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(22, 10, 31, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hml-border);
+}
+
+.hml-header__inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--hml-space-3) var(--hml-space-4);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--hml-space-3);
+}
+
+.hml-brand {
+  font-family: var(--hml-font-display);
+  font-weight: 800;
+  font-size: 1.15rem;
+  text-decoration: none;
+  background: linear-gradient(90deg, var(--hml-gold), var(--hml-pink));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hml-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-2);
+  margin-left: auto;
+}
+
+.hml-nav__link {
+  font-family: var(--hml-font-display);
+  text-decoration: none;
+  color: var(--hml-text-muted);
+  padding: var(--hml-space-1) var(--hml-space-2);
+  border-radius: 999px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.hml-nav__link:hover {
+  color: var(--hml-text);
+}
+
+.hml-nav__link.active {
+  color: var(--hml-text-on-accent);
+  background: linear-gradient(90deg, var(--hml-gold), var(--hml-pink-soft));
+  font-weight: 700;
+}
+
+/* Footer */
+.hml-footer {
+  margin-top: var(--hml-space-6);
+  border-top: 1px solid var(--hml-border);
+  background: var(--hml-bg-elevated);
+}
+
+.hml-footer__inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--hml-space-4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-4);
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.hml-footer__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hml-footer__note {
+  color: var(--hml-text-muted);
+  font-size: 0.85rem;
+  max-width: 46ch;
+}
+
+/* Responsive passes — keep 360px free of overflow, 1280px airy.
+ * Grids already collapse via auto-fit/minmax; these rules tune the
+ * chrome (header, footer, container padding, type scale). */
+@media (max-width: 720px) {
+  .hml-header__inner {
+    padding: var(--hml-space-2) var(--hml-space-3);
+  }
+
+  .hml-brand {
+    font-size: 1.05rem;
+  }
+
+  .hml-nav {
+    margin-left: 0;
+    width: 100%;
+    row-gap: var(--hml-space-1);
+  }
+
+  .hml-container {
+    padding: var(--hml-space-3);
+  }
+
+  .hml-footer__inner {
+    flex-direction: column;
+    gap: var(--hml-space-3);
+    padding: var(--hml-space-3);
+  }
+}
+
+@media (max-width: 400px) {
+  html {
+    font-size: 15px;
+  }
+
+  .hml-nav__link {
+    padding: var(--hml-space-1);
+  }
+
+  .hml-button {
+    padding: var(--hml-space-2) var(--hml-space-3);
+  }
+}

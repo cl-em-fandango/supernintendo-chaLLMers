@@ -25,9 +25,9 @@ def _add_requeue_stale_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_repo_flag(parser: argparse.ArgumentParser) -> None:
-    """The target repository flag: CLI override for repoDir in config.json."""
+    """The target repository flag: CLI override for targetCodebaseDir in config.json."""
     parser.add_argument("--repo", "--repo-dir", dest="repo", default=None,
-                        help="Path to target git repository (overrides repoDir in config.json)")
+                        help="Path to target git repository (overrides targetCodebaseDir in config.json)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
     
     # report
     subparsers.add_parser("report", help="Print the stats report")
+    # report-json
+    subparsers.add_parser("report-json", help="Print the stats report as JSON")
+    # export-stats-csv
+    export_csv_parser = subparsers.add_parser("export-stats-csv", help="Export raw session stats to CSV")
+    export_csv_parser.add_argument("output", nargs="?", default="stats.csv",
+                                 help="Path to output CSV file (default: stats.csv)")
+    # stats-prune
+    prune_parser = subparsers.add_parser("stats-prune", help="Trim the stats store to recent rows")
+    prune_parser.add_argument("--max-rows", dest="max_rows", type=int, default=None,
+                                help="Maximum number of recent rows to keep (default from config or 10000)")
 
     # sync
     subparsers.add_parser(
@@ -86,19 +96,35 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "syncd", help="Run the sync daemon: poll, sync, and spawn one "
                       "harness run when pending/ has work and none is "
-                      "running (single instance via <workDir>/syncd.lock; "
+                      "running (single instance via <harnessExecutionAndQueueDir>/syncd.lock; "
                       "exits non-zero when another syncd holds the lock)")
 
     # board (with hidden kanban alias)
-    subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
-    subparsers.add_parser("kanban", help=argparse.SUPPRESS)
+    board_parser = subparsers.add_parser("board", help="Kanban-style queue view with executive summary")
+    board_parser.add_argument("--json", dest="json", action="store_true", default=False,
+                            help="Output board data as JSON instead of the formatted view")
+    kanban_parser = subparsers.add_parser("kanban", help=argparse.SUPPRESS)
+    kanban_parser.add_argument("--json", dest="json", action="store_true", default=False,
+                               help="Output board data as JSON instead of the formatted view")
 
     # journey
     journey_parser = subparsers.add_parser("journey", help="Show static workflow journey graph and bottleneck analysis")
     journey_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
     journey_parser.add_argument("--save", dest="save", action="store_true", default=False,
                                 help="Save journey graph to <statsDir>/journeys/<task_id>-journey.txt")
-    
+
+    # journey-markdown
+    journey_md_parser = subparsers.add_parser("journey-md", help="Export workflow journey as Markdown with transcript links")
+    journey_md_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (defaults to most recent task)")
+    journey_md_parser.add_argument("--save", dest="save", action="store_true", default=False,
+                                help="Save Markdown journey to <statsDir>/journeys/<task_id>-journey.md")
+
+    # post-mortem
+    post_mortem_parser = subparsers.add_parser("post-mortem", help="Read-only post-mortem report for a stopped task")
+    post_mortem_parser.add_argument("task_id", help="Task ID to analyze (required; no most-recent default)")
+    post_mortem_parser.add_argument("--save", dest="save", action="store_true", default=False,
+                                    help="Also write the report to <statsDir>/postmortems/<task_id>-post-mortem.md")
+
     # interrupt
     interrupt_parser = subparsers.add_parser(
         "interrupt", help="Request a managed stand-down of the harness so the "

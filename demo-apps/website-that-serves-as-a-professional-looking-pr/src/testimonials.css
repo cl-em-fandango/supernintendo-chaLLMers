@@ -1,0 +1,88 @@
+/* testimonials.css — styling for the Testimonials view and QuoteCard. */
+
+.hml-quote {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--hml-space-3);
+  position: relative;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.hml-quote::before {
+  content: '\201C';
+  font-family: var(--hml-font-display);
+  font-size: 3rem;
+  line-height: 1;
+  color: var(--hml-gold);
+  opacity: 0.85;
+}
+
+.hml-quote--gold {
+  border-top: 4px solid var(--hml-gold);
+}
+
+.hml-quote--pink {
+  border-top: 4px solid var(--hml-pink);
+}
+
+.hml-quote--purple {
+  border-top: 4px solid var(--hml-purple);
+}
+
+.hml-quote__text {
+  margin: 0;
+  font-family: var(--hml-font-body);
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--hml-text);
+}
+
+.hml-quote__caption {
+  display: flex;
+  flex-direction: column;
+  gap: var(--hml-space-1);
+  margin-top: auto;
+}
+
+.hml-quote__name {
+  font-family: var(--hml-font-display);
+  font-weight: 700;
+  color: var(--hml-gold-soft);
+}
+
+.hml-quote__affiliation {
+  font-family: var(--hml-font-mono);
+  font-size: 0.85rem;
+  color: var(--hml-text-muted);
+}
+
+.hml-testimonials__deck {
+  font-family: var(--hml-font-body);
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: var(--hml-text-muted);
+  max-width: 65ch;
+}
+
+.hml-testimonials__wall-title {
+  display: flex;
+  align-items: center;
+  gap: var(--hml-space-2);
+}
+
+.hml-testimonials__sparkle {
+  color: var(--hml-pink-soft);
+}
+
+.hml-testimonial-outro {
+  margin-block: var(--hml-space-5);
+}
+
+.hml-testimonial-outro__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-3);
+  margin-top: var(--hml-space-4);
+}

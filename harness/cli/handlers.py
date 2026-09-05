@@ -23,6 +23,7 @@ from ..core.board import (TERMINAL_LOCATIONS, BoardSummary, BoardTask,
                           classify_origin, collapse_task_stats, render_board,
                           write_board)
 from ..core import task_record
+from ..core.postmortem import PostMortemAnalyzer, PostMortemParams, render_post_mortem_markdown
 from ..core.claim_metadata import OWNER_UNKNOWN
 from ..core.interrupt import (
     InterruptMode,
@@ -33,11 +34,11 @@ from ..core.interrupt import (
     write_interrupt,
 )
 from ..core.process_lock import LockHeldError, ProcessLock, RUN_LOCK_NAME
-from ..core.providers import Task
+from ..core.providers import Task, task_meta
 from ..core.stand_down import StandDownWatcher
 from ..core.syncd import SyncdLoop, SyncdParams
 from external.harness_cli import spawn_harness_run_task_loop
-from ..core.stats import render_report, render_task_journey
+from ..core.stats import render_report, render_task_journey, render_task_journey_markdown, render_report_json
 from external.pi_cli import run_quick_pi_session
 
 from ..composition import build, build_github_api, build_sync_engine
@@ -51,6 +52,36 @@ CLAIMS_STRANDED_WARNING = ("⚠ {count} claimed tasks: nothing will process them
 # entrypoints and the operator command agree on one number; env-overridable for
 # a box whose sessions legitimately run longer.
 CLAIM_STALE_HOURS = float(os.environ.get("CLAIM_STALE_HOURS", "6.0"))
+
+# CSV export command handler
+def cmd_export_stats_csv(csv_path: str) -> int:
+    """Export raw session stats to a CSV file.
+
+    Reads the stats store (default path from config) and writes a CSV with
+    columns matching the SessionRecord fields. Returns 0 on success, 1 on error.
+    """
+    # Build config to locate stats store
+    cfg, store, *_ = build()
+    rows = store.all()
+    if not rows:
+        print("No stats to export.")
+        return 0
+    # Determine output path
+    out_path = Path(csv_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write CSV
+    import csv
+    fieldnames = ["ts", "task_id", "stage", "model", "verdict", "outcome", "peak_tokens",
+                  "duration_s", "rc", "prompt_chars", "slice", "iteration", "session_file", "notes"]
+    with out_path.open('w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            # Ensure all keys exist
+            row = {k: r.get(k, "") for k in fieldnames}
+            writer.writerow(row)
+    print(f"Exported {len(rows)} session records to {out_path}")
+    return 0
 
 # Entropy in a generated owner id, in bytes. Four is 4 billion values: enough
 # that two invocations of the same command in the same process never collide,
@@ -162,8 +193,13 @@ def cmd_run_task(file: str, fresh: bool = False, continue_: bool = False,
             return 1
         if hasattr(runner, "validate_models") and callable(getattr(runner, "validate_models", None)):
             runner.validate_models()
-        task = Task(id=_slug(Path(file).stem),
-                    body=Path(file).read_text(), source=f"cli:{file}")
+        task_id = _slug(Path(file).stem)
+        # Carry the task's recorded flags (demo) into the Task exactly as a
+        # provider claim would, so `run-task` on a demo-flagged task runs
+        # the demo workflow instead of silently downgrading to standard.
+        task = Task(id=task_id,
+                    body=Path(file).read_text(), source=f"cli:{file}",
+                    meta=task_meta(cfg.queue_dir, task_id))
         if fresh:
             fresh_restart(task.id, cfg, log=log)
         if continue_:
@@ -234,7 +270,7 @@ def cmd_run(continue_: bool = False, requeue_stale: bool = False,
                 log("queue empty -> entering autonomous mode")
                 gen = AutonomousGenerator(cfg, runner, provider, log=log,
                                           sync_engine=getattr(pipeline, "sync_engine", None))
-                target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+                target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
                 gen.run(target_repo,
                         stand_down_check=lambda: _stand_down_at_boundary(cfg, log))
             return 0
@@ -550,7 +586,7 @@ def cmd_autonomous(repo: str | Path | None = None) -> int:
         runner.validate_models()
     gen = AutonomousGenerator(cfg, runner, provider, log=log,
                               sync_engine=getattr(pipeline, "sync_engine", None))
-    target_repo = getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
+    target_repo = getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path(__file__).resolve().parent.parent
     # The generator owns the per-attempt boundary: it is what spawns the
     # suggest/review `pi` sessions, so the stand-down check travels with the
     # loop rather than only guarding its single call site.
@@ -759,7 +795,7 @@ def _board_context() -> RenderContext:
     return RenderContext(use_color=use_color, width=width)
 
 
-def cmd_board() -> int:
+def cmd_board(json: bool = False) -> int:
     """Print the kanban-style board: executive summary over the location sections.
 
     Read-only (spec FR-8): counts come from directory listings and
@@ -791,20 +827,55 @@ def cmd_board() -> int:
                 stats_rows=rows_by_task.get(task_id, [])))
         boards.append(LocationBoard(location=sub, tasks=tuple(tasks)))
     warning = CLAIMS_STRANDED_WARNING.format(count=len(claims)) if claims else None
-    board = render_board(BoardSummary(locations=tuple(boards),
+    board_summary = BoardSummary(locations=tuple(boards),
                                       claims_warning=warning,
-                                      stats=aggregate_stats(store.all())),
-                         _board_context())
-    write_board(board, sys.stdout)
+                                      stats=aggregate_stats(store.all()))
+    if json:
+        # Output JSON representation of the board summary
+        from dataclasses import asdict
+        import json as _json
+        data = asdict(board_summary)
+        # Ensure any enum values are serialized as their value (they are already strings in summary)
+        print(_json.dumps(data, indent=2))
+    else:
+        board = render_board(board_summary, _board_context())
+        write_board(board, sys.stdout)
     # The board's output stream is stdout, so the interrupt line (and a
     # corrupt-file warning) travels there too, not through the logger.
     _interrupt_status_line(cfg, lambda line: print(line))
     return 0
 
 
+def cmd_report_json() -> int:
+    """Print the stats report as JSON for external tooling."""
+    _, store, *_ = build()
+    import json as _json
+    data = render_report_json(store.all())
+    print(_json.dumps(data, indent=2))
+    return 0
+
 def cmd_report() -> int:
+    # Existing command unchanged
     _, store, *_ = build()
     print(render_report(store.all()))
+    return 0
+
+
+def cmd_stats_prune(max_rows: int | None = None) -> int:
+    """Trim the stats JSONL file.
+
+    ``max_rows`` overrides the config default. If omitted, falls back to
+    ``cfg.maxStatsRows`` if present, otherwise 10000.
+    """
+    cfg, store, *_ = build()
+    default = getattr(cfg, "maxStatsRows", 10000)
+    keep = max_rows if max_rows is not None else default
+    try:
+        store.prune(keep)
+    except Exception as exc:
+        print(f"Failed to prune stats: {exc}")
+        return 1
+    print(f"Stats pruned to most recent {keep} rows.")
     return 0
 
 
@@ -928,6 +999,75 @@ def cmd_journey(task_id: str | None = None, save: bool = False) -> int:
         path = store.write_task_journey(task_id)
         print(f"\n[Saved journey graph to {path}]")
 
+    return 0
+
+
+def cmd_journey_md(task_id: str | None = None, save: bool = False) -> int:
+    """Export the workflow journey for a task as Markdown with transcript links.
+
+    Mirrors ``cmd_journey`` but renders a richer Markdown document suitable
+    for sharing or publishing. If ``save`` is True the markdown is written to
+    ``<statsDir>/journeys/<task_id>-journey.md``.
+    """
+    cfg, store, *_ = build()
+    all_rows = store.all()
+    if not all_rows:
+        print("No sessions recorded yet in stats.")
+        return 0
+
+    if not task_id:
+        # pick most recent task
+        for r in reversed(all_rows):
+            tid = r.get("task_id")
+            if tid and tid != "None":
+                task_id = tid
+                break
+    if not task_id:
+        print("No specific task found in stats. Showing markdown journey for all recorded sessions:")
+        rows = all_rows
+        task_label = "all"
+    else:
+        rows = store.for_task(task_id)
+        if not rows:
+            print(f"No sessions found for task '{task_id}'.")
+            return 1
+        task_label = task_id
+
+    # Collect transcript filenames if present
+    transcript_files = [r.get("session_file") for r in rows]
+    md = render_task_journey_markdown(rows, task_id=task_label, transcript_files=transcript_files)
+    print(md)
+    if save:
+        out_dir = store.path.parent / "journeys"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        md_path = out_dir / f"{task_label}-journey.md"
+        md_path.write_text(md, encoding="utf-8")
+        print(f"\n[Saved markdown journey to {md_path}]")
+    return 0
+
+
+def cmd_post_mortem(task_id: str, save: bool = False) -> int:
+    """Print a read-only post-mortem report for one stopped task.
+
+    Exit 1 with a single error line when the task is in no queue
+    subdirectory and has no telemetry rows; exit 0 with the report
+    otherwise (degraded reports included). `--save` is parsed now and
+    wired in a later slice (spec §3).
+    """
+    cfg, *_ = build()
+    analyzer = PostMortemAnalyzer(PostMortemParams(
+        queue_dir=cfg.queue_dir,
+        stats_path=cfg.stats_path,
+        session_timeout_s=cfg.session_timeout,
+    ), log=lambda msg: None)
+    report = analyzer.analyze(task_id)
+    if report is None:
+        print(f"error: task '{task_id}' not found in any queue subdirectory "
+              f"of {cfg.queue_dir} and has no recorded sessions")
+        return 1
+    print(render_post_mortem_markdown(report))
+    if save:
+        pass  # --save writes <statsDir>/postmortems/... in a later slice
     return 0
 
 
@@ -1131,7 +1271,7 @@ def _cmd_interrupt_quick(model: str | None, prompt: str | None,
             "(harness.py resume?); no session was started")
         return 1
     rc = run_quick_pi_session(model=resolved_model,
-                              workdir=cfg.repo_dir or Path.cwd(),
+                              workdir=getattr(cfg, "target_codebase_dir", None) or getattr(cfg, "repo_dir", None) or Path.cwd(),
                               prompt=prompt)
     log(f"quick session exited (rc={rc})")
     log(QUICK_RESUMING_LOG)

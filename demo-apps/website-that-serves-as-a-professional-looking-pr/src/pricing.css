@@ -1,0 +1,181 @@
+/* pricing.css — styling for the Pricing view, PricingCard, and FAQ. */
+
+.hml-pricing__deck {
+  font-family: var(--hml-font-body);
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: var(--hml-text-muted);
+  max-width: 65ch;
+}
+
+.hml-pricing__tiers-title {
+  display: flex;
+  align-items: center;
+  gap: var(--hml-space-2);
+}
+
+.hml-pricing__sparkle {
+  color: var(--hml-pink-soft);
+}
+
+/* hml-grid already stacks to one column below ~560px, so tiers stack at 360px. */
+.hml-pricing__grid {
+  align-items: stretch;
+}
+
+/* Tier cards */
+.hml-tier {
+  display: flex;
+  flex-direction: column;
+  gap: var(--hml-space-3);
+  position: relative;
+  overflow-wrap: break-word;
+}
+
+.hml-tier--gold {
+  border-top: 4px solid var(--hml-gold);
+}
+
+.hml-tier--pink {
+  border-top: 4px solid var(--hml-pink);
+}
+
+.hml-tier--purple {
+  border-top: 4px solid var(--hml-purple);
+}
+
+.hml-tier--featured {
+  outline: 1px solid var(--hml-pink-soft);
+}
+
+.hml-tier__ribbon {
+  position: absolute;
+  top: 0;
+  right: var(--hml-space-3);
+  transform: translateY(-50%);
+  margin: 0;
+  padding: var(--hml-space-1) var(--hml-space-2);
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--hml-pink), var(--hml-purple));
+  color: #ffffff;
+  font-family: var(--hml-font-display);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.hml-tier__name {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.hml-tier__tagline {
+  margin: 0;
+  font-style: italic;
+  color: var(--hml-pink-soft);
+}
+
+.hml-tier__price {
+  margin: 0;
+  font-family: var(--hml-font-display);
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--hml-gold-soft);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--hml-space-2);
+}
+
+.hml-tier__price-note {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--hml-text-muted);
+}
+
+.hml-tier__description {
+  margin: 0;
+  color: var(--hml-text);
+}
+
+.hml-tier__features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--hml-space-2);
+}
+
+.hml-tier__feature {
+  display: flex;
+  gap: var(--hml-space-2);
+  align-items: baseline;
+}
+
+.hml-tier__check {
+  font-family: var(--hml-font-mono);
+  font-weight: 700;
+}
+
+.hml-tier__feature--included .hml-tier__check {
+  color: var(--hml-gold);
+}
+
+.hml-tier__feature--excluded {
+  color: var(--hml-text-muted);
+}
+
+.hml-tier__feature--excluded .hml-tier__check {
+  color: var(--hml-purple);
+}
+
+.hml-tier .hml-button {
+  margin-top: auto;
+  align-self: flex-start;
+  text-align: center;
+}
+
+/* FAQ */
+.hml-faq__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--hml-space-3);
+  max-width: 75ch;
+}
+
+.hml-faq__item {
+  background: var(--hml-surface);
+  border: 1px solid var(--hml-border);
+  border-radius: var(--hml-radius);
+  padding: var(--hml-space-3) var(--hml-space-4);
+  transition: box-shadow 0.18s ease;
+}
+
+.hml-faq__item:hover {
+  box-shadow: var(--hml-shadow-hover);
+}
+
+.hml-faq__question {
+  font-family: var(--hml-font-display);
+  font-weight: 700;
+  color: var(--hml-gold-soft);
+  cursor: pointer;
+}
+
+.hml-faq__answer {
+  margin: var(--hml-space-3) 0 0;
+  color: var(--hml-text);
+}
+
+/* Outro */
+.hml-pricing-outro {
+  margin-block: var(--hml-space-5);
+}
+
+.hml-pricing-outro__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-3);
+  margin-top: var(--hml-space-4);
+}

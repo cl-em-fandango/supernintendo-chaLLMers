@@ -1,0 +1,103 @@
+/* features.css — styles for the Features view (feature subsection cards
+ * and terminal-window snippets). Colors and spacing come from theme.css
+ * design tokens only. */
+
+.hml-feature {
+  margin-block: var(--hml-space-4);
+}
+
+.hml-feature__title {
+  margin-block: 0 var(--hml-space-2);
+}
+
+.hml-feature__icon {
+  margin-right: var(--hml-space-2);
+}
+
+.hml-feature__deck {
+  font-family: var(--hml-font-display);
+  font-weight: 700;
+  color: var(--hml-pink-soft);
+  margin-block: 0 var(--hml-space-3);
+}
+
+.hml-feature__paragraph {
+  max-width: 75ch;
+  margin-block: 0 var(--hml-space-3);
+}
+
+.hml-feature__bullets {
+  max-width: 75ch;
+  display: grid;
+  gap: var(--hml-space-1);
+  margin-block: 0 var(--hml-space-3);
+}
+
+/* Terminal window chrome on the dark surface */
+.hml-terminal {
+  border: 1px solid var(--hml-border);
+  border-radius: var(--hml-radius);
+  overflow: hidden;
+  background: var(--hml-terminal);
+  box-shadow: var(--hml-shadow);
+}
+
+.hml-terminal__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--hml-space-2);
+  padding: var(--hml-space-2) var(--hml-space-3);
+  background: var(--hml-bg-elevated);
+  border-bottom: 1px solid var(--hml-border);
+}
+
+.hml-terminal__dots {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.hml-terminal__dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--hml-pink);
+}
+
+.hml-terminal__dot:nth-child(2) {
+  background: var(--hml-gold);
+}
+
+.hml-terminal__dot:nth-child(3) {
+  background: var(--hml-purple);
+}
+
+.hml-terminal__title {
+  font-family: var(--hml-font-mono);
+  font-size: 0.8rem;
+  color: var(--hml-text-muted);
+}
+
+.hml-terminal__body {
+  margin: 0;
+  border-radius: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Features outro */
+.hml-feature-outro {
+  text-align: center;
+  margin-block: var(--hml-space-5);
+}
+
+.hml-feature-outro p {
+  max-width: 65ch;
+  margin: var(--hml-space-3) auto;
+}
+
+.hml-feature-outro__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hml-space-3);
+  justify-content: center;
+}
